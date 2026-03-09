@@ -47,3 +47,13 @@ closedsrc
 bundle
 *.pem
 .DS_store
+
+# Large files
+.venv*
+venv
+node_modules
+.venv-codex
+bundle/
+tmp/
+C:Users*
+"C\357\200\272\357\201\234Users*"

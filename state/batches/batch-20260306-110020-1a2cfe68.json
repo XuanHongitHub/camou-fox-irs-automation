@@ -1,0 +1,9 @@
+{
+  "batch_id": "batch-20260306-110020-1a2cfe68",
+  "source_file": "/tmp/ein_sample.csv",
+  "records": 2,
+  "job_ids": [
+    "batch-20260306-110020-1a2cfe68:rec-0001-zack-langer-tulsa-1145",
+    "batch-20260306-110020-1a2cfe68:rec-0002-savannah-smith-anadarko-5053"
+  ]
+}

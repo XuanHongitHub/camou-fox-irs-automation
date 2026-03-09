@@ -1,0 +1,1034 @@
+from __future__ import annotations
+
+import logging
+import os
+import json
+import shutil
+import time
+import multiprocessing as mp
+import traceback
+import threading
+from pathlib import Path
+from typing import Any, Dict, Set, Tuple
+
+from .config import AppConfig, load_config
+from .logging_utils import jsonl_append, utc_now
+from .models import JobResult, JobStatus
+from .proxyxoay_client import ProxyXoayClient
+from .queueing import update_job_status
+from .queueing import update_job_status_and_queue
+from .runner import (
+    pick_proxy_vm,
+    resolve_proxy_endpoint,
+    rotate_proxy_ip,
+    rotate_runtime_ip,
+    run_single_attempt,
+)
+from .storage import append_result_row, write_json, update_batch_manifest
+
+logger = logging.getLogger(__name__)
+_RUNTIME_ROTATE_LOCK = threading.Lock()
+_RUNTIME_ROTATE_LAST_AT = 0.0
+
+
+def _bad_proxy_path(config: AppConfig) -> Path:
+    return Path(config.output.state_dir) / "bad_proxies.json"
+
+
+def _load_bad_proxy_codes(config: AppConfig) -> Set[str]:
+    path = _bad_proxy_path(config)
+    if not path.exists():
+        return set()
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        items = payload.get("proxy_codes") if isinstance(payload, dict) else []
+        if not isinstance(items, list):
+            return set()
+        return {str(x).strip() for x in items if str(x).strip()}
+    except Exception:
+        return set()
+
+
+def _ban_proxy_code(config: AppConfig, proxy_code: str, reason: str) -> None:
+    code = str(proxy_code or "").strip()
+    if not code:
+        return
+    path = _bad_proxy_path(config)
+    current = _load_bad_proxy_codes(config)
+    if code in current:
+        return
+    current.add(code)
+    payload = {
+        "proxy_codes": sorted(current),
+        "updated_at": utc_now(),
+        "last_ban_reason": reason,
+    }
+    write_json(path, payload)
+
+
+def emit_event(event_type: str, **kwargs) -> None:
+    """Emit a structured JSON event to stdout for the Electron main process to parse.
+    Lines prefixed with EVENT:: are not treated as plain logs."""
+    import sys
+    payload = {"event": event_type, **kwargs}
+    print(f"EVENT::{json.dumps(payload, ensure_ascii=True, default=str)}", flush=True)
+
+
+def _prepare_final_bundle(
+    artifact_dir: Path,
+    *,
+    batch_id: str,
+    record_id: str,
+    record_name: str,
+    status: JobStatus,
+    confirmation_number: str,
+    step6_ein: str,
+    step6_legal_name: str,
+    step6_data: Dict[str, Any],
+    pdf_path: str,
+    proxy_code: str,
+    proxy_ip: str,
+) -> str:
+    def _pdf_escape(s: str) -> str:
+        return str(s).replace("\\", "\\\\").replace("(", "\\(").replace(")", "\\)")
+
+    def _write_simple_pdf(path: Path, lines: list[str]) -> None:
+        # Minimal single-page PDF writer (no external dependency).
+        page_w, page_h = 612, 792  # Letter
+        y = 760
+        content_lines = ["BT", "/F1 11 Tf", "72 760 Td"]
+        first = True
+        for raw in lines[:120]:
+            text = _pdf_escape(raw)
+            if first:
+                content_lines.append(f"({text}) Tj")
+                first = False
+            else:
+                y -= 14
+                if y < 60:
+                    break
+                content_lines.append("0 -14 Td")
+                content_lines.append(f"({text}) Tj")
+        content_lines.append("ET")
+        stream = "\n".join(content_lines).encode("utf-8")
+
+        objects: list[bytes] = []
+        objects.append(b"<< /Type /Catalog /Pages 2 0 R >>")
+        objects.append(b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>")
+        objects.append(f"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 {page_w} {page_h}] /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>".encode("ascii"))
+        objects.append(b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>")
+        objects.append(f"<< /Length {len(stream)} >>\nstream\n".encode("ascii") + stream + b"\nendstream")
+
+        blob = bytearray()
+        blob.extend(b"%PDF-1.4\n%\xe2\xe3\xcf\xd3\n")
+        xref_offsets = [0]
+        for idx, obj in enumerate(objects, start=1):
+            xref_offsets.append(len(blob))
+            blob.extend(f"{idx} 0 obj\n".encode("ascii"))
+            blob.extend(obj)
+            blob.extend(b"\nendobj\n")
+        xref_start = len(blob)
+        blob.extend(f"xref\n0 {len(xref_offsets)}\n".encode("ascii"))
+        blob.extend(b"0000000000 65535 f \n")
+        for off in xref_offsets[1:]:
+            blob.extend(f"{off:010d} 00000 n \n".encode("ascii"))
+        blob.extend(f"trailer\n<< /Size {len(xref_offsets)} /Root 1 0 R >>\nstartxref\n{xref_start}\n%%EOF\n".encode("ascii"))
+        path.write_bytes(bytes(blob))
+
+    # Keep operator-facing outputs in one place (record artifact root),
+    # instead of splitting into a separate `final/` subfolder.
+    final_dir = artifact_dir
+    final_dir.mkdir(parents=True, exist_ok=True)
+
+    final_pdf_path = ""
+    src_pdf = Path(pdf_path) if pdf_path else None
+    if src_pdf and src_pdf.exists():
+        safe_record = "".join(ch if ch.isalnum() or ch in ("-", "_") else "_" for ch in record_id)[:64]
+        safe_ein = (step6_ein or confirmation_number or "no_ein").replace("-", "")
+        target_name = f"{safe_record}_{safe_ein}_CP575.pdf"
+        target = final_dir / target_name
+        try:
+            shutil.copy2(str(src_pdf), str(target))
+            final_pdf_path = str(target)
+        except Exception:
+            final_pdf_path = str(src_pdf)
+
+    # Fallback: always generate a final PDF summary when download is missing.
+    if not final_pdf_path:
+        safe_record = "".join(ch if ch.isalnum() or ch in ("-", "_") else "_" for ch in record_id)[:64]
+        safe_ein = (step6_ein or confirmation_number or "no_ein").replace("-", "")
+        target = final_dir / f"{safe_record}_{safe_ein}_SUMMARY.pdf"
+        lines = [
+            "IRS EIN Confirmation Summary (Automation Fallback)",
+            "",
+            f"Batch ID: {batch_id}",
+            f"Record ID: {record_id}",
+            f"Record Name: {record_name}",
+            f"Status: {status.value}",
+            f"EIN: {step6_ein or confirmation_number or ''}",
+            f"Legal Name: {step6_legal_name or ''}",
+            f"Name Control: {step6_data.get('step6_name_control', '')}",
+            f"County: {step6_data.get('step6_county', '')}",
+            f"State: {step6_data.get('step6_state', '')}",
+            f"Start Date: {step6_data.get('step6_start_date', '')}",
+            f"Phone: {step6_data.get('step6_phone_number', '')}",
+            f"Activity: {step6_data.get('step6_principal_activity', '')}",
+            f"Product/Service: {step6_data.get('step6_principal_product_service', '')}",
+            f"Reason Applying: {step6_data.get('step6_reason_for_applying', '')}",
+            f"Proxy Code: {proxy_code}",
+            f"Proxy IP: {proxy_ip}",
+            "",
+            f"Generated at: {utc_now()}",
+        ]
+        try:
+            _write_simple_pdf(target, lines)
+            final_pdf_path = str(target)
+        except Exception:
+            final_pdf_path = ""
+
+    summary = {
+        "batch_id": batch_id,
+        "record_id": record_id,
+        "record_name": record_name,
+        "status": status.value,
+        "step6_ein": step6_ein or confirmation_number,
+        "step6_legal_name": step6_legal_name,
+        "step6_data": step6_data,
+        "proxy_code": proxy_code,
+        "proxy_ip": proxy_ip,
+        "final_pdf_path": final_pdf_path,
+    }
+    write_json(final_dir / "step6.json", summary)
+    return final_pdf_path
+
+
+def _classify_error_type(step: str, message: str, status: JobStatus) -> str:
+    if status == JobStatus.SUCCESS:
+        return ""
+    if status == JobStatus.VALIDATION_FAILED:
+        return "validation"
+    text = f"{step} {message}".lower()
+    if any(k in text for k in [
+        "irs_daily_limit",
+        "irs_hard_fail",
+        "irs ssn rule hit",
+        "attempted too many requests for today",
+        "one (1) ein per business day",
+        "unable to provide you with an ein",
+        "reference number: 101",
+        "reference number: 115",
+        "form ss-4",
+        "form ss 4",
+        "by fax or mail",
+        "ssn has already",
+        "ssn/itin has already",
+        "already assigned an ein",
+        "already has an ein",
+        "already been used for ein registration",
+        "ssn can only be used once",
+        "ssn/itin can only be used once",
+    ]):
+        return "business_rule"
+    if any(k in text for k in [
+        "blocked",
+        "captcha",
+        "verify you are human",
+        "access denied",
+        "cloudflare",
+        "challenge",
+        "429",
+        "403",
+    ]):
+        return "blocked"
+    if any(k in text for k in [
+        "proxy_rotate",
+        "proxy_healthcheck",
+        "rotate failed",
+        "could not connect to proxy",
+        "proxyerror",
+        "tunnel connection failed",
+    ]):
+        return "proxy"
+    return "automation"
+
+
+def _is_non_retryable_business_rule(step: str, message: str) -> bool:
+    text = f"{step} {message}".lower()
+    return any(token in text for token in [
+        "irs_daily_limit",
+        "irs_hard_fail",
+        "irs ssn rule hit",
+        "attempted too many requests for today",
+        "one (1) ein per business day",
+        "unable to provide you with an ein",
+        "reference number: 101",
+        "reference number: 115",
+        "form ss-4",
+        "form ss 4",
+        "by fax or mail",
+        "ssn has already",
+        "ssn/itin has already",
+        "already assigned an ein",
+        "already has an ein",
+        "already been used for ein registration",
+        "ssn can only be used once",
+        "ssn/itin can only be used once",
+    ])
+
+
+def _is_transient_retryable(step: str, message: str) -> bool:
+    text = f"{step} {message}".lower()
+    return any(token in text for token in [
+        "timeout",
+        "timed out",
+        "cannot find continue button",
+        "cannot find submit ein request button",
+        "cannot select option",
+        "cannot find",
+        "download button not clickable",
+        "target closed",
+        "net::",
+        "navigation",
+        "context closed",
+        "page closed",
+        "connection reset",
+        "connection aborted",
+        "connection refused",
+        "502",
+        "503",
+        "504",
+        "temporarily unavailable",
+    ])
+
+
+def _should_ban_proxy(step: str, message: str) -> bool:
+    text = f"{step} {message}".lower()
+    return any(token in text for token in [
+        "proxy_healthcheck",
+        "could not connect to proxy",
+        "proxyerror",
+        "tunnel connection failed",
+        "407",
+        "connection refused",
+        "connection reset",
+        "proxy rotate",
+        "rotate failed",
+    ])
+
+
+def _retry_backoff_seconds(base_backoff_seconds: int, attempt: int) -> int:
+    base = max(0, int(base_backoff_seconds))
+    if base == 0:
+        return 0
+    return base * max(1, int(attempt))
+
+
+def _rotate_runtime_ip_staggered(rotate_url: str, wait_seconds: int) -> Any:
+    global _RUNTIME_ROTATE_LAST_AT
+    gap = max(0, int(wait_seconds or 0))
+    with _RUNTIME_ROTATE_LOCK:
+        if gap > 0:
+            elapsed = time.time() - float(_RUNTIME_ROTATE_LAST_AT or 0.0)
+            sleep_for = gap - elapsed
+            if sleep_for > 0:
+                time.sleep(sleep_for)
+        result = rotate_runtime_ip(rotate_url, wait_seconds=wait_seconds)
+        _RUNTIME_ROTATE_LAST_AT = time.time()
+        return result
+
+
+def _is_known_retryable_failure(step: str, message: str) -> bool:
+    text = f"{step} {message}".lower()
+    if _is_transient_retryable(step, message):
+        return True
+    return any(token in text for token in [
+        "proxy_rotate",
+        "proxy_healthcheck",
+        "rotate failed",
+        "could not connect to proxy",
+        "proxyerror",
+        "tunnel connection failed",
+        "connection refused",
+        "connection reset",
+        "connection aborted",
+        "navigation",
+        "net::",
+        "target closed",
+        "context closed",
+        "page closed",
+        "temporarily unavailable",
+        "download button not clickable",
+    ])
+
+
+def _run_single_attempt_subprocess(
+    result_queue: Any,
+    config: AppConfig,
+    record: Dict[str, Any],
+    proxy_endpoint: Any,
+    artifact_dir: str,
+    use_proxy: bool,
+) -> None:
+    try:
+        result = run_single_attempt(
+            config=config,
+            record=record,
+            proxy_endpoint=proxy_endpoint,
+            artifact_dir=Path(artifact_dir),
+            use_proxy=use_proxy,
+        )
+        result_queue.put({"ok": True, "result": result})
+    except Exception as exc:
+        result_queue.put({
+            "ok": False,
+            "error": str(exc),
+            "traceback": traceback.format_exc(),
+        })
+
+
+def _run_single_attempt_with_timeout(
+    *,
+    config: AppConfig,
+    record: Dict[str, Any],
+    proxy_endpoint: Any,
+    artifact_dir: Path,
+    use_proxy: bool,
+    timeout_seconds: int,
+) -> Tuple[JobStatus, str, str, str, Dict[str, str]]:
+    hard_timeout = max(0, int(timeout_seconds or 0))
+    if hard_timeout <= 0:
+        return run_single_attempt(
+            config=config,
+            record=record,
+            proxy_endpoint=proxy_endpoint,
+            artifact_dir=artifact_dir,
+            use_proxy=use_proxy,
+        )
+
+    ctx = mp.get_context("spawn")
+    result_queue = ctx.Queue(maxsize=1)
+    proc = ctx.Process(
+        target=_run_single_attempt_subprocess,
+        args=(result_queue, config, record, proxy_endpoint, str(artifact_dir), use_proxy),
+    )
+    proc.start()
+    proc.join(hard_timeout)
+
+    if proc.is_alive():
+        proc.terminate()
+        proc.join(5)
+        return (
+            JobStatus.MANUAL_REQUIRED,
+            "attempt_timeout",
+            f"Attempt exceeded {hard_timeout}s; moved to manual queue for later rerun.",
+            "",
+            {},
+        )
+
+    payload = None
+    try:
+        payload = result_queue.get_nowait()
+    except Exception:
+        payload = None
+
+    if isinstance(payload, dict) and payload.get("ok"):
+        raw = payload.get("result")
+        if isinstance(raw, (tuple, list)) and len(raw) == 5:
+            status = raw[0] if isinstance(raw[0], JobStatus) else JobStatus(str(raw[0]))
+            return (
+                status,
+                str(raw[1] or ""),
+                str(raw[2] or ""),
+                str(raw[3] or ""),
+                dict(raw[4] or {}),
+            )
+        return JobStatus.RETRYABLE_FAIL, "runtime", "Invalid attempt result payload", "", {}
+
+    if isinstance(payload, dict) and not payload.get("ok"):
+        tb = str(payload.get("traceback", "") or "").strip()
+        if tb:
+            logger.warning("Attempt subprocess traceback:\n%s", tb)
+        err = str(payload.get("error", "") or "").strip()
+        return JobStatus.RETRYABLE_FAIL, "runtime", err or "Attempt subprocess failed", "", {}
+
+    if proc.exitcode not in (0, None):
+        return JobStatus.RETRYABLE_FAIL, "runtime", f"Attempt process exited with code {proc.exitcode}", "", {}
+
+    return JobStatus.RETRYABLE_FAIL, "runtime", "Attempt subprocess returned no result", "", {}
+
+
+def _relocate_artifacts_by_status(config: AppConfig, batch_id: str, record_id: str, status: JobStatus, artifact_dir: Path) -> Path:
+    bucket = "__confirmed" if status == JobStatus.SUCCESS else "__failed"
+    target = Path(config.output.artifacts_dir) / batch_id / bucket / record_id
+    if artifact_dir == target:
+        return artifact_dir
+    target.parent.mkdir(parents=True, exist_ok=True)
+    if target.exists():
+        shutil.rmtree(target, ignore_errors=True)
+    shutil.move(str(artifact_dir), str(target))
+    return target
+
+
+def _remap_path(old_base: Path, new_base: Path, value: str) -> str:
+    if not value:
+        return value
+    old_str = str(old_base)
+    new_str = str(new_base)
+    if value.startswith(old_str):
+        return new_str + value[len(old_str):]
+    return value
+
+
+def _prune_debug_artifacts(artifact_dir: Path) -> None:
+    """Keep only minimal operator-facing outputs."""
+    keep_names = {"result.json", "step6.json"}
+    for child in artifact_dir.iterdir():
+        if child.name in keep_names:
+            continue
+        if child.is_file() and child.suffix.lower() == ".pdf":
+            continue
+        try:
+            if child.is_dir():
+                shutil.rmtree(child, ignore_errors=True)
+            else:
+                child.unlink(missing_ok=True)
+        except Exception:
+            # best effort cleanup
+            pass
+
+
+def _compact_step6_data(step6: Dict[str, Any]) -> Dict[str, Any]:
+    """Keep parsed fields compact for CSV/report usage."""
+    if not isinstance(step6, dict):
+        return {}
+    out = dict(step6)
+    out.pop("step6_raw_text", None)
+    return out
+
+
+
+def _load_app_config() -> AppConfig:
+    config_path = os.getenv("IRS_BOT_CONFIG", "irs_bot/config.yml")
+    return load_config(config_path)
+
+
+
+def process_record_job(payload: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    RQ entrypoint. Expected payload:
+    {
+      "batch_id": str,
+      "source_file": str,
+      "record": dict
+    }
+    """
+    config = _load_app_config()
+    raw_job = dict(payload or {})
+    queue_job_id = str(raw_job.get("job_id", "") or "").strip()
+    queue_name = str(raw_job.get("queue_name", "") or "").strip()
+    core_payload: Dict[str, Any]
+    if isinstance(raw_job.get("payload"), dict):
+        core_payload = dict(raw_job.get("payload") or {})
+    else:
+        core_payload = raw_job
+
+    sandbox_mode = bool(core_payload.get("sandbox"))
+
+    batch_id = str(core_payload["batch_id"])
+    source_file = str(core_payload["source_file"])
+    record = dict(core_payload["record"])
+    record_id = str(record.get("record_id", "")).strip()
+    if not record_id:
+        raise ValueError("record_id is required")
+    if not queue_job_id:
+        queue_job_id = f"{batch_id}:{record_id}"
+
+    started_at = utc_now()
+
+    artifact_dir = Path(config.output.artifacts_dir) / batch_id / record_id
+    artifact_dir.mkdir(parents=True, exist_ok=True)
+    events_path = artifact_dir / "events.jsonl"
+
+    rotate_url = str(getattr(config.proxy_runtime, "rotate_url", "") or "").strip()
+    proxy_client = None if rotate_url else ProxyXoayClient(config.proxyxoay)
+    tried_codes: Set[str] = set()
+    banned_codes = _load_bad_proxy_codes(config)
+
+    final_status = JobStatus.RETRYABLE_FAIL
+    final_step = "init"
+    final_error = ""
+    final_confirm = ""
+    final_proxy_code = ""
+    final_proxy_ip = ""
+    final_step6_ein = ""
+    final_step6_legal_name = ""
+    final_step6_data: Dict[str, Any] = {}
+    final_pdf_path = ""
+    final_pdf_bundle_path = ""
+    final_error_type = ""
+    attempts_made = 0
+    record_name = str(record.get("NAME") or record.get("name") or record_id)
+
+    total_attempts = config.retry.max_retries_per_record + 1
+    max_attempt_seconds = max(60, int(getattr(config.retry, "max_attempt_seconds", 240) or 240))
+
+    for attempt in range(1, total_attempts + 1):
+        attempts_made = attempt
+        try:
+            emit_event("job_started",
+                job_id=f"{batch_id}:{record_id}",
+                record_id=record_id,
+                batch_id=batch_id,
+                source_file=source_file,
+                attempt=attempt,
+            )
+            # Sandbox mode: skip rotate and run without proxy to avoid external dependency.
+            if sandbox_mode:
+                proxy_code = "SANDBOX"
+                final_proxy_code = proxy_code
+                emit_event("step_update",
+                    job_id=f"{batch_id}:{record_id}",
+                    record_id=record_id,
+                    step="proxy_rotate",
+                    status="done",
+                    note="Sandbox mode: Skipping rotation",
+                    proxy_code=proxy_code,
+                )
+            elif rotate_url:
+                proxy_code = "RUNTIME"
+                final_proxy_code = proxy_code
+                emit_event("step_update",
+                    job_id=f"{batch_id}:{record_id}",
+                    record_id=record_id,
+                    step="proxy_rotate",
+                    status="running",
+                    note="Rotating runtime IP...",
+                    proxy_code=proxy_code,
+                )
+                rotate_result = _rotate_runtime_ip_staggered(
+                    rotate_url,
+                    wait_seconds=config.proxy_runtime.change_ip_wait_seconds,
+                )
+                jsonl_append(
+                    events_path,
+                    {
+                        "time": utc_now(),
+                        "record_id": record_id,
+                        "attempt": attempt,
+                        "event": "proxy_rotate",
+                        "proxy_code": proxy_code,
+                        "rotate_status": rotate_result.status,
+                        "rotate_message": rotate_result.message,
+                        "new_ip": rotate_result.new_ip,
+                    },
+                )
+                rotate_status = rotate_result.status.upper()
+                if rotate_status == "COOLDOWN":
+                    emit_event("step_update",
+                        job_id=f"{batch_id}:{record_id}",
+                        record_id=record_id,
+                        step="proxy_rotate",
+                        status="done",
+                        note=f"cooldown -> keep current IP ({rotate_result.message})",
+                        proxy_code=proxy_code,
+                    )
+                elif rotate_status not in {"SUCCESS", "SKIP"}:
+                    emit_event("step_update",
+                        job_id=f"{batch_id}:{record_id}",
+                        record_id=record_id,
+                        step="proxy_rotate",
+                        status="failed",
+                        note=f"rotate failed: {rotate_result.message}",
+                        proxy_code=proxy_code,
+                    )
+                    final_status = JobStatus.RETRYABLE_FAIL
+                    final_step = "proxy_rotate"
+                    final_error = f"rotate failed: {rotate_result.message}"
+                    if _should_ban_proxy(final_step, final_error):
+                        _ban_proxy_code(config, final_proxy_code, final_error)
+                    if attempt >= total_attempts:
+                        break
+                    backoff_seconds = _retry_backoff_seconds(config.retry.base_backoff_seconds, attempt)
+                    emit_event("step_update",
+                        job_id=f"{batch_id}:{record_id}",
+                        record_id=record_id,
+                        step="proxy_rotate",
+                        status="retrying",
+                        note=f"retry attempt {attempt + 1}/{total_attempts}: {final_error}",
+                        proxy_code=proxy_code,
+                    )
+                    if backoff_seconds:
+                        time.sleep(backoff_seconds)
+                    continue
+                else:
+                    emit_event("step_update",
+                        job_id=f"{batch_id}:{record_id}",
+                        record_id=record_id,
+                        step="proxy_rotate",
+                        status="done",
+                        note=f"IP rotated via runtime URL → {rotate_result.new_ip or 'ok'}",
+                        proxy_code=proxy_code,
+                        proxy_ip=rotate_result.new_ip,
+                    )
+                    final_proxy_ip = rotate_result.new_ip or ""
+            else:
+                vm = pick_proxy_vm(proxy_client, exclude_codes=(tried_codes | banned_codes))
+                proxy_code = vm.proxy_code
+                tried_codes.add(proxy_code)
+                final_proxy_code = proxy_code
+                emit_event("step_update",
+                    job_id=f"{batch_id}:{record_id}",
+                    record_id=record_id,
+                    step="proxy_rotate",
+                    status="running",
+                    note=f"Rotating via {proxy_code}...",
+                    proxy_code=proxy_code,
+                )
+
+                rotate_result = rotate_proxy_ip(
+                    proxy_client,
+                    proxy_code,
+                    wait_seconds=config.proxy_runtime.change_ip_wait_seconds,
+                )
+                jsonl_append(
+                    events_path,
+                    {
+                        "time": utc_now(),
+                        "record_id": record_id,
+                        "attempt": attempt,
+                        "event": "proxy_rotate",
+                        "proxy_code": proxy_code,
+                        "rotate_status": rotate_result.status,
+                        "rotate_message": rotate_result.message,
+                        "new_ip": rotate_result.new_ip,
+                    },
+                )
+
+                rotate_status = rotate_result.status.upper()
+                if rotate_status == "COOLDOWN":
+                    logger.info("proxy_rotate cooldown for %s: %s", proxy_code, rotate_result.message)
+                    emit_event("step_update",
+                        job_id=f"{batch_id}:{record_id}",
+                        record_id=record_id,
+                        step="proxy_rotate",
+                        status="done",
+                        note=f"cooldown -> keep current IP ({rotate_result.message})",
+                        proxy_code=proxy_code,
+                    )
+                elif rotate_status != "SUCCESS":
+                    logger.warning("proxy_rotate failed for %s: %s", proxy_code, rotate_result.message)
+                    emit_event("step_update",
+                        job_id=f"{batch_id}:{record_id}",
+                        record_id=record_id,
+                        step="proxy_rotate",
+                        status="failed",
+                        note=f"rotate failed: {rotate_result.message}",
+                        proxy_code=proxy_code,
+                    )
+                    final_status = JobStatus.RETRYABLE_FAIL
+                    final_step = "proxy_rotate"
+                    final_error = f"rotate failed: {rotate_result.message}"
+                    if _should_ban_proxy(final_step, final_error):
+                        _ban_proxy_code(config, final_proxy_code, final_error)
+                    if attempt >= total_attempts:
+                        break
+                    backoff_seconds = _retry_backoff_seconds(config.retry.base_backoff_seconds, attempt)
+                    emit_event("step_update",
+                        job_id=f"{batch_id}:{record_id}",
+                        record_id=record_id,
+                        step="proxy_rotate",
+                        status="retrying",
+                        note=f"retry attempt {attempt + 1}/{total_attempts}: {final_error}",
+                        proxy_code=proxy_code,
+                    )
+                    if backoff_seconds:
+                        time.sleep(backoff_seconds)
+                    continue
+                else:
+                    emit_event("step_update",
+                        job_id=f"{batch_id}:{record_id}",
+                        record_id=record_id,
+                        step="proxy_rotate",
+                        status="done",
+                        note=f"IP rotated via {proxy_code} → {rotate_result.new_ip}",
+                        proxy_code=proxy_code,
+                        proxy_ip=rotate_result.new_ip,
+                    )
+                    final_proxy_ip = rotate_result.new_ip or ""
+
+            endpoint = resolve_proxy_endpoint(config, proxy_code)
+            emit_event("step_update",
+                job_id=f"{batch_id}:{record_id}",
+                record_id=record_id,
+                step="init",
+                status="running",
+                note="Proxy ready, launching browser...",
+                proxy_code=final_proxy_code or proxy_code,
+                proxy_ip=final_proxy_ip,
+            )
+            status, last_step, error_message, confirmation, metadata = _run_single_attempt_with_timeout(
+                config=config,
+                record=record,
+                proxy_endpoint=endpoint,
+                artifact_dir=artifact_dir,
+                use_proxy=(not sandbox_mode),
+                timeout_seconds=max_attempt_seconds,
+            )
+
+            final_status = status
+            final_step = last_step
+            final_error = error_message
+            final_confirm = confirmation
+            final_step6_ein = str(metadata.get("step6_ein", "") or "")
+            final_step6_legal_name = str(metadata.get("step6_legal_name", "") or "")
+            final_step6_data = dict(metadata)
+            final_pdf_path = str(metadata.get("pdf_path", "") or "")
+
+            # Emit step update for the last automation step reached
+            emit_event("step_update",
+                job_id=f"{batch_id}:{record_id}",
+                record_id=record_id,
+                step=last_step,
+                status="done" if status == JobStatus.SUCCESS else "failed",
+                note=confirmation if confirmation else error_message,
+                proxy_code=final_proxy_code,
+            )
+
+            jsonl_append(
+                events_path,
+                {
+                    "time": utc_now(),
+                    "record_id": record_id,
+                    "attempt": attempt,
+                    "event": "attempt_result",
+                    "status": status.value,
+                    "last_step": last_step,
+                    "error": error_message,
+                },
+            )
+
+            if status in {JobStatus.SUCCESS, JobStatus.CANCELLED, JobStatus.MANUAL_REQUIRED, JobStatus.VALIDATION_FAILED}:
+                break
+            if status == JobStatus.RETRYABLE_FAIL:
+                if _is_non_retryable_business_rule(last_step, error_message):
+                    final_status = JobStatus.VALIDATION_FAILED
+                    final_step = last_step or "irs_daily_limit"
+                    final_error = error_message or "IRS business-rule limit hit"
+                    emit_event("step_update",
+                        job_id=f"{batch_id}:{record_id}",
+                        record_id=record_id,
+                        step=final_step,
+                        status="failed",
+                        note=final_error,
+                        proxy_code=final_proxy_code,
+                    )
+                    break
+                retry_note = error_message or last_step or "retryable failure"
+                if not _is_known_retryable_failure(last_step, retry_note):
+                    final_status = JobStatus.MANUAL_REQUIRED
+                    final_step = last_step or "manual_review"
+                    final_error = retry_note
+                    emit_event("step_update",
+                        job_id=f"{batch_id}:{record_id}",
+                        record_id=record_id,
+                        step=final_step,
+                        status="failed",
+                        note=f"unknown failure -> moved to manual queue (no auto retry): {final_error}",
+                        proxy_code=final_proxy_code,
+                    )
+                    break
+                if final_proxy_code and _should_ban_proxy(last_step, error_message):
+                    _ban_proxy_code(config, final_proxy_code, error_message or last_step)
+                if attempt >= total_attempts:
+                    break
+                backoff_seconds = _retry_backoff_seconds(config.retry.base_backoff_seconds, attempt)
+                if not _is_transient_retryable(last_step, retry_note):
+                    retry_note = f"automation failure, retrying: {retry_note}"
+                emit_event("step_update",
+                    job_id=f"{batch_id}:{record_id}",
+                    record_id=record_id,
+                    step=last_step,
+                    status="retrying",
+                    note=f"retry attempt {attempt + 1}/{total_attempts}: {retry_note}",
+                    proxy_code=final_proxy_code,
+                )
+                jsonl_append(
+                    events_path,
+                    {
+                        "time": utc_now(),
+                        "record_id": record_id,
+                        "attempt": attempt,
+                        "event": "retry_scheduled",
+                        "next_attempt": attempt + 1,
+                        "reason": retry_note,
+                        "backoff_seconds": backoff_seconds,
+                    },
+                )
+                if backoff_seconds:
+                    time.sleep(backoff_seconds)
+                continue
+        except Exception as exc:
+            logger.exception("Attempt %s failed for record %s", attempt, record_id)
+            final_status = JobStatus.RETRYABLE_FAIL
+            final_step = "exception"
+            final_error = str(exc)
+            jsonl_append(
+                events_path,
+                {
+                    "time": utc_now(),
+                    "record_id": record_id,
+                    "attempt": attempt,
+                    "event": "attempt_exception",
+                    "error": str(exc),
+                },
+            )
+            if final_proxy_code and _should_ban_proxy(final_step, final_error):
+                _ban_proxy_code(config, final_proxy_code, str(exc))
+            if not _is_known_retryable_failure(final_step, final_error):
+                final_status = JobStatus.MANUAL_REQUIRED
+                emit_event("step_update",
+                    job_id=f"{batch_id}:{record_id}",
+                    record_id=record_id,
+                    step=final_step,
+                    status="failed",
+                    note=f"unknown failure -> moved to manual queue (no auto retry): {final_error}",
+                    proxy_code=final_proxy_code,
+                )
+                break
+            if attempt >= total_attempts:
+                break
+            backoff_seconds = _retry_backoff_seconds(config.retry.base_backoff_seconds, attempt)
+            emit_event("step_update",
+                job_id=f"{batch_id}:{record_id}",
+                record_id=record_id,
+                step=final_step,
+                status="retrying",
+                note=f"retry attempt {attempt + 1}/{total_attempts}: {final_error}",
+                proxy_code=final_proxy_code,
+            )
+            if backoff_seconds:
+                time.sleep(backoff_seconds)
+            continue
+
+    if final_status == JobStatus.RETRYABLE_FAIL:
+        # retries exhausted
+        final_status = JobStatus.MANUAL_REQUIRED
+
+    final_error_type = _classify_error_type(final_step, final_error, final_status)
+
+    old_artifact_dir = artifact_dir
+    artifact_dir = _relocate_artifacts_by_status(config, batch_id, record_id, final_status, artifact_dir)
+    if artifact_dir != old_artifact_dir:
+        final_pdf_path = _remap_path(old_artifact_dir, artifact_dir, final_pdf_path)
+        if final_step6_data.get("pdf_path"):
+            final_step6_data["pdf_path"] = _remap_path(old_artifact_dir, artifact_dir, str(final_step6_data.get("pdf_path")))
+    events_path = artifact_dir / "events.jsonl"
+
+    db_status = {
+        JobStatus.SUCCESS: "done",
+        JobStatus.MANUAL_REQUIRED: "manual_required",
+        JobStatus.CANCELLED: "cancelled",
+    }.get(final_status, "failed")
+    try:
+        if final_status == JobStatus.MANUAL_REQUIRED and queue_name != config.queue.queue_manual:
+            update_job_status_and_queue(config, queue_job_id, db_status, config.queue.queue_manual)
+        else:
+            update_job_status(config, queue_job_id, db_status)
+    except Exception as exc:
+        logger.warning("Failed to update job status in queue db for %s: %s", record_id, exc)
+
+    # Emit final job completion event
+    final_pdf_bundle_path = _prepare_final_bundle(
+        artifact_dir,
+        batch_id=batch_id,
+        record_id=record_id,
+        record_name=record_name,
+        status=final_status,
+        confirmation_number=final_confirm,
+        step6_ein=final_step6_ein,
+        step6_legal_name=final_step6_legal_name,
+        step6_data=final_step6_data,
+        pdf_path=final_pdf_path,
+        proxy_code=final_proxy_code,
+        proxy_ip=final_proxy_ip,
+    )
+
+    # Emit final job completion event
+    emit_event("job_complete",
+        job_id=f"{batch_id}:{record_id}",
+        record_id=record_id,
+        record_name=record_name,
+        batch_id=batch_id,
+        source_file=source_file,
+        status=final_status.value,
+        confirmation_number=final_confirm,
+        step6_ein=final_step6_ein,
+        step6_legal_name=final_step6_legal_name,
+        step6_data=final_step6_data,
+        pdf_path=final_pdf_path,
+        final_pdf_path=final_pdf_bundle_path,
+        error_type=final_error_type,
+        error_code=final_step if final_status != JobStatus.SUCCESS else "",
+        error_message=final_error,
+        last_step=final_step,
+        proxy_used=final_proxy_code,
+        proxy_ip=final_proxy_ip,
+        attempt_count=attempts_made,
+        started_at=started_at,
+        ended_at=utc_now(),
+        artifact_dir=str(artifact_dir),
+    )
+
+    compact_step6 = _compact_step6_data(final_step6_data)
+
+    result = JobResult(
+        batch_id=batch_id,
+        record_id=record_id,
+        record_name=record_name,
+        status=final_status,
+        attempt_count=attempts_made,
+        proxy_used=final_proxy_code,
+        proxy_ip=final_proxy_ip,
+        started_at=started_at,
+        ended_at=utc_now(),
+        last_step=final_step,
+        artifact_dir=str(artifact_dir),
+        error_type=final_error_type,
+        error_code=final_step if final_status != JobStatus.SUCCESS else "",
+        error_message=final_error,
+        confirmation_number=final_confirm,
+        step6_ein=final_step6_ein,
+        step6_legal_name=final_step6_legal_name,
+        step6_name_control=str(compact_step6.get("step6_name_control", "") or ""),
+        step6_phone_number=str(compact_step6.get("step6_phone_number", "") or ""),
+        step6_county=str(compact_step6.get("step6_county", "") or ""),
+        step6_state=str(compact_step6.get("step6_state", "") or ""),
+        step6_start_date=str(compact_step6.get("step6_start_date", "") or ""),
+        step6_principal_activity=str(compact_step6.get("step6_principal_activity", "") or ""),
+        step6_principal_product_service=str(compact_step6.get("step6_principal_product_service", "") or ""),
+        step6_reason_for_applying=str(compact_step6.get("step6_reason_for_applying", "") or ""),
+        step6_physical_location=str(compact_step6.get("step6_physical_location", "") or ""),
+        step6_responsible_name=str(compact_step6.get("step6_responsible_name", "") or ""),
+        step6_responsible_ssn_itin=str(compact_step6.get("step6_responsible_ssn_itin", "") or ""),
+        step6_data_json=json.dumps(compact_step6, ensure_ascii=True),
+        pdf_path=final_pdf_path,
+        final_pdf_path=final_pdf_bundle_path,
+    )
+
+    append_result_row(Path(config.output.output_csv), result.to_row())
+    try:
+        update_batch_manifest(Path(config.output.output_csv), result.to_row())
+    except Exception:
+        # do not block job completion on manifest write issue
+        pass
+
+    write_json(artifact_dir / "result.json", result.to_row())
+    if not bool(getattr(config.output, "keep_debug_artifacts", False)):
+        _prune_debug_artifacts(artifact_dir)
+
+    return result.to_row()
+
+
+def noop_manual_job(payload: Dict[str, Any]) -> Dict[str, Any]:
+    """Placeholder manual queue job payload holder."""
+    return payload

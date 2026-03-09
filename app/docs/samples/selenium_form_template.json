@@ -1,0 +1,58 @@
+{
+  "schemaVersion": "1.0",
+  "targetDomain": "www.selenium.dev",
+  "successIndicators": [
+    "form submitted",
+    "received!"
+  ],
+  "errorIndicators": [
+    "error",
+    "invalid",
+    "required"
+  ],
+  "steps": [
+    {
+      "type": "goto",
+      "value": "https://www.selenium.dev/selenium/web/web-form.html"
+    },
+    {
+      "type": "fillText",
+      "selector": "input[name=\"my-text\"]",
+      "valueFrom": "input.full_name"
+    },
+    {
+      "type": "fillText",
+      "selector": "input[name=\"my-password\"]",
+      "valueFrom": "input.password"
+    },
+    {
+      "type": "fillText",
+      "selector": "textarea[name=\"my-textarea\"]",
+      "valueFrom": "input.bio"
+    },
+    {
+      "type": "selectOption",
+      "selector": "select[name=\"my-select\"]",
+      "valueFrom": "input.plan"
+    },
+    {
+      "type": "setCheckbox",
+      "selector": "#my-check-2",
+      "valueFrom": "input.accepted"
+    },
+    {
+      "type": "setRadio",
+      "selector": "#my-radio-2",
+      "valueFrom": "input.pick_radio_2"
+    },
+    {
+      "type": "submit",
+      "selector": "button[type=\"submit\"]"
+    },
+    {
+      "type": "assert",
+      "assertType": "containsText",
+      "value": "Received!"
+    }
+  ]
+}

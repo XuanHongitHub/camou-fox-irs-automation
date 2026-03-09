@@ -1,0 +1,38 @@
+appId: com.foxauto.irsbot
+productName: IRS_Bot
+directories:
+  buildResources: build
+  output: dist
+
+files:
+  - "!**/.vscode/*"
+  - "!src/*"
+  - "!electron.vite.config.{js,ts,mjs,cjs}"
+  - "!{.eslintignore,.eslintrc.cjs,.prettierignore,.prettierrc.yaml,dev-app-update.yml,CHANGELOG.md,README.md}"
+  - "!{.env,.env.*,.editorconfig,.run/*}"
+  - "!**/{tsconfig.json,tsconfig.node.json,tsconfig.web.json}"
+
+# Bundling the standalone Python Executable
+extraResources:
+  - from: "../irs_bot/dist/irs_bot_server.exe"  # Assuming PyInstaller output
+    to: "irs_bot_server.exe"
+
+win:
+  executableName: IRS_Bot
+  verifyUpdateCodeSignature: false
+  artifactName: "${productName}-${version}-${arch}.${ext}"
+  target:
+    - nsis
+    - portable
+
+publish:
+  provider: github
+  owner: "${env.GH_OWNER}"
+  repo: "${env.GH_REPO}"
+  releaseType: release
+
+nsis:
+  oneClick: false
+  perMachine: false
+  allowToChangeInstallationDirectory: true
+  deleteAppDataOnUninstall: false

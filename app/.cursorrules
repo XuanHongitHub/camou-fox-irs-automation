@@ -1,0 +1,3 @@
+# Bug Forge UI/UX Rules
+1. Không bao giờ dùng icon emoji cho UI. Luôn sử dụng icon SVG chuyên nghiệp (ví dụ: lucide-react).
+2. Không làm UI ẩu. Phải duy trì tiêu chuẩn thẩm mỹ cao (như Framer, Figma). Sẵn sàng tự design component mới nếu chức năng đặc biệt không có UI component có sẵn nào phù hợp, không cố nhồi nhét vào component cũ gây mất thẩm mỹ.

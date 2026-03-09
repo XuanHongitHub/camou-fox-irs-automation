@@ -1,0 +1,162 @@
+@import "tailwindcss";
+
+@font-face {
+  font-family: 'InterVariable';
+  font-style: normal;
+  font-weight: 100 900;
+  font-display: swap;
+  src: url('./fonts/InterVariable.woff2') format('woff2');
+}
+
+@font-face {
+  font-family: 'InterVariable';
+  font-style: italic;
+  font-weight: 100 900;
+  font-display: swap;
+  src: url('./fonts/InterVariable-Italic.woff2') format('woff2');
+}
+
+@theme {
+  --color-base: #111111;
+  --color-panel: #1A1A1A;
+  --color-surface: #222222;
+  --color-border: #2A2A2A;
+  --color-text: #EEEEEE;
+  --color-muted: #888888;
+  
+  --color-accent: #0099FF;
+  --color-accentHover: #33ADFF;
+  --color-danger: #FF3366;
+  --color-success: #00CC66;
+  --color-warning: #FFCC00;
+
+  --font-sans: 'InterVariable', 'Inter', system-ui, sans-serif;
+  --font-mono: 'JetBrains Mono', ui-monospace, monospace;
+
+  --shadow-panel: 0 4px 24px -4px rgba(0, 0, 0, 0.5);
+  --shadow-box-inner-border: inset 0 0 0 1px rgba(255, 255, 255, 0.05);
+}
+
+/* 
+ * Enhanced Light Mode specifically requested by user.
+ * Mapped to give a clean, modern Apple-like light appearance 
+ * while keeping the physical layout of the dark mode intact.
+ */
+.light {
+  --color-base: #F9FAFB;
+  --color-panel: #FFFFFF;
+  --color-surface: #F3F4F6;
+  --color-border: #E5E7EB;
+  --color-text: #111827;
+  --color-muted: #6B7280;
+  
+  /* Slightly darker accents to be readable on white */
+  --color-accent: #0077CC;
+  --color-accentHover: #005FA3;
+
+  --shadow-panel: 0 4px 24px -4px rgba(0, 0, 0, 0.08);
+  --shadow-box-inner-border: inset 0 0 0 1px rgba(0, 0, 0, 0.05);
+
+  color-scheme: light;
+}
+
+/* Custom Utilities directly exposed if needed */
+@utility box-inner-border {
+  box-shadow: var(--shadow-box-inner-border);
+}
+
+@utility dot-grid {
+  background-image: radial-gradient(var(--color-border) 1px, transparent 0);
+  background-size: 20px 20px;
+}
+
+/* Edge-flush radius utilities: keep top/left edges crisp when an element touches a panel/window edge */
+@utility edge-top-flat {
+  border-top-left-radius: 0;
+  border-top-right-radius: 0;
+}
+
+@utility edge-left-flat {
+  border-top-left-radius: 0;
+  border-bottom-left-radius: 0;
+}
+
+@utility edge-top-left-flat {
+  border-top-left-radius: 0;
+  border-top-right-radius: 0;
+  border-bottom-left-radius: 0;
+}
+
+:root {
+  color-scheme: dark;
+}
+
+html,
+body {
+  background-color: var(--color-base);
+  color: var(--color-text);
+  font-family: var(--font-sans);
+  font-feature-settings: 'cv11' 1, 'ss03' 1;
+  height: 100vh;
+  margin: 0;
+  overflow: hidden; /* Typical for Electron App */
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+#root {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+}
+
+button,
+select,
+a,
+[role="button"],
+label {
+  cursor: pointer;
+}
+
+input[type="text"],
+input[type="password"],
+input[type="number"],
+input[type="email"],
+textarea {
+  cursor: text;
+}
+
+/* Global Thin Scrollbar */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--color-border);
+  border-radius: 3px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--color-muted);
+}
+
+/* Animations */
+@keyframes toast-enter {
+  from {
+    opacity: 0;
+    transform: translate3d(16px, -8px, 0) scale(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: translate3d(0, 0, 0) scale(1);
+  }
+}
+
+.toast-enter {
+  animation: toast-enter 180ms cubic-bezier(0.22, 1, 0.36, 1);
+}

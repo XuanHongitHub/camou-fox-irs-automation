@@ -1,0 +1,4 @@
+email,full_name,password,bio,plan,accepted,pick_radio_2
+alice.demo1@example.test,Alice Demo 1,P@ssw0rd01,Demo row 1 via CSV,1,true,true
+bob.demo2@example.test,Bob Demo 2,P@ssw0rd02,Demo row 2 via CSV,2,false,true
+charlie.demo3@example.test,Charlie Demo 3,P@ssw0rd03,Demo row 3 via CSV,3,true,false

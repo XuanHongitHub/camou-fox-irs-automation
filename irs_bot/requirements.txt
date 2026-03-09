@@ -1,0 +1,6 @@
+camoufox
+requests
+PySocks
+PyYAML
+pandas
+openpyxl

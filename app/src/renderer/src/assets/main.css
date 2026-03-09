@@ -1,0 +1,194 @@
+@import "tailwindcss";
+
+@font-face {
+  font-family: 'InterVariable';
+  font-style: normal;
+  font-weight: 100 900;
+  font-display: swap;
+  src: url('./fonts/InterVariable.woff2') format('woff2');
+}
+
+@font-face {
+  font-family: 'InterVariable';
+  font-style: italic;
+  font-weight: 100 900;
+  font-display: swap;
+  src: url('./fonts/InterVariable-Italic.woff2') format('woff2');
+}
+
+@theme {
+  --color-base: #111111;
+  --color-panel: #1A1A1A;
+  --color-surface: #222222;
+  --color-border: #2A2A2A;
+  --color-text: #EEEEEE;
+  --color-muted: #888888;
+  --color-accent: #0099FF;
+  --color-accentHover: #33ADFF;
+  --color-danger: #FF3366;
+  --color-success: #00CC66;
+  --color-warning: #FFCC00;
+
+  --font-sans: 'InterVariable', 'Inter', system-ui, sans-serif;
+  --font-mono: 'JetBrains Mono', ui-monospace, monospace;
+
+  --shadow-panel: 0 4px 24px -4px rgba(0, 0, 0, 0.5);
+  --shadow-box-inner-border: inset 0 0 0 1px rgba(255, 255, 255, 0.05);
+}
+
+.light {
+  --color-base: #f8fafc;
+  --color-panel: #ffffff;
+  --color-surface: #f1f5f9;
+  --color-border: #cbd5e1;
+  --color-text: #0f172a;
+  --color-muted: #334155;
+  color-scheme: light;
+}
+
+/* Custom Utilities directly exposed if needed */
+@utility box-inner-border {
+  box-shadow: var(--shadow-box-inner-border);
+}
+
+@utility dot-grid {
+  background-image: radial-gradient(var(--color-border) 1px, transparent 0);
+  background-size: 20px 20px;
+}
+
+/* Edge-flush radius utilities: keep top/left edges crisp when an element touches a panel/window edge */
+@utility edge-top-flat {
+  border-top-left-radius: 0;
+  border-top-right-radius: 0;
+}
+
+@utility edge-left-flat {
+  border-top-left-radius: 0;
+  border-bottom-left-radius: 0;
+}
+
+@utility edge-top-left-flat {
+  border-top-left-radius: 0;
+  border-top-right-radius: 0;
+  border-bottom-left-radius: 0;
+}
+
+:root {
+  color-scheme: dark;
+}
+
+html,
+body {
+  background-color: var(--color-base);
+  color: var(--color-text);
+  font-family: var(--font-sans);
+  font-feature-settings: 'cv11' 1, 'ss03' 1;
+  height: 100vh;
+  margin: 0;
+  overflow: hidden;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+#root {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+}
+
+button,
+select,
+a,
+[role="button"],
+label {
+  cursor: pointer;
+}
+
+input[type="text"],
+input[type="password"],
+input[type="number"],
+input[type="email"],
+textarea {
+  cursor: text;
+}
+
+/* Global Thin Scrollbar */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--color-border);
+  border-radius: 3px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--color-muted);
+}
+
+@keyframes toast-enter {
+  from {
+    opacity: 0;
+    transform: translate3d(16px, -8px, 0) scale(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: translate3d(0, 0, 0) scale(1);
+  }
+}
+
+.toast-enter {
+  animation: toast-enter 180ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.builder-controls {
+  border: 1px solid var(--color-border);
+  background: color-mix(in srgb, var(--color-panel) 92%, transparent);
+  border-radius: 10px;
+  overflow: hidden;
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.35);
+}
+
+.builder-controls .react-flow__controls-button {
+  width: 30px;
+  height: 30px;
+  border-bottom: 1px solid var(--color-border);
+  background: transparent;
+  color: var(--color-text);
+}
+
+.builder-controls .react-flow__controls-button svg {
+  fill: currentColor;
+  stroke: currentColor;
+}
+
+.builder-controls .react-flow__controls-button:hover {
+  background: color-mix(in srgb, var(--color-accent) 16%, transparent);
+}
+
+.builder-controls .react-flow__controls-button:last-child {
+  border-bottom: 0;
+}
+
+.builder-minimap {
+  border: 1px solid var(--color-border) !important;
+  border-radius: 12px;
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.35);
+}
+
+.builder-minimap .react-flow__minimap-svg {
+  border-radius: 12px;
+}
+
+.builder-minimap .react-flow__minimap-mask {
+  fill: rgba(0, 0, 0, 0.16);
+}
+
+.react-flow__attribution {
+  display: none !important;
+}

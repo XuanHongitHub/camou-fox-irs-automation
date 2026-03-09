@@ -1,0 +1,51 @@
+name: App Windows Release
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-release:
+    runs-on: windows-latest
+    env:
+      GH_OWNER: ${{ github.repository_owner }}
+      GH_REPO: ${{ github.event.repository.name }}
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: app/package-lock.json
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install Python build deps
+        shell: pwsh
+        run: |
+          python -m pip install --upgrade pip
+          pip install pyinstaller requests
+
+      - name: Build Python worker exe
+        shell: pwsh
+        run: |
+          pyinstaller --clean --noconfirm irs_bot_server.spec
+          New-Item -ItemType Directory -Force -Path "irs_bot/dist" | Out-Null
+          Copy-Item "dist/irs_bot_server.exe" "irs_bot/dist/irs_bot_server.exe" -Force
+
+      - name: Install app deps
+        working-directory: app
+        run: npm ci
+
+      - name: Build and publish Electron app
+        working-directory: app
+        run: npm run build:win -- --publish always

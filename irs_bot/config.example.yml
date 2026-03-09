@@ -1,0 +1,98 @@
+target_url: "http://ein-sandbox.test/step/1"
+
+required_columns:
+  - NAME
+  - SSN
+  - ADDRESS
+  - CITI
+  - BANG
+  - ZIP
+  - Phone
+
+proxyxoay:
+  base_url: "https://id.proxyxoay.net"
+  tenant: "proxyxoay"
+  timezone: "7"
+  vm_type: "ROTATING_PROXY_4G"
+  type_search: "NORMAL"
+  auth:
+    login_endpoint: "/api/v1/auth/login"
+    username: "YOUR_PROXYXOAY_USERNAME"
+    password: "YOUR_PROXYXOAY_PASSWORD"
+    access_token: ""
+
+proxy_runtime:
+  host: "4gusa4.id.proxyxoay.net"
+  port: 8178
+  username: "YOUR_PROXY_RUNTIME_USERNAME"
+  password: "YOUR_PROXY_RUNTIME_PASSWORD"
+  rotate_url: ""
+  change_ip_wait_seconds: 15
+  healthcheck_url: "http://api.ipify.org?format=json"
+  skip_healthcheck: false
+
+queue:
+  queue_high: "ein.high"
+  queue_default: "ein.default"
+  queue_retry: "ein.retry"
+  queue_manual: "ein.manual"
+  queue_start_hour: 18
+  watch_poll_seconds: 7
+  file_stable_seconds: 3
+
+retry:
+  max_retries_per_record: 2
+  base_backoff_seconds: 5
+  max_attempt_seconds: 240
+
+submit_guard:
+  two_step_confirm: false
+  require_tty: false
+
+capture:
+  checkpoints:
+    - loaded
+    - filled
+    - review
+    - submitted
+
+output:
+  artifacts_dir: "artifacts"
+  state_dir: "state"
+  output_csv: "outputs/results.csv"
+  keep_debug_artifacts: false
+
+browser:
+  headless: true
+  force_background_headless: true
+  timeout_ms: 30000
+  step_delay_ms: 180
+  step_delay_jitter_ms: 120
+  manual_window_width: 1600
+  manual_window_height: 960
+  manual_autosave_seconds: 1.0
+  block_keywords:
+    - "captcha"
+    - "verify you are human"
+    - "blocked"
+
+selectors:
+  legal_structure: "select[name='legalStructure']"
+  next_button: "button[type='submit']"
+  submit_button: "button[type='submit']"
+  confirmation_number: "#confirmation-number"
+
+workflow:
+  - name: open_legal_structure
+    action: goto
+    value: "https://sa.www4.irs.gov/applyein/legalStructure"
+  - name: wait_structure
+    action: wait_for_selector
+    field: legal_structure
+  - name: fill_structure
+    action: select_option
+    field: legal_structure
+  - name: filled
+    action: screenshot
+  - name: review
+    action: screenshot
