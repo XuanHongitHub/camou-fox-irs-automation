@@ -617,8 +617,12 @@ async function startPythonBackend() {
             const eventType: string = payload.event
             if (eventType === 'job_complete') {
               void (async () => {
-                await autoPushConfirmedPdfToDrive(payload)
-                await autoPushBatchReportOnConfirm(String(payload?.batch_id || ''))
+                try {
+                  await autoPushConfirmedPdfToDrive(payload)
+                  await autoPushBatchReportOnConfirm(String(payload?.batch_id || ''))
+                } catch (driveErr) {
+                  console.warn('[DriveAutoPush] error on job_complete:', driveErr)
+                }
               })()
             }
             if (eventType === 'system_stop_requested') {
