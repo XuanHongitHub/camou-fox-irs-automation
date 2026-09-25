@@ -3,10 +3,31 @@
 
 from PyInstaller.utils.hooks import collect_data_files
 
+packages_to_collect = [
+    'camoufox',
+    'browserforge',
+    'apify_fingerprint_datapoints',
+    'language_tags',
+    'ua_parser',
+    'screeninfo',
+    'geoip2',
+    'maxminddb',
+    'playwright',
+    'certifi',
+    'tzdata',
+    'urllib3',
+    'idna',
+    'charset_normalizer',
+    'lxml',
+    'pandas',
+]
+
 datas = []
-datas += collect_data_files('camoufox')
-datas += collect_data_files('browserforge')
-datas += collect_data_files('apify_fingerprint_datapoints')
+for pkg in packages_to_collect:
+    try:
+        datas += collect_data_files(pkg)
+    except Exception:
+        pass
 
 a = Analysis(
     ['entry_server.py'],

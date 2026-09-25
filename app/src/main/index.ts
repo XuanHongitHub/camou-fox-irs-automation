@@ -193,7 +193,7 @@ async function ensureDevPythonReady() {
   if (ensureDevPythonReadyPromise) return ensureDevPythonReadyPromise
   ensureDevPythonReadyPromise = (async () => {
     const root = foxAutoRootPath()
-    const launch = pythonDevLaunch(['-c', 'import yaml, pandas, openpyxl, requests, camoufox, socks'])
+    const launch = pythonDevLaunch(['-c', 'import yaml, pandas, openpyxl, requests, camoufox, socks, geoip2, browserforge, apify_fingerprint_datapoints'])
     const probe = await spawnAndCollect(launch.cmd, launch.args, root, { ...process.env, PYTHONPATH: root })
     if (probe.code !== 0) {
       const install = pythonDevLaunch(['-m', 'pip', 'install', '-r', join(root, 'irs_bot', 'requirements.txt')])

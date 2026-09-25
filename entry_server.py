@@ -18,6 +18,12 @@ _root = os.path.dirname(os.path.abspath(__file__))
 if _root not in sys.path:
     sys.path.insert(0, _root)
 
+try:
+    import camoufox.locale
+    camoufox.locale.geoip_allowed = lambda: None
+except Exception:
+    pass
+
 from irs_bot.cli import main
 
 if __name__ == '__main__':

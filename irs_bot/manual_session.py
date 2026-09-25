@@ -14,6 +14,12 @@ from .runner import _goto_with_retry, check_proxy_health, pick_proxy_vm, resolve
 
 logger = logging.getLogger(__name__)
 
+try:
+    import camoufox.locale
+    camoufox.locale.geoip_allowed = lambda: None
+except Exception:
+    pass
+
 
 class ManualSessionError(RuntimeError):
     pass

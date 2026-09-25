@@ -1,4 +1,6 @@
-camoufox
+camoufox[geoip]
+browserforge
+apify_fingerprint_datapoints
 requests
 PySocks
 PyYAML
