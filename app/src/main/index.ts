@@ -7,7 +7,7 @@ import { spawn, ChildProcess } from 'child_process'
 import net from 'net'
 import tls from 'tls'
 import { createSign } from 'crypto'
-import { mkdirSync, existsSync, readFileSync, writeFileSync } from 'fs'
+import { mkdirSync, existsSync, readFileSync, writeFileSync, unlinkSync } from 'fs'
 import { promises as fs } from 'fs'
 import * as XLSX from 'xlsx-js-style'
 
@@ -581,6 +581,20 @@ async function startPythonBackend() {
         cwd: process.resourcesPath
       })
     }
+
+    try {
+      const candidates = [
+        join(storageRootDir(), 'state', 'worker_start.signal'),
+        join(foxAutoRootPath(), 'state', 'worker_start.signal'),
+      ]
+      for (const sig of candidates) {
+        if (existsSync(sig)) unlinkSync(sig)
+      }
+    } catch {}
+
+    BrowserWindow.getAllWindows().forEach((win) => {
+      win.webContents.send('py:worker_started', { mode: pythonProcessMode, workers: workerCount })
+    })
 
     const EVENT_PREFIX = 'EVENT::'
 
@@ -4016,6 +4030,24 @@ app.whenReady().then(async () => {
   setupAutoUpdater()
 
   createWindow()
+
+  setInterval(() => {
+    try {
+      const candidates = [
+        join(storageRootDir(), 'state', 'worker_start.signal'),
+        join(foxAutoRootPath(), 'state', 'worker_start.signal'),
+      ]
+      for (const sig of candidates) {
+        if (existsSync(sig)) {
+          try { unlinkSync(sig) } catch {}
+          if (!pythonProcess || pythonProcess.exitCode !== null) {
+            console.log(`[Signal] Detected worker_start.signal at ${sig}. Starting worker backend...`)
+            startPythonBackend().catch((err) => console.error('[Signal] Failed starting worker:', err))
+          }
+        }
+      }
+    } catch {}
+  }, 1000)
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow()

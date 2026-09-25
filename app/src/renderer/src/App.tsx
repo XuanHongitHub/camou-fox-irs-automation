@@ -1326,6 +1326,13 @@ function AppContent({
     }
     ipc.on('bundle-upload-progress', onBundleUploadProgress)
 
+    const onWorkerStarted = () => {
+      setWorkerRunning(true)
+      setWorkerStarting(false)
+      setWorkerStopping(false)
+    }
+    ipc.on('py:worker_started', onWorkerStarted)
+
     ipc.invoke('irs:worker:status').then((res: any) => {
       if (res?.ok) {
         setWorkerRunning(Boolean(res.running))
@@ -1342,6 +1349,7 @@ function AppContent({
       ipc.removeListener('py:step_update', onStepUpdate)
       ipc.removeListener('py:job_complete', onJobComplete)
       ipc.removeListener('py:worker-stopped', onWorkerStopped)
+      ipc.removeListener('py:worker_started', onWorkerStarted)
       ipc.removeListener('py:system_stop_requested', onSystemStopRequested)
       ipc.removeListener('bundle-upload-progress', onBundleUploadProgress)
     }
