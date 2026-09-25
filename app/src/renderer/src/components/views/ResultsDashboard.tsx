@@ -296,6 +296,17 @@ export function ResultsDashboard({
         setHideDriveUploaded(val)
         try { localStorage.setItem('fox_hide_drive_uploaded', String(val)) } catch {}
     }
+    const [timePreset, setTimePreset] = useState<'tonight' | 'today' | 'all'>('tonight')
+    const tonightStartMs = useMemo(() => {
+        const d = new Date()
+        d.setHours(18, 0, 0, 0)
+        return d.getTime()
+    }, [])
+    const todayStartMs = useMemo(() => {
+        const d = new Date()
+        d.setHours(0, 0, 0, 0)
+        return d.getTime()
+    }, [])
     const [statusFilter, setStatusFilter] = useState<'all' | 'done' | 'failed'>('all')
     const [batchFilter, setBatchFilter] = useState<string>('all')
     const [errorFilter, setErrorFilter] = useState<string>('all')
@@ -309,18 +320,37 @@ export function ResultsDashboard({
     const batches = useMemo(() => ['all', ...new Set(results.map(r => r.batch_id ?? '').filter(Boolean))], [results])
 
     const viewCounts = useMemo(() => {
-        const notHidden = results.filter(r => !r.is_hidden)
+        const checkTime = (r: ResultRow) => {
+            if (timePreset === 'all') return true
+            if (!r.completed_at) return false
+            const t = new Date(r.completed_at).getTime()
+            if (!Number.isFinite(t)) return false
+            if (timePreset === 'tonight') return t >= tonightStartMs
+            if (timePreset === 'today') return t >= todayStartMs
+            return true
+        }
+        const scopedResults = results.filter(checkTime)
+        const notHidden = scopedResults.filter(r => !r.is_hidden)
         return {
             all: notHidden.length,
             unuploaded: notHidden.filter(r => !r.uploaded_to_drive).length,
             uploaded: notHidden.filter(r => r.uploaded_to_drive).length,
-            hidden: results.filter(r => r.is_hidden).length,
+            hidden: scopedResults.filter(r => r.is_hidden).length,
         }
-    }, [results])
+    }, [results, timePreset, tonightStartMs, todayStartMs])
 
     const filtered = useMemo(() => {
         const q = search.toLowerCase()
         return results.filter(r => {
+            if (timePreset === 'tonight') {
+                if (!r.completed_at) return false
+                const t = new Date(r.completed_at).getTime()
+                if (!Number.isFinite(t) || t < tonightStartMs) return false
+            } else if (timePreset === 'today') {
+                if (!r.completed_at) return false
+                const t = new Date(r.completed_at).getTime()
+                if (!Number.isFinite(t) || t < todayStartMs) return false
+            }
             if (viewTab === 'hidden') {
                 if (!r.is_hidden) return false
             } else {
@@ -462,7 +492,12 @@ export function ResultsDashboard({
         <div className="flex flex-col h-full min-h-0 bg-base/5">
             <div className="flex items-center gap-8 px-5 py-3 border-b border-border bg-base/20 shrink-0 select-none">
                 <div className="flex flex-col">
-                    <span className="text-[10px] text-muted uppercase tracking-widest font-medium">{locale === 'en' ? 'Outcomes' : 'Kết quả'}</span>
+                    <div className="flex items-center gap-2">
+                        <span className="text-[10px] text-muted uppercase tracking-widest font-medium">{locale === 'en' ? 'Outcomes' : 'Kết quả'}</span>
+                        <span className="px-1.5 py-0.5 rounded text-[10px] font-bold bg-indigo-500/20 text-indigo-300 border border-indigo-500/30">
+                            {timePreset === 'tonight' ? (locale === 'en' ? 'Tonight (≥ 18:00)' : 'Tối nay (≥ 18:00)') : timePreset === 'today' ? (locale === 'en' ? 'Today' : 'Hôm nay') : (locale === 'en' ? 'All Time' : 'Toàn thời gian')}
+                        </span>
+                    </div>
                     <div className="flex items-center gap-4 mt-0.5">
                         <div className="flex items-baseline gap-1.5">
                             <span className="text-xl font-bold text-text tabular-nums">{stats.total}</span>
@@ -487,12 +522,12 @@ export function ResultsDashboard({
                         </div>
                     </div>
                 </div>
-                <div className="flex flex-col ml-10">
+                <div className="flex flex-col ml-8">
                     <span className="text-[10px] text-muted uppercase tracking-widest font-medium">{locale === 'en' ? 'Performance' : 'Hiệu suất'}</span>
                     <div className="flex items-center gap-4 mt-1">
                         <div className="flex items-center gap-2">
-                            <BarChart3 className="w-3.5 h-3.5 text-muted" />
-                            <span className="text-xs font-semibold tabular-nums text-text/80">{stats.total ? Math.round(stats.done / stats.total * 100) : 0}%</span>
+                            <BarChart3 className="w-3.5 h-3.5 text-accent" />
+                            <span className="text-sm font-bold tabular-nums text-text">{stats.total ? Math.round(stats.done / stats.total * 100) : 0}%</span>
                             <span className="text-[10px] text-muted uppercase">{locale === 'en' ? 'Success Rate' : 'Tỷ lệ thành công'}</span>
                         </div>
                         <div className="flex items-center gap-2">
@@ -502,9 +537,21 @@ export function ResultsDashboard({
                         </div>
                     </div>
                 </div>
-                <div className="ml-auto flex items-center gap-3">
-                    <Button variant="ghost" size="xs" className="gap-1.5 text-muted hover:text-text" onClick={() => download(filtered, 'filtered')}>
-                        <Download className="w-3.5 h-3.5" />{locale === 'en' ? 'Export' : 'Xuất'}
+                <div className="ml-auto flex items-center gap-2">
+                    {onQuickExportSelected && (
+                        <Button
+                            variant="secondary"
+                            size="xs"
+                            className="gap-1.5 bg-emerald-600/20 text-emerald-300 border border-emerald-500/40 hover:bg-emerald-600/30 shadow-xs"
+                            title={locale === 'en' ? 'Export filtered results to styled Excel (.xlsx)' : 'Xuất kết quả danh sách đang lọc ra file Excel (.xlsx)'}
+                            onClick={() => onQuickExportSelected(filtered, 'report')}
+                        >
+                            <Download className="w-3.5 h-3.5" />
+                            {timePreset === 'tonight' ? (locale === 'en' ? 'Export Tonight (Excel)' : 'Xuất Excel tối nay') : (locale === 'en' ? 'Export Excel' : 'Xuất Excel')}
+                        </Button>
+                    )}
+                    <Button variant="ghost" size="xs" className="gap-1.5 text-muted hover:text-text" onClick={() => download(filtered, timePreset === 'tonight' ? 'tonight' : 'filtered')}>
+                        <Download className="w-3.5 h-3.5" />CSV
                     </Button>
                     {selectedRows.length > 0 && (
                         <>
@@ -627,9 +674,33 @@ export function ResultsDashboard({
                     ))}
                 </div>
                 <div className="w-px h-5 bg-border mx-1" />
+                <div className="flex items-center gap-1 bg-surface border border-border rounded-xl p-0.5 shrink-0">
+                    <button
+                        onClick={() => { setTimePreset('tonight'); setDateFrom(''); setDateTo('') }}
+                        className={`h-7 px-2.5 text-[10px] font-semibold rounded-lg transition-all ${timePreset === 'tonight' ? 'bg-indigo-600 text-white shadow-xs' : 'text-muted hover:text-text'}`}
+                        title="Chỉ hiển thị các lượt chạy tối nay (từ 18:00)"
+                    >
+                        🌙 {locale === 'en' ? 'Tonight' : 'Tối nay'}
+                    </button>
+                    <button
+                        onClick={() => { setTimePreset('today'); setDateFrom(''); setDateTo('') }}
+                        className={`h-7 px-2.5 text-[10px] font-semibold rounded-lg transition-all ${timePreset === 'today' ? 'bg-indigo-600 text-white shadow-xs' : 'text-muted hover:text-text'}`}
+                        title="Chỉ hiển thị các lượt chạy trong ngày hôm nay"
+                    >
+                        📅 {locale === 'en' ? 'Today' : 'Hôm nay'}
+                    </button>
+                    <button
+                        onClick={() => setTimePreset('all')}
+                        className={`h-7 px-2.5 text-[10px] font-semibold rounded-lg transition-all ${timePreset === 'all' ? 'bg-accent text-white shadow-xs' : 'text-muted hover:text-text'}`}
+                        title="Hiển thị toàn bộ lịch sử"
+                    >
+                        {locale === 'en' ? 'All Time' : 'Tất cả'}
+                    </button>
+                </div>
+                <div className="w-px h-5 bg-border mx-1" />
                 <div className="flex items-center gap-2 shrink-0">
                     <div className="flex items-center gap-1.5 text-[10px] font-medium text-muted mr-1">
-                        <Calendar className="w-3 h-3" /> {locale === 'en' ? 'Time:' : 'Thời gian:'}
+                        <Calendar className="w-3 h-3" /> {locale === 'en' ? 'Time:' : 'Tùy chỉnh:'}
                     </div>
                     <input
                         type="datetime-local"
