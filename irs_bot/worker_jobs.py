@@ -67,29 +67,14 @@ def is_irs_operational_hours() -> Tuple[bool, str]:
 
 def _is_offline_apply_error(step: str, message: str) -> bool:
     text = f"{step} {message}".lower()
-    is_open, _ = is_irs_operational_hours()
-    if is_open:
-        # IRS is currently open. Only true system outages count as offline!
-        return any(token in text for token in [
-            "operational hours",
-            "technical difficulties",
-            "service is unavailable",
-            "system is currently unavailable",
-            "system is down",
-            "temporarily unavailable due to maintenance",
-        ])
     return any(token in text for token in [
-        "form ss-4",
-        "form ss 4",
-        "must submit a form ss-4",
-        "submit a form ss-4",
-        "by fax or mail",
-        "fax or mail",
-        "submit form ss-4",
         "operational hours",
         "technical difficulties",
         "service is unavailable",
         "system is currently unavailable",
+        "system is down",
+        "temporarily unavailable due to maintenance",
+        "maintenance window",
     ])
 
 
@@ -921,12 +906,14 @@ def process_record_job(payload: Dict[str, Any]) -> Dict[str, Any]:
                 final_proxy_code = proxy_code
                 final_proxy_ip = ""
                 wait_note = f", waited {waited_for:.1f}s" if waited_for > 0 else ""
+                is_rotating = "rotating" in str(selected_proxy.get("username", "")).lower()
+                kind_str = "rotating proxy" if is_rotating else "proxy"
                 emit_event("step_update",
                     job_id=f"{batch_id}:{record_id}",
                     record_id=record_id,
                     step="proxy_rotate",
                     status="done",
-                    note=f"Using runtime proxy list item {proxy_host}:{proxy_port}{wait_note}",
+                    note=f"Using {kind_str} gateway {proxy_host}:{proxy_port}{wait_note}",
                     proxy_code=proxy_code,
                 )
                 jsonl_append(
@@ -1314,31 +1301,20 @@ def process_record_job(payload: Dict[str, Any]) -> Dict[str, Any]:
         )
         GLOBAL_WORKER_STOP_EVENT.set()
     elif is_daily_lim:
-        logger.warning("IRS daily limit hit: %s. Auto requeueing job %s.", final_error, queue_job_id)
-        db_status = "pending"
+        logger.warning("IRS daily limit hit: %s for job %s (record %s). Moving to manual_required.", final_error, queue_job_id, record_id)
+        db_status = "manual_required"
         try:
-            update_job_status_and_queue(config, queue_job_id, "pending", config.queue.queue_default)
+            update_job_status_and_queue(config, queue_job_id, "manual_required", config.queue.queue_manual)
         except Exception as exc:
-            logger.warning("Failed to requeue daily limit job: %s", exc)
-        with _CONSECUTIVE_DAILY_LIMIT_LOCK:
-            _CONSECUTIVE_DAILY_LIMIT_HITS += 1
-            hits = _CONSECUTIVE_DAILY_LIMIT_HITS
-        if hits >= MAX_CONSECUTIVE_DAILY_LIMITS:
-            logger.error("Consecutive daily limit reached %s times. Requesting system stop.", hits)
-            emit_event("system_stop_requested",
-                reason="consecutive_daily_limits",
-                message=f"Bị chạm giới hạn Daily Limit liên tục {hits} lần. Đã tự động requeue các hồ sơ và tạm dừng worker để bảo vệ IP."
-            )
-            GLOBAL_WORKER_STOP_EVENT.set()
-        else:
-            emit_event("step_update",
-                job_id=queue_job_id,
-                record_id=record_id,
-                step="requeued_daily_limit",
-                status="requeued",
-                note=f"Chạm Daily Limit ({hits}/{MAX_CONSECUTIVE_DAILY_LIMITS}). Tự động requeue vào hàng đợi.",
-                proxy_code=final_proxy_code,
-            )
+            logger.warning("Failed to move daily limit job to manual queue: %s", exc)
+        emit_event("step_update",
+            job_id=queue_job_id,
+            record_id=record_id,
+            step="irs_daily_limit",
+            status="manual_required",
+            note="Chạm giới hạn IRS Daily Limit (1 EIN/ngày cho mỗi SSN). Đã chuyển sang Chờ xử lý.",
+            proxy_code=final_proxy_code,
+        )
     else:
         db_status = {
             JobStatus.SUCCESS: "done",
