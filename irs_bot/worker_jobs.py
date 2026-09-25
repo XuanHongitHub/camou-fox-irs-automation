@@ -67,6 +67,17 @@ def is_irs_operational_hours() -> Tuple[bool, str]:
 
 def _is_offline_apply_error(step: str, message: str) -> bool:
     text = f"{step} {message}".lower()
+    is_open, _ = is_irs_operational_hours()
+    if is_open:
+        # IRS is currently open. Only true system outages count as offline!
+        return any(token in text for token in [
+            "operational hours",
+            "technical difficulties",
+            "service is unavailable",
+            "system is currently unavailable",
+            "system is down",
+            "temporarily unavailable due to maintenance",
+        ])
     return any(token in text for token in [
         "form ss-4",
         "form ss 4",
@@ -78,6 +89,7 @@ def _is_offline_apply_error(step: str, message: str) -> bool:
         "operational hours",
         "technical difficulties",
         "service is unavailable",
+        "system is currently unavailable",
     ])
 
 
