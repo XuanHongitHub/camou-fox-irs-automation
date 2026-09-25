@@ -599,9 +599,38 @@ def cmd_worker(args: argparse.Namespace) -> int:
         f"{stagger_seconds:g}",
         queues,
     )
-    from .worker_jobs import process_record_job, GLOBAL_WORKER_STOP_EVENT
+    from .worker_jobs import process_record_job, GLOBAL_WORKER_STOP_EVENT, emit_event
     stop_event = GLOBAL_WORKER_STOP_EVENT
     stop_event.clear()
+
+    stop_signal_file = Path(cfg.output.state_dir) / "worker_stop.signal"
+    try:
+        if stop_signal_file.exists():
+            stop_signal_file.unlink(missing_ok=True)
+    except Exception:
+        pass
+
+    def _is_stop_requested() -> bool:
+        if stop_event.is_set():
+            return True
+        if stop_signal_file.exists():
+            stop_event.set()
+            return True
+        return False
+
+    def _stdin_listener() -> None:
+        try:
+            for line in sys.stdin:
+                token = line.strip().lower()
+                if token in ("stop", "quit", "exit", "graceful_stop"):
+                    logger.info("Received stop command via stdin.")
+                    stop_event.set()
+                    break
+        except Exception:
+            pass
+
+    stdin_thread = threading.Thread(target=_stdin_listener, daemon=True, name="irs-stdin-listener")
+    stdin_thread.start()
 
     def _worker_loop(worker_idx: int) -> None:
         if stagger_seconds > 0 and worker_idx > 1:
@@ -609,6 +638,8 @@ def cmd_worker(args: argparse.Namespace) -> int:
             logger.info("[W%s] startup stagger sleeping %.1fs", worker_idx, startup_delay)
             deadline = time.time() + startup_delay
             while not stop_event.is_set():
+                if _is_stop_requested():
+                    return
                 remain = deadline - time.time()
                 if remain <= 0:
                     break
@@ -616,10 +647,17 @@ def cmd_worker(args: argparse.Namespace) -> int:
             if stop_event.is_set():
                 return
         while not stop_event.is_set():
+            if _is_stop_requested():
+                break
             try:
                 job = get_next_job(cfg, queues)
                 if job:
-                    if stop_event.is_set():
+                    if _is_stop_requested():
+                        try:
+                            from .queueing import update_job_status
+                            update_job_status(cfg, job["job_id"], "pending")
+                        except Exception:
+                            pass
                         break
                     logger.info("[W%s] Picked up job %s", worker_idx, job["job_id"])
                     try:
@@ -644,16 +682,33 @@ def cmd_worker(args: argparse.Namespace) -> int:
     for t in threads:
         t.start()
 
+    graceful_emitted = False
     try:
-        while any(t.is_alive() for t in threads) and not stop_event.is_set():
+        while any(t.is_alive() for t in threads):
+            if _is_stop_requested() and not graceful_emitted:
+                graceful_emitted = True
+                active_count = sum(1 for t in threads if t.is_alive())
+                logger.info("Graceful stop active: waiting for %s active worker thread(s) to finish...", active_count)
+                emit_event("worker_graceful_stopping",
+                    message=f"Đang chờ {active_count} luồng hoàn thành hồ sơ hiện tại trước khi dừng...",
+                    active_workers=active_count,
+                )
             time.sleep(0.5)
     except KeyboardInterrupt:
-        logger.info("Worker stop requested by user.")
+        logger.info("Worker stop requested by user (Ctrl+C).")
+        stop_event.set()
     finally:
         stop_event.set()
+        logger.info("Waiting for all running worker threads to finish their current job (up to 180s)...")
         for t in threads:
-            t.join(timeout=2.0)
-        logger.info("Worker stopped.")
+            t.join(timeout=180.0)
+        try:
+            if stop_signal_file.exists():
+                stop_signal_file.unlink(missing_ok=True)
+        except Exception:
+            pass
+        emit_event("worker_stopped_cleanly", message="Toàn bộ luồng đã hoàn tất an toàn.")
+        logger.info("All worker threads stopped cleanly.")
 
     return 0
 

@@ -669,7 +669,7 @@ async function startPythonBackend() {
   return startPythonBackendPromise
 }
 
-async function stopPythonBackend() {
+async function safeStopPythonBackend(timeoutMs = 180000) {
   workerShouldRun = false
   if (stopPythonBackendPromise) {
     return stopPythonBackendPromise
@@ -679,16 +679,70 @@ async function stopPythonBackend() {
     return
   }
   stopPythonBackendPromise = (async () => {
-    await killProcessTree(proc)
-    await waitForProcessClose(proc, 6000)
+    console.log('Safe stop requested: signaling Python backend to finish in-flight jobs...')
+    try {
+      const signalFile = join(storageRootDir(), 'state', 'worker_stop.signal')
+      await fs.writeFile(signalFile, `${Date.now()}`, 'utf-8')
+    } catch {}
+    try {
+      proc.stdin?.write('STOP\n')
+    } catch {}
+
+    BrowserWindow.getAllWindows().forEach((win) => {
+      win.webContents.send('py:worker_stopping', { graceful: true })
+    })
+
+    await waitForProcessClose(proc, timeoutMs)
+
+    if (proc.exitCode === null) {
+      console.warn(`Python backend did not exit within ${timeoutMs}ms; force killing...`)
+      await killProcessTree(proc)
+      await waitForProcessClose(proc, 4000)
+    }
+
     if (pythonProcess === proc) {
       pythonProcess = null
     }
     pythonProcessMode = null
+    try {
+      const signalFile = join(storageRootDir(), 'state', 'worker_stop.signal')
+      if (existsSync(signalFile)) await fs.unlink(signalFile)
+    } catch {}
   })().finally(() => {
     stopPythonBackendPromise = null
   })
   return stopPythonBackendPromise
+}
+
+async function forceStopPythonBackend() {
+  workerShouldRun = false
+  const proc = pythonProcess
+  if (!proc || proc.exitCode !== null) {
+    return
+  }
+  console.log('Force stopping Python backend immediately...')
+  await killProcessTree(proc)
+  await waitForProcessClose(proc, 4000)
+  if (pythonProcess === proc) {
+    pythonProcess = null
+  }
+  pythonProcessMode = null
+  try {
+    if (process.platform === 'win32') {
+      spawn('taskkill', ['/IM', 'camoufox.exe', '/F'], { windowsHide: true })
+    }
+  } catch {}
+  try {
+    const signalFile = join(storageRootDir(), 'state', 'worker_stop.signal')
+    if (existsSync(signalFile)) await fs.unlink(signalFile)
+  } catch {}
+  try {
+    await runPythonCli(['queue', 'recover-running', '--stale-seconds', '0'])
+  } catch {}
+}
+
+async function stopPythonBackend() {
+  return safeStopPythonBackend()
 }
 
 function runPythonCli(args: string[]): Promise<{ code: number; stdout: string; stderr: string }> {
@@ -2832,8 +2886,33 @@ function createWindow(): BrowserWindow {
 
   mainWindow.on('ready-to-show', () => mainWindow.show())
   mainWindow.on('resize', () => saveWindowState(mainWindow))
-  mainWindow.on('move', () => saveWindowState(mainWindow))
-  mainWindow.on('close', () => saveWindowState(mainWindow))
+  let isClosingWindow = false
+  mainWindow.on('close', async (e) => {
+    saveWindowState(mainWindow)
+    if (isClosingWindow) return
+    if (pythonProcess && pythonProcess.exitCode === null) {
+      e.preventDefault()
+      const { response } = await dialog.showMessageBox(mainWindow, {
+        type: 'question',
+        buttons: ['Đợi hoàn thành rồi đóng', 'Đóng ngay lập tức', 'Hủy (ở lại app)'],
+        defaultId: 0,
+        cancelId: 2,
+        title: 'Xác nhận đóng ứng dụng',
+        message: 'Đang có hồ sơ IRS được xử lý!',
+        detail: 'Nếu đóng ngay lập tức, các hồ sơ đang xử lý dở sẽ bị hủy. Bạn có muốn đợi các luồng hoàn thành hồ sơ hiện tại rồi đóng an toàn không?'
+      })
+      if (response === 0) {
+        isClosingWindow = true
+        mainWindow.webContents.send('py:worker_stopping', { graceful: true })
+        await safeStopPythonBackend()
+        mainWindow.destroy()
+      } else if (response === 1) {
+        isClosingWindow = true
+        await forceStopPythonBackend()
+        mainWindow.destroy()
+      }
+    }
+  })
   mainWindow.webContents.setWindowOpenHandler((details) => {
     shell.openExternal(details.url)
     return { action: 'deny' }
@@ -2923,26 +3002,18 @@ app.whenReady().then(async () => {
       return { ok: false, error: String(err) }
     }
   })
-  ipcMain.handle('irs:worker:stop', async () => {
-    await stopPythonBackend()
+  ipcMain.handle('irs:worker:stop', async (_event, payload) => {
+    const force = Boolean(payload?.force)
     try {
-      if (process.platform === 'win32') {
-        const killBrowser = spawn('taskkill', ['/IM', 'camoufox.exe', '/F'], { windowsHide: true })
-        await new Promise<void>((resolve) => {
-          killBrowser.on('close', () => resolve())
-          killBrowser.on('error', () => resolve())
-          setTimeout(resolve, 1000)
-        })
+      if (force) {
+        await forceStopPythonBackend()
+      } else {
+        await safeStopPythonBackend()
       }
-    } catch {
-      // ignore
-    }
-    try {
-      await runPythonCli(['queue', 'recover-running', '--stale-seconds', '0'])
+      return { ok: true, forced: force }
     } catch (err) {
-      console.warn(`Failed to recover running queue rows on stop: ${String(err)}`)
+      return { ok: false, error: String(err) }
     }
-    return { ok: true }
   })
   ipcMain.handle('irs:apply-runtime-config', async (_event, payload) => {
     try {

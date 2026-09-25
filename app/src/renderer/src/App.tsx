@@ -490,6 +490,7 @@ function AppContent({
   const [workspacePage, setWorkspacePage] = useState<WorkspacePage>('work')
   const [workerRunning, setWorkerRunning] = useState(false)
   const [workerStarting, setWorkerStarting] = useState(false)
+  const [workerStopping, setWorkerStopping] = useState(false)
   const [workerCount, setWorkerCount] = useState(3)
   const [jobs, setJobs] = useState<Job[]>(() => {
     const raw = localStorage.getItem(JOBS_STORAGE_KEY)
@@ -1242,10 +1243,22 @@ function AppContent({
     const onWorkerStopped = () => {
       setWorkerRunning(false)
       setWorkerStarting(false)
-      showMessage('Worker đã dừng', 'info')
+      setWorkerStopping(false)
+      showMessage('Worker đã dừng an toàn', 'info')
       refreshQueueFromDb()
+      loadResultsFromDisk()
     }
     ipc.on('py:worker-stopped', onWorkerStopped)
+    ipc.on('py:worker_exit', onWorkerStopped)
+    ipc.on('py:worker_stopped_cleanly', onWorkerStopped)
+
+    const onWorkerStopping = (_e: unknown, payload: any) => {
+      setWorkerStopping(true)
+      const msg = String(payload?.message || 'Đang chờ các luồng hiện tại hoàn thành trước khi dừng an toàn...')
+      showMessage(msg, 'info')
+    }
+    ipc.on('py:worker_stopping', onWorkerStopping)
+    ipc.on('py:worker_graceful_stopping', onWorkerStopping)
 
     const onSystemStopRequested = (_e: unknown, payload: any) => {
       setWorkerRunning(false)
@@ -1866,18 +1879,33 @@ function AppContent({
                   {[1, 2, 3, 4, 5, 6, 7, 8].map(n => <option key={n} value={n}>{n}×</option>)}
                 </select>
               </div>
-              <Button variant={workerRunning ? 'danger' : (!canRun ? 'secondary' : 'primary')} disabled={workerStarting} className="relative z-20 h-7 shrink-0 text-[11px] gap-1.5 px-3 pointer-events-auto"
+              <Button
+                variant={workerStopping ? 'secondary' : (workerRunning ? 'danger' : (!canRun ? 'secondary' : 'primary'))}
+                disabled={workerStarting}
+                className={`relative z-20 h-7 shrink-0 text-[11px] gap-1.5 px-3 pointer-events-auto ${workerStopping ? 'border-amber-500/50 bg-amber-500/20 text-amber-300 hover:bg-amber-500/30 animate-pulse' : ''}`}
+                title={workerStopping ? 'Đang dừng an toàn... Bấm để buộc dừng ngay lập tức' : (workerRunning ? 'Bấm để dừng an toàn sau khi hoàn thành hồ sơ đang chạy' : 'Bắt đầu worker')}
                 onClick={async () => {
                   const ipc = window.electron?.ipcRenderer
                   if (!ipc || workerStarting) return
                   try {
-                    if (workerRunning) {
-                      await ipc.invoke('irs:worker:stop')
+                    if (workerStopping) {
+                      await ipc.invoke('irs:worker:stop', { force: true })
                       setWorkerRunning(false)
-                      setWorkerStarting(false)
+                      setWorkerStopping(false)
                       setRunArmed(false)
                       await refreshQueueFromDb()
-                      showMessage('Worker đã dừng')
+                      await loadResultsFromDisk()
+                      showMessage('Đã buộc dừng toàn bộ tiến trình ngay lập tức', 'warning')
+                    } else if (workerRunning) {
+                      setWorkerStopping(true)
+                      showMessage('Đang dừng an toàn: Hệ thống sẽ không nhận thêm hồ sơ mới và đợi các luồng hiện tại hoàn thành.', 'info')
+                      await ipc.invoke('irs:worker:stop', { force: false })
+                      setWorkerRunning(false)
+                      setWorkerStopping(false)
+                      setRunArmed(false)
+                      await refreshQueueFromDb()
+                      await loadResultsFromDisk()
+                      showMessage('Toàn bộ luồng đã hoàn tất an toàn và dừng hẳn', 'success')
                     } else if (!canRun) {
                       setRunArmed((prev) => {
                         const next = !prev
@@ -1913,13 +1941,16 @@ function AppContent({
                     }
                   } catch (err) {
                     setWorkerStarting(false)
+                    setWorkerStopping(false)
                     showMessage(`Worker action lỗi: ${String(err)}`, 'error')
                   }
                 }}>
                 {workerStarting
                   ? <><Loader2 className="w-3 h-3 animate-spin" />Starting</>
+                  : workerStopping
+                  ? <><Square className="w-3 h-3 animate-pulse text-amber-300" />Dừng an toàn... (Force?)</>
                   : workerRunning
-                  ? <><Square className="w-3 h-3" />Stop</>
+                  ? <><Square className="w-3 h-3" />Safe Stop</>
                   : !canRun
                     ? (runArmed
                       ? <><CheckCircle2 className="w-3 h-3" />Armed {runWindowLabel}</>
