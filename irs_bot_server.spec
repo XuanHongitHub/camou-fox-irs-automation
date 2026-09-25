@@ -19,7 +19,6 @@ packages_to_collect = [
     'idna',
     'charset_normalizer',
     'lxml',
-    'pandas',
 ]
 
 datas = []
@@ -62,7 +61,13 @@ a = Analysis(
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
-    excludes=[],
+    excludes=[
+        'torch', 'torchvision', 'torchaudio',
+        'scipy', 'matplotlib', 'Cython', 'sympy',
+        'IPython', 'notebook', 'pytest', 'tkinter',
+        'onnxruntime', 'tensorflow', 'tensorboard',
+        'numba', 'llvmlite',
+    ],
     noarchive=False,
     optimize=0,
 )

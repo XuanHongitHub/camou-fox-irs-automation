@@ -20,12 +20,6 @@ from .proxyxoay_client import ProxyVm, ProxyXoayClient, ProxyXoayHttpError
 
 logger = logging.getLogger(__name__)
 
-try:
-    import camoufox.locale
-    camoufox.locale.geoip_allowed = lambda: None
-except Exception:
-    pass
-
 
 class RunnerError(RuntimeError):
     pass
@@ -658,11 +652,12 @@ def _fail_fast_after_continue(page: Any, artifact_dir: Path, tag: str) -> str:
 def _set_checked_if_present(page: Any, selector: str, timeout_ms: int) -> bool:
     """Best-effort radio/checkbox set. Returns False when selector is absent."""
     try:
-        page.wait_for_selector(selector, timeout=min(timeout_ms, 2500))
+        if page.locator(selector).first.is_visible(timeout=min(timeout_ms, 400)):
+            _set_checked(page, selector, timeout_ms)
+            return True
+        return False
     except Exception:
         return False
-    _set_checked(page, selector, timeout_ms)
-    return True
 
 
 def _human_fill_if_present(
@@ -674,10 +669,12 @@ def _human_fill_if_present(
 ) -> bool:
     """Best-effort text fill. Returns False when selector is absent."""
     try:
-        page.wait_for_selector(selector, state="visible", timeout=min(timeout_ms, 2500))
+        if page.locator(selector).first.is_visible(timeout=min(timeout_ms, 400)):
+            _human_fill(page, selector, value, config, timeout_ms)
+            return True
+        return False
     except Exception:
         return False
-    _human_fill(page, selector, value, config, timeout_ms)
     return True
 
 
@@ -791,15 +788,50 @@ def _wait_irs_any_selector_or_hard_fail(
     timeout_ms: int,
     step_name: str,
 ) -> str:
-    last_exc: Exception | None = None
-    for selector in selectors:
-        try:
-            return _wait_irs_selector_or_hard_fail(page, selector, timeout_ms, step_name)
-        except Exception as exc:
-            last_exc = exc
-    if last_exc:
-        raise last_exc
-    raise RunnerError(f"Missing selectors for step {step_name}")
+    deadline = time.monotonic() + max(0.5, timeout_ms / 1000.0)
+    while time.monotonic() < deadline:
+        hard_fail = _irs_hard_fail_message(page)
+        if hard_fail:
+            return hard_fail
+        for selector in selectors:
+            try:
+                if page.locator(selector).first.is_visible(timeout=100):
+                    return ""
+            except Exception:
+                pass
+        page.wait_for_timeout(150)
+
+    hard_fail = _irs_hard_fail_message(page)
+    if hard_fail:
+        return hard_fail
+
+    logger.warning(
+        "Step %s: none of selectors %s ready; reloading page once before retry",
+        step_name,
+        selectors,
+    )
+    try:
+        page.reload(timeout=timeout_ms, wait_until="domcontentloaded")
+    except Exception:
+        pass
+
+    reload_deadline = time.monotonic() + max(0.5, timeout_ms / 1000.0)
+    while time.monotonic() < reload_deadline:
+        hard_fail = _irs_hard_fail_message(page)
+        if hard_fail:
+            return hard_fail
+        for selector in selectors:
+            try:
+                if page.locator(selector).first.is_visible(timeout=100):
+                    return ""
+            except Exception:
+                pass
+        page.wait_for_timeout(150)
+
+    hard_fail = _irs_hard_fail_message(page)
+    if hard_fail:
+        return hard_fail
+    raise RunnerError(f"Step {step_name}: none of selectors {selectors} became visible")
 
 
 def _is_irs_entry_bootstrap_target(url: str) -> bool:
@@ -1776,6 +1808,12 @@ def run_single_attempt(
             ok, health = check_proxy_health(proxy_endpoint, config.proxy_runtime.healthcheck_url)
         if not ok:
             return JobStatus.RETRYABLE_FAIL, "proxy_healthcheck", f"Proxy healthcheck failed: {health}", "", {}
+
+    try:
+        import camoufox.locale
+        camoufox.locale.geoip_allowed = lambda: None
+    except Exception:
+        pass
 
     try:
         from camoufox.sync_api import Camoufox

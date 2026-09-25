@@ -561,7 +561,8 @@ async function startPythonBackend() {
       } else {
         const exePath = cliBinaryPath()
         pythonProcess = spawn(exePath, ['--config', runtimeConfigPath(), 'manual'], {
-          cwd: process.resourcesPath
+          cwd: process.resourcesPath,
+          env: { ...process.env, PYTHONUNBUFFERED: '1' }
         })
       }
     } else if (is.dev) {
@@ -578,7 +579,8 @@ async function startPythonBackend() {
       // In production: run the bundled PyInstaller exe.
       const exePath = cliBinaryPath()
       pythonProcess = spawn(exePath, ['--config', runtimeConfigPath(), 'worker', '--queues', 'ein.high,ein.default,ein.retry,ein.observe,ein.sandbox', '--workers', String(workerCount)], {
-        cwd: process.resourcesPath
+        cwd: process.resourcesPath,
+        env: { ...process.env, PYTHONUNBUFFERED: '1' }
       })
     }
 
@@ -1435,21 +1437,22 @@ async function googleDriveUploadFile(input: {
   mimeType: string
   replaceExisting?: boolean
 }) {
+  const existingId = input.replaceExisting
+    ? await googleDriveFindFileIdByName(input.token, input.folderId, input.remoteName)
+    : ''
+  const metadataObj: Record<string, unknown> = { name: input.remoteName }
+  if (!existingId) {
+    metadataObj.parents = [input.folderId]
+  }
+  const metadata = JSON.stringify(metadataObj)
   const fileBuffer = await fs.readFile(input.localPath)
   const boundary = `bugauto-${Date.now()}-${Math.random().toString(16).slice(2)}`
-  const metadata = JSON.stringify({
-    name: input.remoteName,
-    parents: [input.folderId],
-  })
   const body = Buffer.concat([
     Buffer.from(`--${boundary}\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n${metadata}\r\n`),
     Buffer.from(`--${boundary}\r\nContent-Type: ${input.mimeType}\r\n\r\n`),
     fileBuffer,
     Buffer.from(`\r\n--${boundary}--\r\n`),
   ])
-  const existingId = input.replaceExisting
-    ? await googleDriveFindFileIdByName(input.token, input.folderId, input.remoteName)
-    : ''
   const uploadUrl = existingId
     ? `https://www.googleapis.com/upload/drive/v3/files/${existingId}?uploadType=multipart&supportsAllDrives=true`
     : 'https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&supportsAllDrives=true'
