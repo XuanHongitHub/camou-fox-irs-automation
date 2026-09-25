@@ -558,31 +558,6 @@ def _is_system_environment_error(step: str, message: str) -> bool:
     ])
 
 
-def _run_single_attempt_subprocess(
-    result_queue: Any,
-    config: AppConfig,
-    record: Dict[str, Any],
-    proxy_endpoint: Any,
-    artifact_dir: str,
-    use_proxy: bool,
-) -> None:
-    try:
-        result = run_single_attempt(
-            config=config,
-            record=record,
-            proxy_endpoint=proxy_endpoint,
-            artifact_dir=Path(artifact_dir),
-            use_proxy=use_proxy,
-        )
-        result_queue.put({"ok": True, "result": result})
-    except Exception as exc:
-        result_queue.put({
-            "ok": False,
-            "error": str(exc),
-            "traceback": traceback.format_exc(),
-        })
-
-
 def _run_single_attempt_with_timeout(
     *,
     config: AppConfig,
@@ -590,68 +565,21 @@ def _run_single_attempt_with_timeout(
     proxy_endpoint: Any,
     artifact_dir: Path,
     use_proxy: bool,
-    timeout_seconds: int,
+    timeout_seconds: int = 240,
+    step_callback: Any = None,
 ) -> Tuple[JobStatus, str, str, str, Dict[str, str]]:
-    hard_timeout = max(0, int(timeout_seconds or 0))
-    if hard_timeout <= 0:
+    try:
         return run_single_attempt(
             config=config,
             record=record,
             proxy_endpoint=proxy_endpoint,
             artifact_dir=artifact_dir,
             use_proxy=use_proxy,
+            step_callback=step_callback,
         )
-
-    ctx = mp.get_context("spawn")
-    result_queue = ctx.Queue(maxsize=1)
-    proc = ctx.Process(
-        target=_run_single_attempt_subprocess,
-        args=(result_queue, config, record, proxy_endpoint, str(artifact_dir), use_proxy),
-    )
-    proc.start()
-    proc.join(hard_timeout)
-
-    if proc.is_alive():
-        proc.terminate()
-        proc.join(5)
-        return (
-            JobStatus.MANUAL_REQUIRED,
-            "attempt_timeout",
-            f"Attempt exceeded {hard_timeout}s; moved to manual queue for later rerun.",
-            "",
-            {},
-        )
-
-    payload = None
-    try:
-        payload = result_queue.get_nowait()
-    except Exception:
-        payload = None
-
-    if isinstance(payload, dict) and payload.get("ok"):
-        raw = payload.get("result")
-        if isinstance(raw, (tuple, list)) and len(raw) == 5:
-            status = raw[0] if isinstance(raw[0], JobStatus) else JobStatus(str(raw[0]))
-            return (
-                status,
-                str(raw[1] or ""),
-                str(raw[2] or ""),
-                str(raw[3] or ""),
-                dict(raw[4] or {}),
-            )
-        return JobStatus.RETRYABLE_FAIL, "runtime", "Invalid attempt result payload", "", {}
-
-    if isinstance(payload, dict) and not payload.get("ok"):
-        tb = str(payload.get("traceback", "") or "").strip()
-        if tb:
-            logger.warning("Attempt subprocess traceback:\n%s", tb)
-        err = str(payload.get("error", "") or "").strip()
-        return JobStatus.RETRYABLE_FAIL, "runtime", err or "Attempt subprocess failed", "", {}
-
-    if proc.exitcode not in (0, None):
-        return JobStatus.RETRYABLE_FAIL, "runtime", f"Attempt process exited with code {proc.exitcode}", "", {}
-
-    return JobStatus.RETRYABLE_FAIL, "runtime", "Attempt subprocess returned no result", "", {}
+    except Exception as exc:
+        logger.exception("run_single_attempt raised unhandled exception")
+        return JobStatus.RETRYABLE_FAIL, "runtime", str(exc), "", {}
 
 
 def _relocate_artifacts_by_status(config: AppConfig, batch_id: str, record_id: str, status: JobStatus, artifact_dir: Path) -> Path:
@@ -1055,6 +983,17 @@ def process_record_job(payload: Dict[str, Any]) -> Dict[str, Any]:
                 proxy_ip=final_proxy_ip,
                 mode="observe" if observe_mode else ("sandbox" if sandbox_mode else "full"),
             )
+            def _step_cb(step_name: str, step_st: str = "running", note: str = ""):
+                emit_event("step_update",
+                    job_id=f"{batch_id}:{record_id}",
+                    record_id=record_id,
+                    step=step_name,
+                    status=step_st,
+                    note=note,
+                    proxy_code=final_proxy_code or proxy_code,
+                    proxy_ip=final_proxy_ip,
+                )
+
             status, last_step, error_message, confirmation, metadata = _run_single_attempt_with_timeout(
                 config=config,
                 record=record,
@@ -1062,6 +1001,7 @@ def process_record_job(payload: Dict[str, Any]) -> Dict[str, Any]:
                 artifact_dir=artifact_dir,
                 use_proxy=(not sandbox_mode),
                 timeout_seconds=max_attempt_seconds,
+                step_callback=_step_cb,
             )
 
             final_status = status

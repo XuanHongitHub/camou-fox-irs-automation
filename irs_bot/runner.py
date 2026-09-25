@@ -20,6 +20,12 @@ from .proxyxoay_client import ProxyVm, ProxyXoayClient, ProxyXoayHttpError
 
 logger = logging.getLogger(__name__)
 
+try:
+    import camoufox.locale
+    camoufox.locale.geoip_allowed = lambda: None
+except Exception:
+    pass
+
 
 class RunnerError(RuntimeError):
     pass
@@ -1449,6 +1455,7 @@ def execute_ein_form_flow(
     record: Dict[str, Any],
     config: AppConfig,
     artifact_dir: Path,
+    step_callback: Any = None,
 ) -> Tuple[JobStatus, str, str, Dict[str, str]]:
     timeout_ms = config.browser.timeout_ms
     record_id = _get(record, "record_id") or "row"
@@ -1493,6 +1500,8 @@ def execute_ein_form_flow(
 
         # Step 1
         current_step = "step1_legal_structure"
+        if step_callback:
+            step_callback(current_step, "running", "Selecting Sole Proprietor...")
         hard_fail = _wait_irs_selector_or_hard_fail(page, 'input[name="legalStructureInput"]', timeout_ms, current_step)
         if hard_fail:
             capture_reference_page(page, artifact_dir, "irs_hard_fail")
@@ -1518,6 +1527,8 @@ def execute_ein_form_flow(
 
         # Step 2
         current_step = "step2_identity"
+        if step_callback:
+            step_callback(current_step, "running", f"Filling identity: {first_name} {last_name}")
         hard_fail = _wait_irs_selector_or_hard_fail(page, 'input[name="responsibleSsn"]', timeout_ms, current_step)
         if hard_fail:
             capture_reference_page(page, artifact_dir, "irs_hard_fail")
@@ -1541,6 +1552,8 @@ def execute_ein_form_flow(
 
         # Step 3
         current_step = "step3_addresses"
+        if step_callback:
+            step_callback(current_step, "running", f"Filling address: {city}, {state}")
         hard_fail = _wait_irs_selector_or_hard_fail(page, 'input[name="physicalStreet"]', timeout_ms, current_step)
         if hard_fail:
             capture_reference_page(page, artifact_dir, "irs_hard_fail")
@@ -1565,6 +1578,8 @@ def execute_ein_form_flow(
 
         # Step 4A details
         current_step = "step4a_additional_details"
+        if step_callback:
+            step_callback(current_step, "running", f"Filling business details (trade: {trade_name})")
         hard_fail = _wait_irs_any_selector_or_hard_fail(
             page,
             [
@@ -1602,6 +1617,8 @@ def execute_ein_form_flow(
 
         # Step 4B activity/services
         current_step = "step4b_business_activity"
+        if step_callback:
+            step_callback(current_step, "running", "Selecting business activity (Wholesale)...")
         hard_fail = _wait_irs_selector_or_hard_fail(page, 'input[name="entityBusinessCategoryInput"]', timeout_ms, current_step)
         if hard_fail:
             capture_reference_page(page, artifact_dir, "irs_hard_fail")
@@ -1621,6 +1638,8 @@ def execute_ein_form_flow(
 
         # Step 5 submit
         current_step = "step5_review_submit"
+        if step_callback:
+            step_callback(current_step, "running", "Reviewing application and preparing submission...")
         hard_fail = _wait_irs_selector_or_hard_fail(page, 'input[name="confirmationLetterRadioInput"]', timeout_ms, current_step)
         if hard_fail:
             capture_reference_page(page, artifact_dir, "irs_hard_fail")
@@ -1672,6 +1691,8 @@ def execute_ein_form_flow(
 
         # Step 6 assignment
         current_step = "step6_ein_assignment"
+        if step_callback:
+            step_callback(current_step, "running", "Processing EIN assignment & downloading confirmation PDF...")
         page.wait_for_timeout(1200)
         hard_fail = _irs_hard_fail_message(page)
         if hard_fail:
@@ -1743,6 +1764,7 @@ def run_single_attempt(
     proxy_endpoint: ProxyEndpoint,
     artifact_dir: Path,
     use_proxy: bool = True,
+    step_callback: Any = None,
 ) -> Tuple[JobStatus, str, str, str, Dict[str, str]]:
     """
     Returns: (status, last_step, error_message, confirmation_number, metadata)
@@ -1798,11 +1820,13 @@ def run_single_attempt(
             # Keep zoom stable on Windows high-DPI so click coordinates match layout.
             if not effective_headless:
                 page.evaluate("document.documentElement.style.zoom = '100%'")
+            if step_callback:
+                step_callback("browser_open", "running", "Navigating to IRS portal...")
             _goto_with_retry(page, config.target_url, config)
             capture_page(page, artifact_dir, "loaded")
 
             if "applyein" in config.target_url.lower() or "ein-sandbox.test" in config.target_url.lower():
-                status, last_step, confirmation, metadata = execute_ein_form_flow(page, record, config, artifact_dir)
+                status, last_step, confirmation, metadata = execute_ein_form_flow(page, record, config, artifact_dir, step_callback=step_callback)
             else:
                 status, last_step, confirmation, metadata = execute_workflow(page, record, config, artifact_dir)
             if status != JobStatus.SUCCESS:

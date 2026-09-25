@@ -553,10 +553,10 @@ async function startPythonBackend() {
       pythonProcessMode = 'manual'
       if (is.dev) {
         const foxAutoRoot = foxAutoRootPath()
-        const launch = pythonDevLaunch(['-m', 'irs_bot', '--config', runtimeConfigPath(), 'manual'])
+        const launch = pythonDevLaunch(['-u', '-m', 'irs_bot', '--config', runtimeConfigPath(), 'manual'])
         pythonProcess = spawn(launch.cmd, launch.args, {
           cwd: foxAutoRoot,
-          env: { ...process.env, PYTHONPATH: foxAutoRoot }
+          env: { ...process.env, PYTHONPATH: foxAutoRoot, PYTHONUNBUFFERED: '1' }
         })
       } else {
         const exePath = cliBinaryPath()
@@ -568,10 +568,10 @@ async function startPythonBackend() {
       pythonProcessMode = 'worker'
       // In dev: run as package module to preserve relative imports.
       const foxAutoRoot = foxAutoRootPath()
-      const launch = pythonDevLaunch(['-m', 'irs_bot', '--config', runtimeConfigPath(), 'worker', '--queues', 'ein.high,ein.default,ein.retry,ein.observe,ein.sandbox', '--workers', String(workerCount)])
+      const launch = pythonDevLaunch(['-u', '-m', 'irs_bot', '--config', runtimeConfigPath(), 'worker', '--queues', 'ein.high,ein.default,ein.retry,ein.observe,ein.sandbox', '--workers', String(workerCount)])
       pythonProcess = spawn(launch.cmd, launch.args, {
         cwd: foxAutoRoot,
-        env: { ...process.env, PYTHONPATH: foxAutoRoot }
+        env: { ...process.env, PYTHONPATH: foxAutoRoot, PYTHONUNBUFFERED: '1' }
       })
     } else {
       pythonProcessMode = 'worker'
