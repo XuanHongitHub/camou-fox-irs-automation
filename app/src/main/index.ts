@@ -1904,6 +1904,36 @@ async function saveGoogleDriveAutoPushState(baseDir: string, state: GoogleDriveA
   await fs.writeFile(statePath, JSON.stringify(state, null, 2), 'utf-8')
 }
 
+function hiddenResultsPath(baseDir: string): string {
+  const dir = join(baseDir, 'state')
+  mkdirSync(dir, { recursive: true })
+  return join(dir, 'hidden_results.json')
+}
+
+async function loadHiddenResultsKeys(baseDir: string): Promise<Set<string>> {
+  try {
+    const p = hiddenResultsPath(baseDir)
+    if (!existsSync(p)) return new Set()
+    const raw = JSON.parse(await fs.readFile(p, 'utf-8'))
+    const list = Array.isArray(raw?.hidden_keys) ? raw.hidden_keys : []
+    return new Set(list.map((k: any) => String(k || '').trim()).filter(Boolean))
+  } catch {
+    return new Set()
+  }
+}
+
+async function saveHiddenResultsKeys(baseDir: string, keys: Set<string>): Promise<void> {
+  try {
+    const p = hiddenResultsPath(baseDir)
+    const data = {
+      version: 1,
+      updated_at: new Date().toISOString(),
+      hidden_keys: Array.from(keys),
+    }
+    await fs.writeFile(p, JSON.stringify(data, null, 2), 'utf-8')
+  } catch {}
+}
+
 async function loadResultsRowsForBatch(baseDir: string, batchId: string) {
   const resultsPath = join(baseDir, 'outputs', 'results.csv')
   if (!existsSync(resultsPath)) return []
@@ -3192,14 +3222,66 @@ app.whenReady().then(async () => {
     try {
       const userDir = storageRootDir()
       const resultsPath = join(userDir, 'outputs', 'results.csv')
-      if (!existsSync(resultsPath)) return { ok: true, rows: [] }
+      if (!existsSync(resultsPath)) return { ok: true, rows: [], hiddenKeys: [] }
       const raw = await fs.readFile(resultsPath, 'utf-8')
       const wb = XLSX.read(raw, { type: 'string' })
       const sheet = wb.Sheets[wb.SheetNames[0]]
       const rows = XLSX.utils.sheet_to_json<Record<string, unknown>>(sheet, { defval: '' })
-      return { ok: true, rows }
+
+      const drivePushState = await loadGoogleDriveAutoPushState(userDir)
+      const driveMap = drivePushState.pdf_url_by_batch_record || {}
+      const hiddenKeys = await loadHiddenResultsKeys(userDir)
+
+      const enrichedRows = rows.map((r: any) => {
+        const bid = String(r.batch_id || '').trim()
+        const rid = String(r.record_id || '').trim()
+        const k1 = `${bid}::${rid}`
+        const k2 = `${bid}:${rid}`
+        const k3 = rid
+        const driveUrl = driveMap[k1] || driveMap[k2] || driveMap[k3] || ''
+        const isUploaded = Boolean(driveUrl)
+        const isHidden = hiddenKeys.has(k2) || hiddenKeys.has(k1) || (rid ? hiddenKeys.has(rid) : false)
+        return {
+          ...r,
+          uploaded_to_drive: isUploaded,
+          drive_pdf_url: driveUrl || undefined,
+          is_hidden: isHidden,
+        }
+      })
+
+      return { ok: true, rows: enrichedRows, hiddenKeys: Array.from(hiddenKeys) }
     } catch (err) {
-      return { ok: false, error: String(err), rows: [] }
+      return { ok: false, error: String(err), rows: [], hiddenKeys: [] }
+    }
+  })
+  ipcMain.handle('irs:results:hide', async (_event, payload) => {
+    try {
+      const userDir = storageRootDir()
+      const keys = Array.isArray(payload?.keys) ? payload.keys.map((k: any) => String(k || '').trim()).filter(Boolean) : []
+      if (!keys.length) return { ok: true, count: 0, hiddenKeys: [] }
+      const current = await loadHiddenResultsKeys(userDir)
+      for (const k of keys) current.add(k)
+      await saveHiddenResultsKeys(userDir, current)
+      return { ok: true, count: current.size, hiddenKeys: Array.from(current) }
+    } catch (err) {
+      return { ok: false, error: String(err) }
+    }
+  })
+  ipcMain.handle('irs:results:unhide', async (_event, payload) => {
+    try {
+      const userDir = storageRootDir()
+      const all = Boolean(payload?.all)
+      if (all) {
+        await saveHiddenResultsKeys(userDir, new Set())
+        return { ok: true, count: 0, hiddenKeys: [] }
+      }
+      const keys = Array.isArray(payload?.keys) ? payload.keys.map((k: any) => String(k || '').trim()).filter(Boolean) : []
+      const current = await loadHiddenResultsKeys(userDir)
+      for (const k of keys) current.delete(k)
+      await saveHiddenResultsKeys(userDir, current)
+      return { ok: true, count: current.size, hiddenKeys: Array.from(current) }
+    } catch (err) {
+      return { ok: false, error: String(err) }
     }
   })
   ipcMain.handle('irs:queue:remove', async (_event, payload) => {
@@ -3668,6 +3750,20 @@ app.whenReady().then(async () => {
         drive_report_url: bundle.driveReportUrl,
         created_at: new Date().toISOString(),
       })
+
+      try {
+        const drivePushState = await loadGoogleDriveAutoPushState(base)
+        for (const row of rowsToUpload) {
+          const k1 = makeBatchRecordKey(row?.batch_id, row?.record_id)
+          const k2 = `${row?.batch_id || ''}:${row?.record_id || ''}`
+          const k3 = String(row?.record_id || '').trim()
+          const pdfUrl = String(row?.drive_pdf_url || bundle.driveFolderUrl || '')
+          if (k1) drivePushState.pdf_url_by_batch_record[k1] = pdfUrl
+          if (k2) drivePushState.pdf_url_by_batch_record[k2] = pdfUrl
+          if (k3) drivePushState.pdf_url_by_batch_record[k3] = pdfUrl
+        }
+        await saveGoogleDriveAutoPushState(base, drivePushState)
+      } catch {}
 
       if (nextOnly && continuationState) {
         const tokenExported = ensureTokenExportMap(continuationState, uploadToken)

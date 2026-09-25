@@ -3,7 +3,8 @@ import {
     Download, Search, Filter, CheckCircle2, AlertCircle,
     FileText, RefreshCw, Copy,
     ChevronDown, ChevronUp, X, Check, BarChart3, Clock, Calendar,
-    Globe, Hash, ChevronRight, FolderOpen
+    Globe, Hash, ChevronRight, FolderOpen,
+    Cloud, EyeOff, Eye, RotateCcw
 } from 'lucide-react'
 import { Button } from '../base/Button'
 import { useI18n } from '../../i18n/useI18n'
@@ -15,7 +16,7 @@ export interface ResultRow {
     record_id: string
     name: string
     ein: string
-    [key: string]: string | number | undefined
+    [key: string]: string | number | boolean | undefined
     // Result
     status: 'done' | 'failed'
     confirmation_number?: string
@@ -47,6 +48,9 @@ export interface ResultRow {
     completed_at?: string
     source_file?: string
     batch_id?: string
+    uploaded_to_drive?: boolean
+    drive_pdf_url?: string
+    is_hidden?: boolean
 }
 
 type SortField = 'completed_at' | 'name' | 'ein' | 'status' | 'duration_s'
@@ -54,7 +58,7 @@ type SortDir = 'asc' | 'desc'
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
-function escCsv(val: string | number | undefined) {
+function escCsv(val: string | number | boolean | undefined) {
     if (val === undefined || val === null) return ''
     const s = String(val)
     return s.includes(',') || s.includes('"') || s.includes('\n') ? `"${s.replace(/"/g, '""')}"` : s
@@ -97,7 +101,7 @@ function buildCsv(rows: ResultRow[], includeInput = true): string {
 
     const header = allCols.join(',')
     const body = rows.map(row => {
-        const mapped: Record<string, string | number | undefined> = {
+        const mapped: Record<string, string | number | boolean | undefined> = {
             ...row,
             pdf_file: shortPathName(row.pdf_path),
             artifact_folder: shortPathName(row.artifact_dir),
@@ -253,6 +257,8 @@ function ResultRowDetail({ row }: { row: ResultRow }) {
 export function ResultsDashboard({
     results,
     onResultsChange,
+    onHideRows,
+    onUnhideRows,
     onOpenOutputFolder,
     onRefresh,
     onQuickExportStyled,
@@ -264,6 +270,8 @@ export function ResultsDashboard({
 }: {
     results: ResultRow[]
     onResultsChange?: (next: ResultRow[] | ((prev: ResultRow[]) => ResultRow[])) => void
+    onHideRows?: (rows: ResultRow[]) => void
+    onUnhideRows?: (rows?: ResultRow[], all?: boolean) => void
     onOpenOutputFolder?: () => void
     onRefresh?: () => void
     onQuickExportStyled?: (batchId: string, reportType?: 'report' | 'failures') => void
@@ -276,6 +284,18 @@ export function ResultsDashboard({
     const { locale } = useI18n()
     void onQuickExportStyled
     const [search, setSearch] = useState('')
+    const [viewTab, setViewTab] = useState<'all' | 'unuploaded' | 'uploaded' | 'hidden'>('all')
+    const [hideDriveUploaded, setHideDriveUploaded] = useState(() => {
+        try {
+            return localStorage.getItem('fox_hide_drive_uploaded') === 'true'
+        } catch {
+            return false
+        }
+    })
+    const toggleHideDriveUploaded = (val: boolean) => {
+        setHideDriveUploaded(val)
+        try { localStorage.setItem('fox_hide_drive_uploaded', String(val)) } catch {}
+    }
     const [statusFilter, setStatusFilter] = useState<'all' | 'done' | 'failed'>('all')
     const [batchFilter, setBatchFilter] = useState<string>('all')
     const [errorFilter, setErrorFilter] = useState<string>('all')
@@ -288,10 +308,27 @@ export function ResultsDashboard({
 
     const batches = useMemo(() => ['all', ...new Set(results.map(r => r.batch_id ?? '').filter(Boolean))], [results])
 
+    const viewCounts = useMemo(() => {
+        const notHidden = results.filter(r => !r.is_hidden)
+        return {
+            all: notHidden.length,
+            unuploaded: notHidden.filter(r => !r.uploaded_to_drive).length,
+            uploaded: notHidden.filter(r => r.uploaded_to_drive).length,
+            hidden: results.filter(r => r.is_hidden).length,
+        }
+    }, [results])
 
     const filtered = useMemo(() => {
         const q = search.toLowerCase()
         return results.filter(r => {
+            if (viewTab === 'hidden') {
+                if (!r.is_hidden) return false
+            } else {
+                if (r.is_hidden) return false
+                if (viewTab === 'unuploaded' && r.uploaded_to_drive) return false
+                if (viewTab === 'uploaded' && !r.uploaded_to_drive) return false
+                if (hideDriveUploaded && r.uploaded_to_drive) return false
+            }
             if (statusFilter !== 'all' && r.status !== statusFilter) return false
             if (batchFilter !== 'all' && r.batch_id !== batchFilter) return false
             if (errorFilter !== 'all' && r.error_code !== errorFilter) return false
@@ -320,7 +357,7 @@ export function ResultsDashboard({
             const cmp = av < bv ? -1 : av > bv ? 1 : 0
             return sortDir === 'asc' ? cmp : -cmp
         })
-    }, [results, search, statusFilter, batchFilter, errorFilter, dateFrom, dateTo, sortField, sortDir])
+    }, [results, viewTab, hideDriveUploaded, search, statusFilter, batchFilter, errorFilter, dateFrom, dateTo, sortField, sortDir])
 
     const stats = useMemo(() => ({
         total: filtered.length,
@@ -474,19 +511,50 @@ export function ResultsDashboard({
                             <Button variant="ghost" size="xs" className="gap-1.5 text-accent" onClick={() => download(selectedRows, 'selected')}>
                         <Download className="w-3.5 h-3.5" />{locale === 'en' ? 'Selected' : 'Đã chọn'} ({selectedRows.length})
                             </Button>
-                            <Button
-                                variant="ghost"
-                                size="xs"
-                                className="gap-1.5 text-danger"
-                                onClick={() => {
-                                    if (!onResultsChange) return
-                                    const selectedKeys = new Set(selectedRows.map(r => `${r.batch_id}:${r.record_id}`))
-                                    onResultsChange(prev => prev.filter(r => !selectedKeys.has(`${r.batch_id}:${r.record_id}`)))
-                                    setSelected(new Set())
-                                }}
-                            >
-                                <X className="w-3.5 h-3.5" />{locale === 'en' ? 'Remove Selected' : 'Xóa mục chọn'}
-                            </Button>
+                            {viewTab === 'hidden' ? (
+                                <>
+                                    <Button
+                                        variant="ghost"
+                                        size="xs"
+                                        className="gap-1.5 text-success hover:text-success/90"
+                                        onClick={() => {
+                                            onUnhideRows?.(selectedRows)
+                                            setSelected(new Set())
+                                        }}
+                                    >
+                                        <RotateCcw className="w-3.5 h-3.5" />{locale === 'en' ? 'Restore Selected' : 'Khôi phục mục chọn'}
+                                    </Button>
+                                    <Button
+                                        variant="ghost"
+                                        size="xs"
+                                        className="gap-1.5 text-muted hover:text-text"
+                                        onClick={() => {
+                                            onUnhideRows?.(undefined, true)
+                                            setSelected(new Set())
+                                        }}
+                                    >
+                                        <Eye className="w-3.5 h-3.5" />{locale === 'en' ? 'Restore All' : 'Khôi phục tất cả'}
+                                    </Button>
+                                </>
+                            ) : (
+                                <Button
+                                    variant="ghost"
+                                    size="xs"
+                                    className="gap-1.5 text-danger hover:text-danger/90"
+                                    title={locale === 'en' ? 'Hide selected from view (data remains safely preserved in CSV/DB)' : 'Ẩn các dòng đã chọn khỏi bảng hiển thị (dữ liệu gốc vẫn lưu an toàn trong file)'}
+                                    onClick={() => {
+                                        if (onHideRows) {
+                                            onHideRows(selectedRows)
+                                        } else if (onResultsChange) {
+                                            const selectedKeys = new Set(selectedRows.map(r => `${r.batch_id}:${r.record_id}`))
+                                            onResultsChange(prev => prev.filter(r => !selectedKeys.has(`${r.batch_id}:${r.record_id}`)))
+                                        }
+                                        setSelected(new Set())
+                                    }}
+                                >
+                                    <EyeOff className="w-3.5 h-3.5" />{locale === 'en' ? 'Hide Selected' : 'Ẩn mục chọn'}
+                                </Button>
+                            )}
                         </>
                     )}
                 </div>
@@ -503,6 +571,51 @@ export function ResultsDashboard({
                         className="h-8 pl-8 pr-3 text-[11px] bg-surface border border-border rounded-xl text-text placeholder:text-muted/40 focus:outline-none focus:border-accent/40 w-64 transition-all"
                     />
                 </div>
+                <div className="w-px h-5 bg-border mx-1" />
+                <div className="flex items-center gap-1 bg-surface border border-border rounded-xl p-0.5 shrink-0">
+                    <button
+                        onClick={() => setViewTab('all')}
+                        className={`h-7 px-2.5 text-[10px] font-semibold rounded-lg transition-all ${viewTab === 'all' ? 'bg-accent text-white shadow-xs' : 'text-muted hover:text-text'}`}
+                    >
+                        {locale === 'en' ? 'All' : 'Tất cả'} ({viewCounts.all})
+                    </button>
+                    <button
+                        onClick={() => setViewTab('unuploaded')}
+                        className={`h-7 px-2.5 text-[10px] font-semibold rounded-lg transition-all flex items-center gap-1.5 ${viewTab === 'unuploaded' ? 'bg-amber-600 text-white shadow-xs' : 'text-muted hover:text-text'}`}
+                        title={locale === 'en' ? 'Show records not yet pushed to Drive' : 'Chỉ xem hồ sơ chưa đẩy lên Google Drive'}
+                    >
+                        <Cloud className="w-3 h-3" />
+                        {locale === 'en' ? 'Not on Drive' : 'Chưa lên Drive'} ({viewCounts.unuploaded})
+                    </button>
+                    <button
+                        onClick={() => setViewTab('uploaded')}
+                        className={`h-7 px-2.5 text-[10px] font-semibold rounded-lg transition-all flex items-center gap-1.5 ${viewTab === 'uploaded' ? 'bg-sky-600 text-white shadow-xs' : 'text-muted hover:text-text'}`}
+                        title={locale === 'en' ? 'Show records already pushed to Drive' : 'Xem các hồ sơ đã đẩy lên Google Drive'}
+                    >
+                        <CheckCircle2 className="w-3 h-3" />
+                        {locale === 'en' ? 'On Drive' : 'Đã lên Drive'} ({viewCounts.uploaded})
+                    </button>
+                    {viewCounts.hidden > 0 && (
+                        <button
+                            onClick={() => setViewTab('hidden')}
+                            className={`h-7 px-2.5 text-[10px] font-semibold rounded-lg transition-all flex items-center gap-1.5 ${viewTab === 'hidden' ? 'bg-purple-600 text-white shadow-xs' : 'text-purple-400 hover:text-purple-300'}`}
+                            title={locale === 'en' ? 'View hidden records (data is preserved safely in CSV/DB)' : 'Xem các dòng đã ẩn (dữ liệu gốc vẫn an toàn trong file)'}
+                        >
+                            <EyeOff className="w-3 h-3" />
+                            {locale === 'en' ? 'Hidden' : 'Đã ẩn'} ({viewCounts.hidden})
+                        </button>
+                    )}
+                </div>
+                {viewTab !== 'hidden' && (
+                    <button
+                        onClick={() => toggleHideDriveUploaded(!hideDriveUploaded)}
+                        className={`h-7 px-2.5 text-[10px] font-medium rounded-xl border transition-all flex items-center gap-1.5 ${hideDriveUploaded ? 'bg-sky-500/20 text-sky-300 border-sky-500/40 shadow-xs' : 'bg-surface border-border text-muted hover:text-text'}`}
+                        title={locale === 'en' ? 'Hide results already uploaded to Google Drive' : 'Lọc bỏ các kết quả đã được upload lên Google Drive để tránh nhiễu'}
+                    >
+                        <Cloud className="w-3 h-3" />
+                        {hideDriveUploaded ? (locale === 'en' ? 'Hiding Drive' : 'Đang ẩn đã lên Drive') : (locale === 'en' ? 'Hide Drive' : 'Ẩn đã lên Drive')}
+                    </button>
+                )}
                 <div className="w-px h-5 bg-border mx-1" />
                 <div className="flex items-center gap-1 bg-surface border border-border rounded-xl p-0.5 shrink-0">
                     {(['all', 'done', 'failed'] as const).map(s => (
@@ -644,6 +757,7 @@ export function ResultsDashboard({
                                     { label: 'Record / EIN', f: 'name' as SortField },
                                     { label: locale === 'en' ? 'Status' : 'Trạng thái', f: 'status' as SortField },
                                     { label: 'Confirm' },
+                                    { label: 'Drive' },
                                     { label: locale === 'en' ? 'Detail' : 'Chi tiết' },
                                     { label: 'Proxy' },
                                     { label: locale === 'en' ? 'Time' : 'Thời gian', f: 'duration_s' as SortField },
@@ -680,7 +794,12 @@ export function ResultsDashboard({
                                             <ChevronRight className={`w-3.5 h-3.5 text-muted/30 transition-transform ${expandedId === row.record_id ? 'rotate-90 text-accent' : ''}`} />
                                         </td>
                                         <td className="px-3 py-3">
-                                            <div className="font-bold text-text group-hover:text-accent transition-colors truncate max-w-[180px]">{row.name}</div>
+                                            <div className="flex items-center gap-1.5">
+                                                <span className="font-bold text-text group-hover:text-accent transition-colors truncate max-w-[180px]">{row.name}</span>
+                                                {row.is_hidden && (
+                                                    <span className="text-[9px] font-semibold text-purple-400 bg-purple-500/10 border border-purple-500/20 px-1 py-0.2 rounded shrink-0">Ẩn</span>
+                                                )}
+                                            </div>
                                             <div className="font-mono text-muted/50 text-[10px] mt-0.5">{row.ein}</div>
                                         </td>
                                         <td className="px-3 py-3">
@@ -694,6 +813,22 @@ export function ResultsDashboard({
                                                 ? <span className="font-mono font-bold text-success/80 text-[10px] bg-success/5 border border-success/10 px-1.5 py-0.5 rounded">{row.confirmation_number}</span>
                                                 : <span className="text-muted/30">—</span>
                                             }
+                                        </td>
+                                        <td className="px-3 py-3" onClick={(e) => e.stopPropagation()}>
+                                            {row.uploaded_to_drive ? (
+                                                <a
+                                                    href={row.drive_pdf_url || '#'}
+                                                    target={row.drive_pdf_url ? '_blank' : undefined}
+                                                    rel="noreferrer"
+                                                    onClick={(e) => { if (!row.drive_pdf_url) e.preventDefault(); e.stopPropagation() }}
+                                                    className="inline-flex items-center gap-1 text-[10px] font-semibold text-sky-400 bg-sky-500/10 border border-sky-500/30 px-2 py-0.5 rounded-full hover:bg-sky-500/20 transition-colors"
+                                                    title={row.drive_pdf_url ? 'Mở PDF trên Google Drive' : 'Đã tải lên Google Drive'}
+                                                >
+                                                    <Cloud className="w-3 h-3" /> Drive
+                                                </a>
+                                            ) : (
+                                                <span className="text-muted/30 text-[10px]">Chưa lên</span>
+                                            )}
                                         </td>
                                         <td className="px-3 py-3">
                                             {row.error_code ? (
