@@ -3,6 +3,7 @@
 /firefox-*
 /mozilla-unified
 dist/
+build/
 bin/
 launch
 launch.exe

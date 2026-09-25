@@ -1668,7 +1668,7 @@ async function loadArchivedInputByRecordIds(base: string, recordIds: string[]) {
   if (existsSync(queueDbPath)) {
     try {
       const BetterSqlite3 = (await import('better-sqlite3')).default
-      const db = new BetterSqlite3(queueDbPath, { readonly: true })
+      const db = new BetterSqlite3(queueDbPath, { timeout: 3000 })
       const jobRows = db.prepare('SELECT payload FROM jobs').all() as Array<{ payload?: string }>
       for (const jobRow of jobRows) {
         try {
@@ -3191,28 +3191,32 @@ app.whenReady().then(async () => {
     try {
       const dbPath = getQueueDbPath()
       if (existsSync(dbPath)) {
-        const BetterSqlite3 = (await import('better-sqlite3')).default
-        const db = new BetterSqlite3(dbPath, { readonly: true, timeout: 2000 })
         try {
-          const stmt = db.prepare('SELECT job_id, queue_name, status, payload, created_at, updated_at FROM jobs ORDER BY created_at ASC')
-          const rawRows = stmt.all() as Array<{ job_id: string; queue_name: string; status: string; payload: string; created_at: number; updated_at: number }>
-          const rows = rawRows.map((r) => {
-            let parsedPayload: any = {}
-            try {
-              parsedPayload = JSON.parse(r.payload || '{}')
-            } catch {}
-            return {
-              job_id: r.job_id,
-              queue_name: r.queue_name,
-              status: r.status,
-              payload: parsedPayload,
-              created_at: Number(r.created_at || 0),
-              updated_at: Number(r.updated_at || 0),
-            }
-          })
-          return { ok: true, rows }
-        } finally {
-          db.close()
+          const BetterSqlite3 = (await import('better-sqlite3')).default
+          const db = new BetterSqlite3(dbPath, { timeout: 5000 })
+          try {
+            const stmt = db.prepare('SELECT job_id, queue_name, status, payload, created_at, updated_at FROM jobs ORDER BY created_at ASC')
+            const rawRows = stmt.all() as Array<{ job_id: string; queue_name: string; status: string; payload: string; created_at: number; updated_at: number }>
+            const rows = rawRows.map((r) => {
+              let parsedPayload: any = {}
+              try {
+                parsedPayload = JSON.parse(r.payload || '{}')
+              } catch {}
+              return {
+                job_id: r.job_id,
+                queue_name: r.queue_name,
+                status: r.status,
+                payload: parsedPayload,
+                created_at: Number(r.created_at || 0),
+                updated_at: Number(r.updated_at || 0),
+              }
+            })
+            return { ok: true, rows }
+          } finally {
+            db.close()
+          }
+        } catch (sqliteErr) {
+          console.warn('[irs:queue:list] Direct SQLite read failed, falling back to python CLI:', sqliteErr)
         }
       }
       const result = await runPythonCli(['queue', 'list'])
