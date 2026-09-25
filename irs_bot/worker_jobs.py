@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 import logging
 import os
 import json
@@ -29,6 +30,68 @@ from .storage import append_result_row, write_json, update_batch_manifest
 logger = logging.getLogger(__name__)
 _RUNTIME_ROTATE_LOCK = threading.Lock()
 _RUNTIME_ROTATE_LAST_AT = 0.0
+_RUNTIME_LIST_PICK_LOCK = threading.Lock()
+_RUNTIME_LIST_CURSOR = 0
+_RUNTIME_LIST_LAST_USED_AT: Dict[str, float] = {}
+
+GLOBAL_WORKER_STOP_EVENT = threading.Event()
+_CONSECUTIVE_DAILY_LIMIT_LOCK = threading.Lock()
+_CONSECUTIVE_DAILY_LIMIT_HITS = 0
+MAX_CONSECUTIVE_DAILY_LIMITS = 3
+
+
+def is_irs_operational_hours() -> Tuple[bool, str]:
+    """Check if current time is within IRS EIN online operating window:
+    Monday through Friday from 7:00 a.m. to 10:00 p.m. Eastern Time.
+    Returns (is_open, human_reason).
+    """
+    from datetime import datetime, timezone, timedelta
+    try:
+        import zoneinfo
+        et_tz = zoneinfo.ZoneInfo("America/New_York")
+        now_et = datetime.now(et_tz)
+    except Exception:
+        # Fallback to EDT (UTC-4) / EST (UTC-5)
+        now_et = datetime.now(timezone(timedelta(hours=-4)))
+    
+    weekday = now_et.weekday()  # 0 = Monday, 6 = Sunday
+    hour = now_et.hour
+    minute = now_et.minute
+    time_str = f"{now_et.strftime('%A')} {hour:02d}:{minute:02d} ET"
+    if weekday > 4:
+        return False, f"Weekend closed ({time_str})"
+    if hour < 7 or hour >= 22:
+        return False, f"Outside daily window 7 a.m. - 10 p.m. ET ({time_str})"
+    return True, f"Open ({time_str})"
+
+
+def _is_offline_apply_error(step: str, message: str) -> bool:
+    text = f"{step} {message}".lower()
+    return any(token in text for token in [
+        "form ss-4",
+        "form ss 4",
+        "must submit a form ss-4",
+        "submit a form ss-4",
+        "by fax or mail",
+        "fax or mail",
+        "submit form ss-4",
+        "operational hours",
+        "technical difficulties",
+        "service is unavailable",
+    ])
+
+
+def _is_daily_limit_error(step: str, message: str) -> bool:
+    text = f"{step} {message}".lower()
+    return any(token in text for token in [
+        "irs_daily_limit",
+        "attempted too many requests for today",
+        "too many requests for today",
+        "one (1) ein per business day",
+        "daily ein limit reached",
+        "limit reached: attempted too many",
+    ])
+
 
 
 def _bad_proxy_path(config: AppConfig) -> Path:
@@ -215,15 +278,22 @@ def _classify_error_type(step: str, message: str, status: JobStatus) -> str:
         "attempted too many requests for today",
         "one (1) ein per business day",
         "unable to provide you with an ein",
+        "cannot provide you with an ein online",
+        "unable to provide you with an ein through this online assistant",
+        "unable to complete",
         "reference number: 101",
         "reference number: 115",
         "form ss-4",
         "form ss 4",
+        "must submit a form ss-4",
+        "submit a form ss-4",
         "by fax or mail",
         "ssn has already",
         "ssn/itin has already",
         "already assigned an ein",
         "already has an ein",
+        "already associated with an ein",
+        "existing ein",
         "already been used for ein registration",
         "ssn can only be used once",
         "ssn/itin can only be used once",
@@ -245,6 +315,7 @@ def _classify_error_type(step: str, message: str, status: JobStatus) -> str:
         "proxy_healthcheck",
         "rotate failed",
         "could not connect to proxy",
+        "ns_error_proxy_connection_refused",
         "proxyerror",
         "tunnel connection failed",
     ]):
@@ -254,25 +325,53 @@ def _classify_error_type(step: str, message: str, status: JobStatus) -> str:
 
 def _is_non_retryable_business_rule(step: str, message: str) -> bool:
     text = f"{step} {message}".lower()
+    if _is_offline_apply_error(step, message) or _is_daily_limit_error(step, message):
+        return False
     return any(token in text for token in [
-        "irs_daily_limit",
-        "irs_hard_fail",
         "irs ssn rule hit",
-        "attempted too many requests for today",
-        "one (1) ein per business day",
         "unable to provide you with an ein",
+        "cannot provide you with an ein online",
+        "unable to provide you with an ein through this online assistant",
+        "unable to complete",
         "reference number: 101",
         "reference number: 115",
-        "form ss-4",
-        "form ss 4",
-        "by fax or mail",
+        "reference 101",
+        "reference 115",
         "ssn has already",
         "ssn/itin has already",
         "already assigned an ein",
         "already has an ein",
+        "already associated with an ein",
+        "existing ein",
         "already been used for ein registration",
         "ssn can only be used once",
         "ssn/itin can only be used once",
+    ])
+
+
+def _is_non_retryable_validation_failure(step: str, message: str) -> bool:
+    text = f"{step} {message}".lower()
+    return any(token in text for token in [
+        "validation failed",
+        "is required",
+        "invalid",
+        "not permitted",
+        "not allowed",
+        "po boxes are not permitted",
+        "p.o. boxes are not permitted",
+        "p o boxes are not permitted",
+        "physical address",
+        "street:",
+        "street address",
+        "county name",
+        "only special characters allowed",
+        "responsible party",
+        "invalid ssn",
+        "invalid zip",
+        "invalid bang/state",
+        "missing name",
+        "missing address",
+        "missing citi",
     ])
 
 
@@ -288,6 +387,7 @@ def _is_transient_retryable(step: str, message: str) -> bool:
         "download button not clickable",
         "target closed",
         "net::",
+        "ns_error_proxy_connection_refused",
         "navigation",
         "context closed",
         "page closed",
@@ -306,6 +406,7 @@ def _should_ban_proxy(step: str, message: str) -> bool:
     return any(token in text for token in [
         "proxy_healthcheck",
         "could not connect to proxy",
+        "ns_error_proxy_connection_refused",
         "proxyerror",
         "tunnel connection failed",
         "407",
@@ -337,6 +438,84 @@ def _rotate_runtime_ip_staggered(rotate_url: str, wait_seconds: int) -> Any:
         return result
 
 
+def _runtime_list_key(proxy_item: Dict[str, Any]) -> str:
+    host = str(proxy_item.get("host", "")).strip()
+    port = int(proxy_item.get("port", 0) or 0)
+    user = str(proxy_item.get("username", "")).strip()
+    return f"{host}:{port}:{user}"
+
+
+def _pick_runtime_list_proxy_staggered(config: AppConfig) -> Tuple[Dict[str, Any], float]:
+    """
+    Pick one proxy from runtime proxy_list with round-robin fairness and per-proxy cooldown.
+    Returns (proxy_item, waited_seconds).
+    """
+    global _RUNTIME_LIST_CURSOR
+    candidates = []
+    for item in list(getattr(config.proxy_runtime, "proxy_list", []) or []):
+        if not isinstance(item, dict):
+            continue
+        if not bool(item.get("enabled", True)):
+            continue
+        host = str(item.get("host", "")).strip()
+        if not host:
+            continue
+        try:
+            port = int(item.get("port", 0) or 0)
+        except Exception:
+            port = 0
+        if port <= 0:
+            continue
+        candidates.append(
+            {
+                "host": host,
+                "port": port,
+                "username": str(item.get("username", "") or ""),
+                "password": str(item.get("password", "") or ""),
+            }
+        )
+    if not candidates:
+        raise RuntimeError("proxy_runtime.proxy_list is empty or invalid")
+
+    cooldown = max(0, int(getattr(config.proxy_runtime, "change_ip_wait_seconds", 0) or 0))
+
+    with _RUNTIME_LIST_PICK_LOCK:
+        now = time.time()
+        n = len(candidates)
+        start_idx = _RUNTIME_LIST_CURSOR % n
+
+        # Try immediate ready proxy first.
+        for offset in range(n):
+            idx = (start_idx + offset) % n
+            item = candidates[idx]
+            key = _runtime_list_key(item)
+            last_at = float(_RUNTIME_LIST_LAST_USED_AT.get(key, 0.0) or 0.0)
+            if cooldown <= 0 or (now - last_at) >= cooldown:
+                _RUNTIME_LIST_CURSOR = idx + 1
+                _RUNTIME_LIST_LAST_USED_AT[key] = now
+                return item, 0.0
+
+        # None ready: pick earliest available and wait.
+        best_idx = start_idx
+        best_wait = None
+        for offset in range(n):
+            idx = (start_idx + offset) % n
+            item = candidates[idx]
+            key = _runtime_list_key(item)
+            last_at = float(_RUNTIME_LIST_LAST_USED_AT.get(key, 0.0) or 0.0)
+            wait_for = max(0.0, float(cooldown) - (now - last_at))
+            if best_wait is None or wait_for < best_wait:
+                best_wait = wait_for
+                best_idx = idx
+        wait_for = float(best_wait or 0.0)
+        if wait_for > 0:
+            time.sleep(wait_for)
+        picked = candidates[best_idx]
+        _RUNTIME_LIST_CURSOR = best_idx + 1
+        _RUNTIME_LIST_LAST_USED_AT[_runtime_list_key(picked)] = time.time()
+        return picked, wait_for
+
+
 def _is_known_retryable_failure(step: str, message: str) -> bool:
     text = f"{step} {message}".lower()
     if _is_transient_retryable(step, message):
@@ -346,6 +525,7 @@ def _is_known_retryable_failure(step: str, message: str) -> bool:
         "proxy_healthcheck",
         "rotate failed",
         "could not connect to proxy",
+        "ns_error_proxy_connection_refused",
         "proxyerror",
         "tunnel connection failed",
         "connection refused",
@@ -358,6 +538,26 @@ def _is_known_retryable_failure(step: str, message: str) -> bool:
         "page closed",
         "temporarily unavailable",
         "download button not clickable",
+    ])
+
+
+def _is_system_environment_error(step: str, message: str) -> bool:
+    text = f"{step} {message}".lower()
+    return any(token in text for token in [
+        "notinstalledgeoipextra",
+        "filenotfounderror",
+        "no such file or directory",
+        "no space left on device",
+        "modulenotfounderror",
+        "importerror",
+        "executable doesn't exist",
+        "failed to launch browser",
+        "failed to open target file",
+        "decompression resulted in return code",
+        "failed to create parent directory structure",
+        "cannot find module",
+        "memoryerror",
+        "pyi-",
     ])
 
 
@@ -533,6 +733,26 @@ def process_record_job(payload: Dict[str, Any]) -> Dict[str, Any]:
         core_payload = raw_job
 
     sandbox_mode = bool(core_payload.get("sandbox"))
+    observe_mode = bool(core_payload.get("observe"))
+    if observe_mode:
+        config = replace(
+            config,
+            browser=replace(
+                config.browser,
+                observe_mode_active=True,
+                step_delay_ms=max(
+                    config.browser.observe_min_delay_ms,
+                    config.browser.step_delay_ms + config.browser.observe_extra_delay_ms,
+                    int(config.browser.step_delay_ms * config.browser.observe_step_delay_multiplier),
+                ),
+                step_delay_jitter_ms=max(
+                    config.browser.observe_min_jitter_ms,
+                    config.browser.step_delay_jitter_ms,
+                    int(config.browser.step_delay_jitter_ms * config.browser.observe_step_delay_multiplier),
+                ),
+                observe_disable_ready_speedup=True,
+            ),
+        )
 
     batch_id = str(core_payload["batch_id"])
     source_file = str(core_payload["source_file"])
@@ -550,7 +770,15 @@ def process_record_job(payload: Dict[str, Any]) -> Dict[str, Any]:
     events_path = artifact_dir / "events.jsonl"
 
     rotate_url = str(getattr(config.proxy_runtime, "rotate_url", "") or "").strip()
-    proxy_client = None if rotate_url else ProxyXoayClient(config.proxyxoay)
+    runtime_proxy_list = [
+        x
+        for x in (getattr(config.proxy_runtime, "proxy_list", []) or [])
+        if isinstance(x, dict) and bool(x.get("enabled", True))
+    ]
+    use_runtime_proxy_list = (not rotate_url) and bool(runtime_proxy_list)
+    runtime_has_endpoint = bool(str(getattr(config.proxy_runtime, "host", "") or "").strip()) and int(getattr(config.proxy_runtime, "port", 0) or 0) > 0
+    use_static_runtime_proxy = (not rotate_url) and (not use_runtime_proxy_list) and runtime_has_endpoint
+    proxy_client = None if (rotate_url or use_runtime_proxy_list or use_static_runtime_proxy) else ProxyXoayClient(config.proxyxoay)
     tried_codes: Set[str] = set()
     banned_codes = _load_bad_proxy_codes(config)
 
@@ -574,6 +802,7 @@ def process_record_job(payload: Dict[str, Any]) -> Dict[str, Any]:
 
     for attempt in range(1, total_attempts + 1):
         attempts_made = attempt
+        selected_proxy: Dict[str, Any] | None = None
         try:
             emit_event("job_started",
                 job_id=f"{batch_id}:{record_id}",
@@ -581,6 +810,7 @@ def process_record_job(payload: Dict[str, Any]) -> Dict[str, Any]:
                 batch_id=batch_id,
                 source_file=source_file,
                 attempt=attempt,
+                mode="observe" if observe_mode else ("sandbox" if sandbox_mode else "full"),
             )
             # Sandbox mode: skip rotate and run without proxy to avoid external dependency.
             if sandbox_mode:
@@ -671,6 +901,61 @@ def process_record_job(payload: Dict[str, Any]) -> Dict[str, Any]:
                         proxy_ip=rotate_result.new_ip,
                     )
                     final_proxy_ip = rotate_result.new_ip or ""
+            elif use_runtime_proxy_list:
+                selected_proxy, waited_for = _pick_runtime_list_proxy_staggered(config)
+                proxy_host = str(selected_proxy.get("host", "")).strip()
+                proxy_port = int(selected_proxy.get("port", 0) or 0)
+                proxy_code = f"LIST:{proxy_host}:{proxy_port}"
+                final_proxy_code = proxy_code
+                final_proxy_ip = ""
+                wait_note = f", waited {waited_for:.1f}s" if waited_for > 0 else ""
+                emit_event("step_update",
+                    job_id=f"{batch_id}:{record_id}",
+                    record_id=record_id,
+                    step="proxy_rotate",
+                    status="done",
+                    note=f"Using runtime proxy list item {proxy_host}:{proxy_port}{wait_note}",
+                    proxy_code=proxy_code,
+                )
+                jsonl_append(
+                    events_path,
+                    {
+                        "time": utc_now(),
+                        "record_id": record_id,
+                        "attempt": attempt,
+                        "event": "proxy_select",
+                        "mode": "runtime_proxy_list",
+                        "proxy_code": proxy_code,
+                        "proxy_host": proxy_host,
+                        "proxy_port": proxy_port,
+                        "waited_seconds": waited_for,
+                    },
+                )
+            elif use_static_runtime_proxy:
+                proxy_code = "STATIC"
+                final_proxy_code = proxy_code
+                final_proxy_ip = ""
+                emit_event("step_update",
+                    job_id=f"{batch_id}:{record_id}",
+                    record_id=record_id,
+                    step="proxy_rotate",
+                    status="done",
+                    note="Static runtime proxy (no rotate link) -> skip rotate",
+                    proxy_code=proxy_code,
+                )
+                jsonl_append(
+                    events_path,
+                    {
+                        "time": utc_now(),
+                        "record_id": record_id,
+                        "attempt": attempt,
+                        "event": "proxy_select",
+                        "mode": "runtime_static",
+                        "proxy_code": proxy_code,
+                        "proxy_host": str(getattr(config.proxy_runtime, "host", "") or ""),
+                        "proxy_port": int(getattr(config.proxy_runtime, "port", 0) or 0),
+                    },
+                )
             else:
                 vm = pick_proxy_vm(proxy_client, exclude_codes=(tried_codes | banned_codes))
                 proxy_code = vm.proxy_code
@@ -756,7 +1041,11 @@ def process_record_job(payload: Dict[str, Any]) -> Dict[str, Any]:
                     )
                     final_proxy_ip = rotate_result.new_ip or ""
 
-            endpoint = resolve_proxy_endpoint(config, proxy_code)
+            endpoint = resolve_proxy_endpoint(
+                config,
+                proxy_code,
+                runtime_proxy=(selected_proxy if (not sandbox_mode and use_runtime_proxy_list) else None),
+            )
             emit_event("step_update",
                 job_id=f"{batch_id}:{record_id}",
                 record_id=record_id,
@@ -765,6 +1054,7 @@ def process_record_job(payload: Dict[str, Any]) -> Dict[str, Any]:
                 note="Proxy ready, launching browser...",
                 proxy_code=final_proxy_code or proxy_code,
                 proxy_ip=final_proxy_ip,
+                mode="observe" if observe_mode else ("sandbox" if sandbox_mode else "full"),
             )
             status, last_step, error_message, confirmation, metadata = _run_single_attempt_with_timeout(
                 config=config,
@@ -810,6 +1100,16 @@ def process_record_job(payload: Dict[str, Any]) -> Dict[str, Any]:
             if status in {JobStatus.SUCCESS, JobStatus.CANCELLED, JobStatus.MANUAL_REQUIRED, JobStatus.VALIDATION_FAILED}:
                 break
             if status == JobStatus.RETRYABLE_FAIL:
+                if _is_offline_apply_error(last_step, error_message):
+                    final_status = JobStatus.CANCELLED
+                    final_step = "irs_offline"
+                    final_error = error_message or "IRS offline: submit Form SS-4 by fax or mail"
+                    break
+                if _is_daily_limit_error(last_step, error_message):
+                    final_status = JobStatus.CANCELLED
+                    final_step = "irs_daily_limit"
+                    final_error = error_message or "IRS daily EIN limit reached: attempted too many requests for today"
+                    break
                 if _is_non_retryable_business_rule(last_step, error_message):
                     final_status = JobStatus.VALIDATION_FAILED
                     final_step = last_step or "irs_daily_limit"
@@ -823,7 +1123,24 @@ def process_record_job(payload: Dict[str, Any]) -> Dict[str, Any]:
                         proxy_code=final_proxy_code,
                     )
                     break
+                if _is_non_retryable_validation_failure(last_step, error_message):
+                    final_status = JobStatus.VALIDATION_FAILED
+                    final_step = last_step or "validation"
+                    final_error = error_message or "Validation failed"
+                    emit_event("step_update",
+                        job_id=f"{batch_id}:{record_id}",
+                        record_id=record_id,
+                        step=final_step,
+                        status="failed",
+                        note=final_error,
+                        proxy_code=final_proxy_code,
+                    )
+                    break
                 retry_note = error_message or last_step or "retryable failure"
+                if _is_system_environment_error(last_step, retry_note):
+                    final_step = last_step or "runtime"
+                    final_error = retry_note
+                    break
                 if not _is_known_retryable_failure(last_step, retry_note):
                     final_status = JobStatus.MANUAL_REQUIRED
                     final_step = last_step or "manual_review"
@@ -884,6 +1201,18 @@ def process_record_job(payload: Dict[str, Any]) -> Dict[str, Any]:
             )
             if final_proxy_code and _should_ban_proxy(final_step, final_error):
                 _ban_proxy_code(config, final_proxy_code, str(exc))
+            if _is_non_retryable_validation_failure(final_step, final_error):
+                final_status = JobStatus.VALIDATION_FAILED
+                emit_event("step_update",
+                    job_id=f"{batch_id}:{record_id}",
+                    record_id=record_id,
+                    step=final_step,
+                    status="failed",
+                    note=final_error,
+                    proxy_code=final_proxy_code,
+                )
+            if _is_system_environment_error(final_step, final_error):
+                break
             if not _is_known_retryable_failure(final_step, final_error):
                 final_status = JobStatus.MANUAL_REQUIRED
                 emit_event("step_update",
@@ -924,18 +1253,93 @@ def process_record_job(payload: Dict[str, Any]) -> Dict[str, Any]:
             final_step6_data["pdf_path"] = _remap_path(old_artifact_dir, artifact_dir, str(final_step6_data.get("pdf_path")))
     events_path = artifact_dir / "events.jsonl"
 
-    db_status = {
-        JobStatus.SUCCESS: "done",
-        JobStatus.MANUAL_REQUIRED: "manual_required",
-        JobStatus.CANCELLED: "cancelled",
-    }.get(final_status, "failed")
-    try:
-        if final_status == JobStatus.MANUAL_REQUIRED and queue_name != config.queue.queue_manual:
-            update_job_status_and_queue(config, queue_job_id, db_status, config.queue.queue_manual)
+    is_sys_err = _is_system_environment_error(final_step, final_error)
+    is_offline = _is_offline_apply_error(final_step, final_error)
+    is_daily_lim = _is_daily_limit_error(final_step, final_error)
+
+    if final_status == JobStatus.SUCCESS:
+        with _CONSECUTIVE_DAILY_LIMIT_LOCK:
+            _CONSECUTIVE_DAILY_LIMIT_HITS = 0
+
+    if is_sys_err:
+        logger.error("System / app environment error detected: %s. Auto requeueing job %s and stopping worker.", final_error, queue_job_id)
+        try:
+            update_job_status_and_queue(config, queue_job_id, "pending", config.queue.queue_default)
+        except Exception as exc:
+            logger.warning("Failed to requeue system error job: %s", exc)
+        emit_event("step_update",
+            job_id=queue_job_id,
+            record_id=record_id,
+            step=final_step,
+            status="requeued",
+            note=f"Lỗi môi trường/hệ thống ({final_error}). Đã tự động requeue và dừng worker.",
+            proxy_code=final_proxy_code,
+        )
+        emit_event("system_stop_requested",
+            reason="system_environment_error",
+            message=f"Lỗi môi trường/hệ thống: {final_error}. Đã tự động hoàn trả hồ sơ về hàng đợi (Pending) và dừng worker để bảo toàn dữ liệu."
+        )
+        GLOBAL_WORKER_STOP_EVENT.set()
+        return {
+            "batch_id": batch_id,
+            "record_id": record_id,
+            "status": "requeued",
+            "error": final_error,
+            "system_error": True,
+        }
+
+    if is_offline:
+        is_open, time_reason = is_irs_operational_hours()
+        logger.warning("IRS offline / outside hours detected: %s (%s). Auto requeueing job %s and stopping worker.", final_error, time_reason, queue_job_id)
+        db_status = "pending"
+        try:
+            update_job_status_and_queue(config, queue_job_id, "pending", config.queue.queue_default)
+        except Exception as exc:
+            logger.warning("Failed to requeue offline job: %s", exc)
+        emit_event("system_stop_requested",
+            reason="irs_offline",
+            message=f"IRS ngoài giờ phục vụ ({time_reason}). Đã tự động requeue hồ sơ và tạm dừng toàn bộ worker."
+        )
+        GLOBAL_WORKER_STOP_EVENT.set()
+    elif is_daily_lim:
+        logger.warning("IRS daily limit hit: %s. Auto requeueing job %s.", final_error, queue_job_id)
+        db_status = "pending"
+        try:
+            update_job_status_and_queue(config, queue_job_id, "pending", config.queue.queue_default)
+        except Exception as exc:
+            logger.warning("Failed to requeue daily limit job: %s", exc)
+        with _CONSECUTIVE_DAILY_LIMIT_LOCK:
+            _CONSECUTIVE_DAILY_LIMIT_HITS += 1
+            hits = _CONSECUTIVE_DAILY_LIMIT_HITS
+        if hits >= MAX_CONSECUTIVE_DAILY_LIMITS:
+            logger.error("Consecutive daily limit reached %s times. Requesting system stop.", hits)
+            emit_event("system_stop_requested",
+                reason="consecutive_daily_limits",
+                message=f"Bị chạm giới hạn Daily Limit liên tục {hits} lần. Đã tự động requeue các hồ sơ và tạm dừng worker để bảo vệ IP."
+            )
+            GLOBAL_WORKER_STOP_EVENT.set()
         else:
-            update_job_status(config, queue_job_id, db_status)
-    except Exception as exc:
-        logger.warning("Failed to update job status in queue db for %s: %s", record_id, exc)
+            emit_event("step_update",
+                job_id=queue_job_id,
+                record_id=record_id,
+                step="requeued_daily_limit",
+                status="requeued",
+                note=f"Chạm Daily Limit ({hits}/{MAX_CONSECUTIVE_DAILY_LIMITS}). Tự động requeue vào hàng đợi.",
+                proxy_code=final_proxy_code,
+            )
+    else:
+        db_status = {
+            JobStatus.SUCCESS: "done",
+            JobStatus.MANUAL_REQUIRED: "manual_required",
+            JobStatus.CANCELLED: "cancelled",
+        }.get(final_status, "failed")
+        try:
+            if final_status == JobStatus.MANUAL_REQUIRED and queue_name != config.queue.queue_manual:
+                update_job_status_and_queue(config, queue_job_id, db_status, config.queue.queue_manual)
+            else:
+                update_job_status(config, queue_job_id, db_status)
+        except Exception as exc:
+            logger.warning("Failed to update job status in queue db for %s: %s", record_id, exc)
 
     # Emit final job completion event
     final_pdf_bundle_path = _prepare_final_bundle(
@@ -960,6 +1364,7 @@ def process_record_job(payload: Dict[str, Any]) -> Dict[str, Any]:
         record_name=record_name,
         batch_id=batch_id,
         source_file=source_file,
+        mode="observe" if observe_mode else ("sandbox" if sandbox_mode else "full"),
         status=final_status.value,
         confirmation_number=final_confirm,
         step6_ein=final_step6_ein,

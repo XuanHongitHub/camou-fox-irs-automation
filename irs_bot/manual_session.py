@@ -10,7 +10,7 @@ from typing import Any
 from .config import AppConfig
 from .logging_utils import ensure_dir, utc_now
 from .proxyxoay_client import ProxyXoayClient
-from .runner import check_proxy_health, pick_proxy_vm, resolve_proxy_endpoint, rotate_proxy_ip
+from .runner import _goto_with_retry, check_proxy_health, pick_proxy_vm, resolve_proxy_endpoint, rotate_proxy_ip, rotate_runtime_ip
 
 logger = logging.getLogger(__name__)
 
@@ -50,77 +50,6 @@ MANUAL_SAVE_SCRIPT = r"""
     }
   });
   document.documentElement.appendChild(btn);
-
-  const getActionNode = (el) => {
-    if (!el) return null;
-    return el.closest('button, input[type="submit"], input[type="button"], a[role="button"], a, [role="button"]');
-  };
-
-  const shouldCaptureBeforeNav = (node) => {
-    if (!node) return false;
-    const aria = (node.getAttribute('aria-label') || '').toLowerCase().trim();
-    if (/(^|\\s)(continue|next|submit|review|assign|confirm|finish|complete)(\\s|$)/.test(aria)) return true;
-    const txt = ((node.innerText || node.value || aria || '') + '').toLowerCase().trim();
-    return /(continue|next|submit|review|assign|confirm|finish|complete)/.test(txt);
-  };
-
-  const captureSoon = async (reason) => {
-    if (typeof window.__irsManualSaveSnapshotReason !== 'function') return;
-    try {
-      await window.__irsManualSaveSnapshotReason(reason);
-    } catch (_) {}
-  };
-
-  const gateAndCapture = (ev, reason) => {
-    const node = getActionNode(ev.target);
-    if (!shouldCaptureBeforeNav(node)) return;
-    if (node.dataset.irsBypassOnce === '1') {
-      node.dataset.irsBypassOnce = '';
-      return;
-    }
-    ev.preventDefault();
-    ev.stopPropagation();
-    ev.stopImmediatePropagation();
-    (async () => {
-      await Promise.race([
-        captureSoon(reason),
-        new Promise((r) => setTimeout(r, 2200)),
-      ]);
-      try {
-        node.dataset.irsBypassOnce = '1';
-        node.click();
-      } catch (_) {}
-    })();
-  };
-
-  document.addEventListener('click', (ev) => gateAndCapture(ev, 'before_continue_click'), true);
-  document.addEventListener('pointerdown', (ev) => {
-    const node = getActionNode(ev.target);
-    if (shouldCaptureBeforeNav(node)) captureSoon('before_continue_pointerdown');
-  }, true);
-  document.addEventListener('mousedown', (ev) => {
-    const node = getActionNode(ev.target);
-    if (shouldCaptureBeforeNav(node)) captureSoon('before_continue_mousedown');
-  }, true);
-
-  document.addEventListener('submit', () => {
-    captureSoon('before_form_submit');
-  }, true);
-
-  document.addEventListener('keydown', (ev) => {
-    if (ev.key !== 'Enter') return;
-    captureSoon('before_enter_submit');
-  }, true);
-
-  let formSaveTimer = null;
-  const scheduleFormSave = () => {
-    if (formSaveTimer) clearTimeout(formSaveTimer);
-    formSaveTimer = setTimeout(() => {
-      captureSoon('form_change');
-    }, 700);
-  };
-  document.addEventListener('input', scheduleFormSave, true);
-  document.addEventListener('change', scheduleFormSave, true);
 })();
 """
 
@@ -186,6 +115,8 @@ def _has_placeholder_auth(config: AppConfig) -> bool:
     auth = config.proxyxoay.auth
     if not auth:
         return True
+    if str(auth.access_token or "").strip():
+        return False
     vals = [auth.username, auth.password, auth.login_endpoint]
     for v in vals:
         if "YOUR_PROXYXOAY" in v:
@@ -199,31 +130,45 @@ def run_manual_session(
     start_url: str | None = None,
     snapshot_dir: str | Path = "artifacts/manual",
     skip_rotate: bool = False,
+    direct: bool = False,
 ) -> None:
     rotate = None
     proxy_code = "manual-no-rotate"
-    if not skip_rotate:
-        if _has_placeholder_auth(config):
-            raise ManualSessionError(
-                "proxyxoay.auth still has placeholder values. Update config with real API login first."
-            )
-        client = ProxyXoayClient(config.proxyxoay)
-        vm = pick_proxy_vm(client)
-        proxy_code = vm.proxy_code
-        rotate = rotate_proxy_ip(client, proxy_code, wait_seconds=config.proxy_runtime.change_ip_wait_seconds)
-        if rotate.status.upper() != "SUCCESS":
-            raise ManualSessionError(f"Rotate IP failed for {proxy_code}: {rotate.message}")
+    rotate_url = str(getattr(config.proxy_runtime, "rotate_url", "") or "").strip()
+    if direct:
+        skip_rotate = True
+    if not skip_rotate and not direct:
+        if rotate_url:
+            proxy_code = "manual-runtime-rotate"
+            rotate = rotate_runtime_ip(rotate_url, wait_seconds=config.proxy_runtime.change_ip_wait_seconds)
+            if rotate.status.upper() not in {"SUCCESS", "SKIPPED"}:
+                raise ManualSessionError(f"Runtime rotate failed for manual session: {rotate.message}")
+        else:
+            if _has_placeholder_auth(config):
+                raise ManualSessionError(
+                    "Manual rotate requires either proxy_runtime.rotate_url or real proxyxoay auth/access_token."
+                )
+            client = ProxyXoayClient(config.proxyxoay)
+            vm = pick_proxy_vm(client)
+            proxy_code = vm.proxy_code
+            rotate = rotate_proxy_ip(client, proxy_code, wait_seconds=config.proxy_runtime.change_ip_wait_seconds)
+            if rotate.status.upper() != "SUCCESS":
+                raise ManualSessionError(f"Rotate IP failed for {proxy_code}: {rotate.message}")
 
-    endpoint = resolve_proxy_endpoint(config, proxy_code)
-    if config.proxy_runtime.skip_healthcheck:
-        ok, health = True, "skipped"
-    else:
-        ok, health = check_proxy_health(endpoint, config.proxy_runtime.healthcheck_url)
-    if not ok:
-        raise ManualSessionError(f"Proxy healthcheck failed: {health}")
+    endpoint = None
+    health = "direct"
+    if not direct:
+        endpoint = resolve_proxy_endpoint(config, proxy_code)
+        if config.proxy_runtime.skip_healthcheck:
+            ok, health = True, "skipped"
+        else:
+            ok, health = check_proxy_health(endpoint, config.proxy_runtime.healthcheck_url)
+        if not ok:
+            raise ManualSessionError(f"Proxy healthcheck failed: {health}")
 
     logger.info(
-        "Manual session proxy_code=%s new_ip=%s skip_rotate=%s",
+        "Manual session direct=%s proxy_code=%s new_ip=%s skip_rotate=%s",
+        direct,
         proxy_code,
         rotate.new_ip if rotate else "not-rotated",
         skip_rotate,
@@ -234,11 +179,13 @@ def run_manual_session(
     except ImportError as exc:
         raise ManualSessionError("Missing dependency: camoufox") from exc
 
-    proxy = {
-        "server": endpoint.server,
-        "username": endpoint.username,
-        "password": endpoint.password,
-    }
+    proxy = None
+    if endpoint is not None:
+        proxy = {
+            "server": endpoint.server,
+            "username": endpoint.username,
+            "password": endpoint.password,
+        }
 
     out_dir = Path(snapshot_dir) / f"manual-{int(time.time())}-{proxy_code}"
     ensure_dir(out_dir)
@@ -246,7 +193,14 @@ def run_manual_session(
     ensure_dir(downloads_dir)
 
     launch_window = (config.browser.manual_window_width, config.browser.manual_window_height)
-    with Camoufox(headless=False, proxy=proxy, window=launch_window) as browser:
+    launch_kwargs: dict[str, Any] = {
+        "headless": False,
+        "window": launch_window,
+    }
+    if proxy:
+        launch_kwargs["proxy"] = proxy
+        launch_kwargs["geoip"] = False
+    with Camoufox(**launch_kwargs) as browser:
         context = browser.new_context(
             accept_downloads=True,
             no_viewport=True,
@@ -254,24 +208,13 @@ def run_manual_session(
         page = context.new_page()
         page.evaluate("document.documentElement.style.zoom = '100%'")
 
-        counter = {"n": 0}
         download_counter = {"n": 0}
-        net_snap = {"t": 0.0}
+        snapshot_counter = {"n": 0}
 
         def snap(reason: str) -> None:
-            counter["n"] += 1
-            _snapshot_html(page, out_dir, counter["n"], reason)
-            logger.info("Saved snapshot #%s reason=%s", counter["n"], reason)
-
-        def on_load() -> None:
-            snap("load")
-
-        def on_dom() -> None:
-            snap("domcontentloaded")
-
-        def on_frame(frame: Any) -> None:
-            if frame == page.main_frame:
-                snap("framenavigated")
+            snapshot_counter["n"] += 1
+            _snapshot_html(page, out_dir, snapshot_counter["n"], reason)
+            logger.info("Saved snapshot #%s reason=%s", snapshot_counter["n"], reason)
 
         def on_download(download: Any) -> None:
             download_counter["n"] += 1
@@ -286,68 +229,40 @@ def run_manual_session(
                 logger.warning("Failed to save download %s: %s", name, exc)
                 print(f"[download] failed: {name} ({exc})")
 
-        def on_request(request: Any) -> None:
-            try:
-                now = time.monotonic()
-                # Main-frame navigation
-                if request.is_navigation_request() and request.frame == page.main_frame:
-                    snap("before_navigation_request")
-                    net_snap["t"] = now
-                    return
+        context.expose_function("__irsManualSaveSnapshot", lambda: snap("manual_button"))
+        page.add_init_script(MANUAL_SAVE_SCRIPT)
+        page.on("download", on_download)
 
-                # Many IRS step transitions happen via fetch/xhr, not hard navigation.
-                if request.frame != page.main_frame:
-                    return
-                if request.resource_type not in {"xhr", "fetch", "document"}:
-                    return
-                if now - net_snap["t"] < 1.2:
-                    return
-                url = (request.url or "").lower()
-                if "/applyein/" not in url and "irs.gov" not in url:
-                    return
-                snap("before_step_request")
-                net_snap["t"] = now
+        first_url = start_url or config.target_url
+        startup_error = ""
+        try:
+            _goto_with_retry(page, first_url, config)
+        except Exception as exc:
+            startup_error = str(exc)
+            logger.warning("Manual initial goto failed, keeping browser open for inspection: %s", startup_error)
+            try:
+                page.goto("about:blank", timeout=min(config.browser.timeout_ms, 3000))
             except Exception:
                 pass
 
-        context.expose_function("__irsManualSaveSnapshot", lambda: snap("manual_button"))
-        context.expose_function("__irsManualSaveSnapshotReason", lambda reason: snap(str(reason or "manual_reason")))
-        page.add_init_script(MANUAL_SAVE_SCRIPT)
-        page.on("load", lambda: on_load())
-        page.on("domcontentloaded", lambda: on_dom())
-        page.on("framenavigated", on_frame)
-        page.on("download", on_download)
-        page.on("request", on_request)
-
-        first_url = start_url or config.target_url
-        page.goto(first_url, timeout=config.browser.timeout_ms)
-        snap("session_start")
-
         print("Manual session started.")
+        print(f"Mode: {'direct-browser' if direct else 'proxy-browser'}")
         print(f"Proxy code: {proxy_code}")
         print(f"Rotate mode: {'skip' if skip_rotate else 'change-ip'}")
         print(f"Proxy health: {health}")
         print(f"Snapshots dir: {out_dir}")
         print(f"Downloads dir: {downloads_dir}")
-        print("Injected button: Save Web (bottom-right) for manual HTML snapshot.")
-        print(f"Auto-save interval: {config.browser.manual_autosave_seconds}s")
+        print("Injected button: Save Web (bottom-right) for manual snapshot on demand.")
+        if startup_error:
+            print(f"Initial IRS open failed: {startup_error}")
+            print(f"Try opening manually in this browser: {first_url}")
         print("Interact with browser manually. Press Ctrl+C to stop session.")
 
-        last_url = page.url
-        autosave_interval = max(0.2, float(config.browser.manual_autosave_seconds))
-        last_autosave = time.monotonic()
         try:
             while True:
                 time.sleep(0.2)
                 if page.is_closed():
                     break
-                now = time.monotonic()
-                if now - last_autosave >= autosave_interval:
-                    snap("autosave_tick")
-                    last_autosave = now
-                if page.url != last_url:
-                    last_url = page.url
-                    snap("url_change")
         except KeyboardInterrupt:
             pass
 

@@ -99,7 +99,11 @@ def _sanitize_name_part(value: str) -> str:
 
 def _sanitize_address(value: str) -> str:
     # Keep address conservative to avoid IRS validation rejects on special chars.
-    cleaned = re.sub(r"[^A-Za-z0-9\s/\-]", " ", str(value or ""))
+    raw = str(value or "")
+    # Physical street forms reject P.O. Box; degrade it to BOX rather than
+    # submitting the forbidden token sequence.
+    raw = re.sub(r"\bP\s*\.?\s*O\s*\.?\s*BOX\b", "BOX", raw, flags=re.IGNORECASE)
+    cleaned = re.sub(r"[^A-Za-z0-9\s/\-]", " ", raw)
     return _collapse_spaces(cleaned)
 
 
@@ -127,14 +131,20 @@ def _country_is_us(country: str) -> bool:
 
 def _looks_like_county(value: str) -> bool:
     v = re.sub(r"\s+", " ", (value or "").strip())
-    return bool(v) and v.upper().endswith(" COUNTY")
+    if not v:
+        return False
+    upper = v.upper()
+    return upper.endswith(" COUNTY") or upper.endswith(" PARISH")
 
 
 def _normalize_county(value: str) -> str:
     v = re.sub(r"\s+", " ", (value or "").strip())
     if not v:
         return ""
-    return re.sub(r"\s+county$", "", v, flags=re.IGNORECASE).strip() or v
+    # IRS county field accepts the locality name better than long legal suffixes.
+    # Some sources produce hybrid values like "East Baton Rouge Parish County".
+    normalized = re.sub(r"(?:\s+(?:county|parish))+\s*$", "", v, flags=re.IGNORECASE).strip()
+    return normalized or v
 
 
 def _seed_month(record_id: str) -> str:
@@ -590,9 +600,53 @@ def _looks_like_irs_validation_error(message: str) -> bool:
         "only special characters allowed",
         "is required",
         "invalid",
+        "not permitted",
+        "not allowed",
+        "po boxes are not permitted",
+        "p.o. boxes are not permitted",
+        "p o boxes are not permitted",
+        "physical address",
+        "street:",
+        "street address",
         "county name",
         "responsible party",
     ])
+
+
+def _validate_record_fast(record: Dict[str, Any]) -> str:
+    full_name = _collapse_spaces(_get(record, "NAME", "name"))
+    ssn = _digits(_get(record, "SSN", "ssn"))
+    address = _sanitize_address(_get(record, "ADDRESS", "address"))
+    city = _sanitize_city(_get(record, "CITI", "city"))
+    state = _collapse_spaces(_get(record, "BANG", "state")).upper()
+    zip_code = _digits(_get(record, "ZIP", "zip"))
+
+    if not full_name:
+        return "Missing NAME"
+    if len(ssn) != 9:
+        return "Invalid SSN: expected exactly 9 digits"
+    if not address:
+        return "Missing ADDRESS"
+    if not city:
+        return "Missing CITI"
+    if len(state) != 2:
+        return "Invalid BANG/state: expected 2-letter state code"
+    if len(zip_code) < 5:
+        return "Invalid ZIP: expected at least 5 digits"
+    return ""
+
+
+def _fail_fast_after_continue(page: Any, artifact_dir: Path, tag: str) -> str:
+    page.wait_for_timeout(350)
+    hard_fail = _irs_hard_fail_message(page)
+    if hard_fail:
+        capture_reference_page(page, artifact_dir, tag)
+        return hard_fail
+    visible_error = _extract_visible_error(page)
+    if _looks_like_irs_validation_error(visible_error):
+        capture_reference_page(page, artifact_dir, tag)
+        return visible_error
+    return ""
 
 
 def _set_checked_if_present(page: Any, selector: str, timeout_ms: int) -> bool:
@@ -602,6 +656,22 @@ def _set_checked_if_present(page: Any, selector: str, timeout_ms: int) -> bool:
     except Exception:
         return False
     _set_checked(page, selector, timeout_ms)
+    return True
+
+
+def _human_fill_if_present(
+    page: Any,
+    selector: str,
+    value: str,
+    config: AppConfig,
+    timeout_ms: int,
+) -> bool:
+    """Best-effort text fill. Returns False when selector is absent."""
+    try:
+        page.wait_for_selector(selector, state="visible", timeout=min(timeout_ms, 2500))
+    except Exception:
+        return False
+    _human_fill(page, selector, value, config, timeout_ms)
     return True
 
 
@@ -647,37 +717,83 @@ def _wait_irs_selector_or_hard_fail(
     timeout_ms: int,
     step_name: str,
 ) -> str:
-    try:
-        page.wait_for_selector(selector, timeout=timeout_ms)
-        return ""
-    except Exception as first_exc:
+    deadline = time.monotonic() + max(0.5, timeout_ms / 1000.0)
+    first_exc: Exception | None = None
+
+    while time.monotonic() < deadline:
         hard_fail = _irs_hard_fail_message(page)
         if hard_fail:
             return hard_fail
-
-        logger.warning(
-            "Step %s: selector %s not ready; reloading page once before retry",
-            step_name,
-            selector,
-        )
         try:
-            page.reload(timeout=timeout_ms, wait_until="domcontentloaded")
-        except Exception:
-            try:
-                current_url = str(getattr(page, "url", "") or "")
-                if current_url:
-                    page.goto(current_url, timeout=timeout_ms)
-                else:
-                    raise first_exc
-            except Exception:
-                raise first_exc
+            if page.locator(selector).first.is_visible(timeout=250):
+                return ""
+        except Exception as exc:
+            if first_exc is None:
+                first_exc = exc
+        page.wait_for_timeout(200)
 
-        page.wait_for_timeout(350)
+    hard_fail = _irs_hard_fail_message(page)
+    if hard_fail:
+        return hard_fail
+
+    logger.warning(
+        "Step %s: selector %s not ready; reloading page once before retry",
+        step_name,
+        selector,
+    )
+    try:
+        page.reload(timeout=timeout_ms, wait_until="domcontentloaded")
+    except Exception:
+        try:
+            current_url = str(getattr(page, "url", "") or "")
+            if current_url:
+                page.goto(current_url, timeout=timeout_ms)
+            elif first_exc is not None:
+                raise first_exc
+            else:
+                page.wait_for_selector(selector, timeout=timeout_ms)
+                return ""
+        except Exception:
+            if first_exc is not None:
+                raise first_exc
+            raise
+
+    reload_deadline = time.monotonic() + max(0.5, timeout_ms / 1000.0)
+    while time.monotonic() < reload_deadline:
         hard_fail = _irs_hard_fail_message(page)
         if hard_fail:
             return hard_fail
-        page.wait_for_selector(selector, timeout=timeout_ms)
-        return ""
+        try:
+            if page.locator(selector).first.is_visible(timeout=250):
+                return ""
+        except Exception:
+            pass
+        page.wait_for_timeout(200)
+
+    hard_fail = _irs_hard_fail_message(page)
+    if hard_fail:
+        return hard_fail
+    if first_exc is not None:
+        raise first_exc
+    page.wait_for_selector(selector, timeout=min(timeout_ms, 1000))
+    return ""
+
+
+def _wait_irs_any_selector_or_hard_fail(
+    page: Any,
+    selectors: list[str],
+    timeout_ms: int,
+    step_name: str,
+) -> str:
+    last_exc: Exception | None = None
+    for selector in selectors:
+        try:
+            return _wait_irs_selector_or_hard_fail(page, selector, timeout_ms, step_name)
+        except Exception as exc:
+            last_exc = exc
+    if last_exc:
+        raise last_exc
+    raise RunnerError(f"Missing selectors for step {step_name}")
 
 
 def _is_irs_entry_bootstrap_target(url: str) -> bool:
@@ -787,14 +903,98 @@ def _human_delay(page: Any, config: AppConfig, extra_ms: int = 0) -> None:
     jitter = max(0, int(config.browser.step_delay_jitter_ms))
     ms = base + (random.randint(0, jitter) if jitter else 0) + max(0, int(extra_ms))
     # Adaptive speed: if page is already stable, reduce human delay.
-    try:
-        ready = bool(page.evaluate("() => document.readyState === 'complete'"))
-    except Exception:
-        ready = False
-    if ready and ms > 0:
-        ms = int(ms * 0.45)
+    if not (
+        _observe_mode_enabled(config)
+        and bool(getattr(config.browser, "observe_disable_ready_speedup", False))
+    ):
+        try:
+            ready = bool(page.evaluate("() => document.readyState === 'complete'"))
+        except Exception:
+            ready = False
+        if ready and ms > 0:
+            ms = int(ms * 0.45)
     if ms > 0:
         page.wait_for_timeout(ms)
+
+
+def _observe_mode_enabled(config: AppConfig) -> bool:
+    return bool(getattr(config.browser, "observe_mode_active", False))
+
+
+def _human_fill(page: Any, selector: str, value: str, config: AppConfig, timeout_ms: int) -> None:
+    text = str(value or "")
+    if not _observe_mode_enabled(config):
+        page.fill(selector, text, timeout=timeout_ms)
+        return
+    page.click(selector, timeout=timeout_ms)
+    page.press(selector, "Control+A", timeout=timeout_ms)
+    page.press(selector, "Backspace", timeout=timeout_ms)
+    if text:
+        page.type(selector, text, delay=max(20, int(getattr(config.browser, "observe_type_char_delay_ms", 140))))
+    pause_ms = max(0, int(getattr(config.browser, "observe_field_pause_ms", 0)))
+    if pause_ms:
+        page.wait_for_timeout(pause_ms)
+
+
+def _human_select_option(page: Any, selector: str, value: str, config: AppConfig, timeout_ms: int) -> None:
+    _select_option_retry(page, selector, value, timeout_ms)
+    if _observe_mode_enabled(config):
+        pause_ms = max(0, int(getattr(config.browser, "observe_field_pause_ms", 0)))
+        if pause_ms:
+            page.wait_for_timeout(pause_ms)
+
+
+def _looks_like_transient_goto_error(message: str) -> bool:
+    text = str(message or "").lower()
+    return any(token in text for token in [
+        "ns_error_proxy_forbidden",
+        "ns_error_proxy_connection_refused",
+        "ns_error_net_interrupt",
+        "ns_binding_aborted",
+        "net_interrupt",
+        "binding_aborted",
+        "connection refused",
+        "could not connect to proxy",
+        "proxyerror",
+        "net::",
+        "navigation timeout",
+        "timeout",
+        "timed out",
+        "connection reset",
+        "connection aborted",
+        "temporarily unavailable",
+        "econnreset",
+        "econnrefused",
+    ])
+
+
+def _goto_with_retry(page: Any, url: str, config: AppConfig) -> None:
+    timeout_ms = int(config.browser.timeout_ms)
+    waits_ms = [0, 3000, 7000, 12000]
+    last_exc: Exception | None = None
+    for idx, wait_ms in enumerate(waits_ms, start=1):
+        if wait_ms > 0:
+            page.wait_for_timeout(wait_ms)
+        try:
+            page.goto(url, timeout=timeout_ms, wait_until="domcontentloaded")
+            try:
+                page.wait_for_load_state("domcontentloaded", timeout=min(timeout_ms, 5000))
+            except Exception:
+                pass
+            return
+        except Exception as exc:
+            last_exc = exc
+            if idx >= len(waits_ms) or not _looks_like_transient_goto_error(str(exc)):
+                raise
+            logger.warning(
+                "Initial goto failed (%s/%s), retrying in %.1fs: %s",
+                idx,
+                len(waits_ms),
+                waits_ms[idx] / 1000 if idx < len(waits_ms) else 0,
+                exc,
+            )
+    if last_exc:
+        raise last_exc
 
 
 def _clean_runtime_scalar(value: str) -> str:
@@ -851,13 +1051,24 @@ def _parse_runtime_proxy_endpoint(host_value: str, port_value: int) -> Tuple[str
 
 
 
-def resolve_proxy_endpoint(config: AppConfig, proxy_code: str) -> ProxyEndpoint:
+def resolve_proxy_endpoint(
+    config: AppConfig,
+    proxy_code: str,
+    runtime_proxy: Optional[Dict[str, Any]] = None,
+) -> ProxyEndpoint:
+    source = runtime_proxy or {}
+    host_value = source.get("host", config.proxy_runtime.host)
+    port_value = source.get("port", config.proxy_runtime.port)
     scheme, host, port, parsed_user, parsed_pass = _parse_runtime_proxy_endpoint(
-        config.proxy_runtime.host,
-        config.proxy_runtime.port,
+        str(host_value),
+        int(port_value or 0),
     )
-    username = _clean_runtime_scalar(parsed_user or config.proxy_runtime.username)
-    password = _clean_runtime_scalar(parsed_pass or config.proxy_runtime.password)
+    username = _clean_runtime_scalar(
+        parsed_user or str(source.get("username", config.proxy_runtime.username) or "")
+    )
+    password = _clean_runtime_scalar(
+        parsed_pass or str(source.get("password", config.proxy_runtime.password) or "")
+    )
     return ProxyEndpoint(
         proxy_code=proxy_code,
         host=host,
@@ -923,6 +1134,14 @@ def rotate_runtime_ip(rotate_url: str, wait_seconds: int) -> ProxyRotationResult
             proxy_code="RUNTIME",
             status="SKIP",
             message="rotate_url is empty; skip rotate",
+            new_ip=None,
+        )
+    parsed = urlsplit(url)
+    if parsed.scheme.lower() not in {"http", "https"} or not parsed.netloc:
+        return ProxyRotationResult(
+            proxy_code="RUNTIME",
+            status="SKIP",
+            message="rotate_url invalid; skip rotate",
             new_ip=None,
         )
     try:
@@ -1037,7 +1256,22 @@ def _irs_hard_fail_message(page: Any) -> str:
         return "IRS daily EIN limit reached: attempted too many requests for today."
     if "limited to receipt of one (1) ein per business day" in low:
         return "IRS daily EIN limit reached: one EIN per business day."
-    if "we are unable to provide you with an ein" in low:
+    if (
+        ("form ss-4" in low or "form ss 4" in low)
+        and (
+            "fax" in low
+            or "mail" in low
+            or "submit" in low
+            or "must submit" in low
+        )
+    ):
+        return "IRS cannot provide EIN online for this record: submit Form SS-4 by fax or mail."
+    if (
+        "we are unable to provide you with an ein" in low
+        or "unable to provide you with an ein through this online assistant" in low
+        or "cannot provide you with an ein online" in low
+        or ("unable to complete" in low and "ein" in low and "online" in low)
+    ):
         ref = ""
         m = re.search(r"reference number:\s*([0-9]+)", low)
         if m:
@@ -1049,8 +1283,6 @@ def _irs_hard_fail_message(page: Any) -> str:
         return "IRS cannot provide EIN online for this record (reference 101)."
     if "reference number: 115" in low:
         return "IRS cannot provide EIN online for this record (reference 115)."
-    if ("form ss-4" in low or "form ss 4" in low) and ("fax" in low or "mail" in low):
-        return "IRS cannot provide EIN online for this record: submit Form SS-4 by fax or mail."
     if "ssn has already" in low and "ein" in low:
         return "IRS SSN rule hit: this SSN has already been used for EIN registration."
     if "ssn/itin has already" in low and "ein" in low:
@@ -1066,6 +1298,10 @@ def _irs_hard_fail_message(page: Any) -> str:
     if "already assigned an ein" in low:
         return "IRS SSN rule hit: responsible party already has an EIN."
     if "already has an ein" in low:
+        return "IRS SSN rule hit: responsible party already has an EIN."
+    if "already associated with an ein" in low:
+        return "IRS SSN rule hit: responsible party already has an EIN."
+    if "existing ein" in low and "responsible party" in low:
         return "IRS SSN rule hit: responsible party already has an EIN."
     if "responsible party" in low and "already" in low and "ein" in low:
         return "IRS SSN rule hit: responsible party already used for EIN."
@@ -1096,7 +1332,7 @@ def execute_workflow(
 
         if step.action == "goto":
             target = step.value or config.target_url
-            page.goto(target, timeout=timeout_ms)
+            _goto_with_retry(page, target, config)
         elif step.action == "wait_for_selector":
             if not selector:
                 raise RunnerError(f"Step {step.name} missing selector")
@@ -1105,7 +1341,7 @@ def execute_workflow(
             if not selector:
                 raise RunnerError(f"Step {step.name} missing selector")
             value = step.value if step.value else str(record.get(step.field, ""))
-            page.fill(selector, value, timeout=timeout_ms)
+            _human_fill(page, selector, value, config, timeout_ms)
         elif step.action == "click":
             if not selector:
                 raise RunnerError(f"Step {step.name} missing selector")
@@ -1114,7 +1350,7 @@ def execute_workflow(
             if not selector:
                 raise RunnerError(f"Step {step.name} missing selector")
             value = step.value if step.value else str(record.get(step.field, ""))
-            _select_option_retry(page, selector, value, timeout_ms)
+            _human_select_option(page, selector, value, config, timeout_ms)
         elif step.action == "check_text":
             if step.value and step.value.lower() not in page.content().lower():
                 raise RunnerError(f"Step {step.name} expected text not found")
@@ -1217,6 +1453,9 @@ def execute_ein_form_flow(
     timeout_ms = config.browser.timeout_ms
     record_id = _get(record, "record_id") or "row"
     current_step = "init"
+    fast_validation_error = _validate_record_fast(record)
+    if fast_validation_error:
+        return JobStatus.VALIDATION_FAILED, "record_validation", "", {"error_message": fast_validation_error}
 
     country = _get(record, "country")
     # Some sheets misuse "Country" to store county values (e.g. "Tulsa County").
@@ -1239,6 +1478,10 @@ def execute_ein_form_flow(
     if not county_hint and _looks_like_county(country):
         county_hint = country
     county = _sanitize_county(_normalize_county(county_hint) or _resolve_county(zip_code, city, state))
+    trade_name = _collapse_spaces(_get(record, "TRADE_NAME", "trade_name", "DBA", "dba", "DBA_NAME", "doing_business_as"))
+    if not trade_name:
+        trade_name = full_name
+    trade_name = _sanitize_address(trade_name).upper()
     month = _seed_month(record_id)
     year = "2025"
 
@@ -1284,14 +1527,17 @@ def execute_ein_form_flow(
             capture_reference_page(page, artifact_dir, "irs_hard_fail")
             return JobStatus.VALIDATION_FAILED, "irs_hard_fail", "", {"error_message": hard_fail}
         _human_delay(page, config)
-        page.fill('input[name="responsibleSsn"]', ssn, timeout=timeout_ms)
-        page.fill('input[name="responsibleFirstName"]', first_name, timeout=timeout_ms)
-        page.fill('input[name="responsibleMiddleName"]', middle_name, timeout=timeout_ms)
-        page.fill('input[name="responsibleLastName"]', last_name, timeout=timeout_ms)
+        _human_fill(page, 'input[name="responsibleSsn"]', ssn, config, timeout_ms)
+        _human_fill(page, 'input[name="responsibleFirstName"]', first_name, config, timeout_ms)
+        _human_fill(page, 'input[name="responsibleMiddleName"]', middle_name, config, timeout_ms)
+        _human_fill(page, 'input[name="responsibleLastName"]', last_name, config, timeout_ms)
         _set_checked(page, 'input[name="entityRoleRadioInput"][value="yes"]', timeout_ms)
         _human_delay(page, config, 120)
         if not _click_first(page, ['button[data-testid="btn-continue"]', 'a[aria-label="Continue"]', 'button[aria-label="Continue"]'], timeout_ms):
             raise FlowStepError(current_step, "Cannot find Continue button on step 2")
+        step2_error = _fail_fast_after_continue(page, artifact_dir, "step2_validation")
+        if step2_error:
+            return JobStatus.VALIDATION_FAILED, "step2_validation", "", {"error_message": step2_error}
 
         # Step 3
         current_step = "step3_addresses"
@@ -1304,19 +1550,31 @@ def execute_ein_form_flow(
             capture_reference_page(page, artifact_dir, "irs_hard_fail")
             return JobStatus.VALIDATION_FAILED, "irs_hard_fail", "", {"error_message": hard_fail}
         _human_delay(page, config)
-        page.fill('input[name="physicalStreet"]', address, timeout=timeout_ms)
-        page.fill('input[name="physicalCity"]', city, timeout=timeout_ms)
-        _select_option_retry(page, 'select[name="physicalState"]', state or "OK", timeout_ms)
-        page.fill('input[name="physicalZipCode"]', zip_code[:5], timeout=timeout_ms)
-        page.fill('input[name="thePhone"]', phone[:10], timeout=timeout_ms)
+        _human_fill(page, 'input[name="physicalStreet"]', address, config, timeout_ms)
+        _human_fill(page, 'input[name="physicalCity"]', city, config, timeout_ms)
+        _human_select_option(page, 'select[name="physicalState"]', state or "OK", config, timeout_ms)
+        _human_fill(page, 'input[name="physicalZipCode"]', zip_code[:5], config, timeout_ms)
+        _human_fill(page, 'input[name="thePhone"]', phone[:10], config, timeout_ms)
         _set_checked(page, 'input[name="otherAddress"][value="no"]', timeout_ms)
         _human_delay(page, config, 120)
         if not _click_first(page, ['button[data-testid="btn-continue"]', 'a[aria-label="Continue"]', 'button[aria-label="Continue"]'], timeout_ms):
             raise FlowStepError(current_step, "Cannot find Continue button on step 3")
+        step3_error = _fail_fast_after_continue(page, artifact_dir, "step3_validation")
+        if step3_error:
+            return JobStatus.VALIDATION_FAILED, "step3_validation", "", {"error_message": step3_error}
 
         # Step 4A details
         current_step = "step4a_additional_details"
-        hard_fail = _wait_irs_selector_or_hard_fail(page, 'input[name="countyInput"]', timeout_ms, current_step)
+        hard_fail = _wait_irs_any_selector_or_hard_fail(
+            page,
+            [
+                'input[name="dbaNameInput"]',
+                'select[name="stateInput"]',
+                'input[name="countyInput"]',
+            ],
+            timeout_ms,
+            current_step,
+        )
         if hard_fail:
             capture_reference_page(page, artifact_dir, "irs_hard_fail")
             return JobStatus.VALIDATION_FAILED, "irs_hard_fail", "", {"error_message": hard_fail}
@@ -1325,11 +1583,11 @@ def execute_ein_form_flow(
             capture_reference_page(page, artifact_dir, "irs_hard_fail")
             return JobStatus.VALIDATION_FAILED, "irs_hard_fail", "", {"error_message": hard_fail}
         _human_delay(page, config)
-        page.fill('input[name="dbaNameInput"]', "", timeout=timeout_ms)
-        page.fill('input[name="countyInput"]', county or city or "Tulsa", timeout=timeout_ms)
-        _select_option_retry(page, 'select[name="stateInput"]', state or "OK", timeout_ms)
-        _select_option_retry(page, 'select[name="startDateMonthInput"]', month, timeout_ms)
-        page.fill('input[name="startDateYearInput"]', year, timeout=timeout_ms)
+        _human_fill(page, 'input[name="dbaNameInput"]', trade_name, config, timeout_ms)
+        _human_fill_if_present(page, 'input[name="countyInput"]', county or city or "Tulsa", config, timeout_ms)
+        _human_select_option(page, 'select[name="stateInput"]', state or "OK", config, timeout_ms)
+        _human_select_option(page, 'select[name="startDateMonthInput"]', month, config, timeout_ms)
+        _human_fill(page, 'input[name="startDateYearInput"]', year, config, timeout_ms)
         _set_checked(page, 'input[name="highwayVehiclesInput"][value="no"]', timeout_ms)
         _set_checked(page, 'input[name="gamblingWagerInput"][value="no"]', timeout_ms)
         _set_checked(page, 'input[name="fileForm720Input"][value="no"]', timeout_ms)
@@ -1338,10 +1596,8 @@ def execute_ein_form_flow(
         _human_delay(page, config, 120)
         if not _click_first(page, ['button[data-testid="btn-continue"]', 'a[aria-label="Continue"]', 'button[aria-label="Continue"]'], timeout_ms):
             raise FlowStepError(current_step, "Cannot find Continue button on step 4A")
-        page.wait_for_timeout(250)
-        step4a_error = _extract_visible_error(page)
-        if _looks_like_irs_validation_error(step4a_error):
-            capture_reference_page(page, artifact_dir, "step4a_validation")
+        step4a_error = _fail_fast_after_continue(page, artifact_dir, "step4a_validation")
+        if step4a_error:
             return JobStatus.VALIDATION_FAILED, "step4a_validation", "", {"error_message": step4a_error}
 
         # Step 4B activity/services
@@ -1357,7 +1613,7 @@ def execute_ein_form_flow(
         _human_delay(page, config)
         _set_checked(page, 'input[name="entityBusinessCategoryInput"][value="WHOLESALE"]', timeout_ms)
         _set_checked(page, 'input[name="wholeSaleInput"][value="yes"]', timeout_ms)
-        page.fill('input[name="wholesaleSecondTextInput"]', "fashion", timeout=timeout_ms)
+        _human_fill(page, 'input[name="wholesaleSecondTextInput"]', "fashion", config, timeout_ms)
         _human_delay(page, config, 120)
         if not _click_first(page, ['button[data-testid="btn-continue"]', 'a[aria-label="Continue"]', 'button[aria-label="Continue"]'], timeout_ms):
             raise FlowStepError(current_step, "Cannot find Continue button on step 4B")
@@ -1514,11 +1770,18 @@ def run_single_attempt(
 
     try:
         effective_headless = bool(config.browser.headless or config.browser.force_background_headless)
-        launch_kwargs = {"headless": effective_headless}
+        launch_kwargs = {
+            "headless": effective_headless,
+            "firefox_user_prefs": {
+                "layers.acceleration.disabled": True,
+                "gfx.direct2d.disabled": True,
+            },
+        }
         if not effective_headless:
             launch_kwargs["window"] = (config.browser.manual_window_width, config.browser.manual_window_height)
         if proxy:
             launch_kwargs["proxy"] = proxy
+            launch_kwargs["geoip"] = False
         with Camoufox(**launch_kwargs) as browser:
             if effective_headless:
                 context = browser.new_context(
@@ -1535,7 +1798,7 @@ def run_single_attempt(
             # Keep zoom stable on Windows high-DPI so click coordinates match layout.
             if not effective_headless:
                 page.evaluate("document.documentElement.style.zoom = '100%'")
-            page.goto(config.target_url, timeout=config.browser.timeout_ms)
+            _goto_with_retry(page, config.target_url, config)
             capture_page(page, artifact_dir, "loaded")
 
             if "applyein" in config.target_url.lower() or "ein-sandbox.test" in config.target_url.lower():

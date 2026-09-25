@@ -1,15 +1,36 @@
 # -*- mode: python ; coding: utf-8 -*-
 
 
+from PyInstaller.utils.hooks import collect_data_files
+
+datas = []
+datas += collect_data_files('camoufox')
+datas += collect_data_files('browserforge')
+datas += collect_data_files('apify_fingerprint_datapoints')
+
 a = Analysis(
     ['entry_server.py'],
     pathex=['.'],
     binaries=[],
-    datas=[],
+    datas=datas,
     hiddenimports=[
         'socks',
         'camoufox',
         'camoufox.sync_api',
+        'camoufox.fingerprints',
+        'browserforge',
+        'browserforge.bayesian_network',
+        'browserforge.download',
+        'browserforge.fingerprints',
+        'browserforge.fingerprints.generator',
+        'browserforge.headers',
+        'browserforge.headers.generator',
+        'browserforge.headers.utils',
+        'browserforge.injectors',
+        'browserforge.injectors.playwright',
+        'browserforge.injectors.playwright.injector',
+        'browserforge.injectors.utils',
+        'apify_fingerprint_datapoints',
         'geoip2',
         'geoip2.database',
         'maxminddb',
