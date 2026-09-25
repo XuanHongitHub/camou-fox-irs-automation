@@ -6,6 +6,7 @@ import {
     Globe, Hash, ChevronRight, FolderOpen
 } from 'lucide-react'
 import { Button } from '../base/Button'
+import { useI18n } from '../../i18n/useI18n'
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -121,15 +122,6 @@ function fmtDate(iso?: string) {
     return d.toLocaleString('vi', { hour12: false, month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' })
 }
 
-function getMostRecentSixPm(now: Date = new Date()): Date {
-    const cutoff = new Date(now.getTime())
-    cutoff.setHours(18, 0, 0, 0)
-    if (now.getTime() < cutoff.getTime()) {
-        cutoff.setDate(cutoff.getDate() - 1)
-    }
-    return cutoff
-}
-
 function errorTypeLabel(errorType?: string) {
     const t = String(errorType || '').toLowerCase()
     if (t === 'blocked') return { text: 'Blocked', cls: 'bg-warning/15 text-warning border-warning/30' }
@@ -153,6 +145,7 @@ function getDurationSeconds(row: ResultRow): number | undefined {
 // ─── Row detail expand ────────────────────────────────────────────────────────
 
 function ResultRowDetail({ row }: { row: ResultRow }) {
+    const { locale } = useI18n()
     let step6Data: Record<string, unknown> = {}
     try {
         step6Data = row.step6_data_json ? JSON.parse(String(row.step6_data_json)) : {}
@@ -173,7 +166,7 @@ function ResultRowDetail({ row }: { row: ResultRow }) {
                     {row.status === 'done' && (
                         <div className="col-span-2 flex items-center gap-2 mb-2 p-2.5 bg-success/5 border border-success/20 rounded-xl">
                             <CheckCircle2 className="w-4 h-4 text-success" />
-                            <span className="text-success font-medium text-xs">EIN Confirmed:</span>
+                            <span className="text-success font-medium text-xs">{locale === 'en' ? 'EIN Confirmed:' : 'EIN đã xác nhận:'}</span>
                             <span className="font-mono font-semibold text-text text-xs selection:bg-success/30">{row.confirmation_number}</span>
                             {row.step6_legal_name && <span className="text-[10px] text-muted">({row.step6_legal_name})</span>}
                             <button className="ml-auto p-1.5 hover:bg-success/10 rounded-lg transition-colors text-muted hover:text-success"
@@ -261,31 +254,38 @@ export function ResultsDashboard({
     results,
     onResultsChange,
     onOpenOutputFolder,
+    onRefresh,
     onQuickExportStyled,
     onQuickExportSelected,
     onQuickExportSelectedNext,
+    quickExportSelectedNextRunning = false,
+    quickExportSelectedNextLabel = 'Upload đã chọn',
     onNotify,
 }: {
     results: ResultRow[]
     onResultsChange?: (next: ResultRow[] | ((prev: ResultRow[]) => ResultRow[])) => void
     onOpenOutputFolder?: () => void
+    onRefresh?: () => void
     onQuickExportStyled?: (batchId: string, reportType?: 'report' | 'failures') => void
     onQuickExportSelected?: (rows: ResultRow[], reportType?: 'report' | 'failures') => void
     onQuickExportSelectedNext?: (rows: ResultRow[], reportType?: 'report' | 'failures') => void
+    quickExportSelectedNextRunning?: boolean
+    quickExportSelectedNextLabel?: string
     onNotify?: (msg: string, type?: 'success' | 'error' | 'warning' | 'info') => void
 }) {
+    const { locale } = useI18n()
+    void onQuickExportStyled
     const [search, setSearch] = useState('')
     const [statusFilter, setStatusFilter] = useState<'all' | 'done' | 'failed'>('all')
-    const [sourceFilter, setSourceFilter] = useState<string>('all')
     const [batchFilter, setBatchFilter] = useState<string>('all')
     const [errorFilter, setErrorFilter] = useState<string>('all')
-    const [dateFilter, setDateFilter] = useState<'all' | 'since_6pm' | '7d' | '30d'>('since_6pm')
+    const [dateFrom, setDateFrom] = useState<string>('')
+    const [dateTo, setDateTo] = useState<string>('')
     const [sortField, setSortField] = useState<SortField>('completed_at')
     const [sortDir, setSortDir] = useState<SortDir>('desc')
     const [expandedId, setExpandedId] = useState<string | null>(null)
     const [selected, setSelected] = useState<Set<string>>(new Set())
 
-    const sourceFiles = useMemo(() => ['all', ...new Set(results.map(r => r.source_file ?? '').filter(Boolean))], [results])
     const batches = useMemo(() => ['all', ...new Set(results.map(r => r.batch_id ?? '').filter(Boolean))], [results])
 
 
@@ -293,20 +293,19 @@ export function ResultsDashboard({
         const q = search.toLowerCase()
         return results.filter(r => {
             if (statusFilter !== 'all' && r.status !== statusFilter) return false
-            if (sourceFilter !== 'all' && r.source_file !== sourceFilter) return false
             if (batchFilter !== 'all' && r.batch_id !== batchFilter) return false
             if (errorFilter !== 'all' && r.error_code !== errorFilter) return false
-            if (dateFilter !== 'all') {
+            if (dateFrom || dateTo) {
                 if (!r.completed_at) return false
-                if (dateFilter === 'since_6pm') {
-                    const completedAtMs = new Date(r.completed_at).getTime()
-                    if (!Number.isFinite(completedAtMs)) return false
-                    const cutoffMs = getMostRecentSixPm().getTime()
-                    if (completedAtMs < cutoffMs) return false
-                } else {
-                    const diff = Date.now() - new Date(r.completed_at).getTime()
-                    if (dateFilter === '7d' && diff > 7 * 86400000) return false
-                    if (dateFilter === '30d' && diff > 30 * 86400000) return false
+                const completedAtMs = new Date(r.completed_at).getTime()
+                if (!Number.isFinite(completedAtMs)) return false
+                if (dateFrom) {
+                    const fromMs = new Date(dateFrom).getTime()
+                    if (Number.isFinite(fromMs) && completedAtMs < fromMs) return false
+                }
+                if (dateTo) {
+                    const toMs = new Date(dateTo).getTime()
+                    if (Number.isFinite(toMs) && completedAtMs > toMs) return false
                 }
             }
             if (q) {
@@ -321,7 +320,7 @@ export function ResultsDashboard({
             const cmp = av < bv ? -1 : av > bv ? 1 : 0
             return sortDir === 'asc' ? cmp : -cmp
         })
-    }, [results, search, statusFilter, sourceFilter, batchFilter, errorFilter, dateFilter, sortField, sortDir])
+    }, [results, search, statusFilter, batchFilter, errorFilter, dateFrom, dateTo, sortField, sortDir])
 
     const stats = useMemo(() => ({
         total: filtered.length,
@@ -348,11 +347,11 @@ export function ResultsDashboard({
     }, [])
 
     const resetFilters = () => {
-        setSearch(''); setStatusFilter('all'); setSourceFilter('all')
-        setBatchFilter('all'); setErrorFilter('all'); setDateFilter('since_6pm')
+        setSearch(''); setStatusFilter('all')
+        setBatchFilter('all'); setErrorFilter('all'); setDateFrom(''); setDateTo('')
     }
 
-    const hasFilter = search || statusFilter !== 'all' || sourceFilter !== 'all' || batchFilter !== 'all' || errorFilter !== 'all' || dateFilter !== 'since_6pm'
+    const hasFilter = search || statusFilter !== 'all' || batchFilter !== 'all' || errorFilter !== 'all' || dateFrom || dateTo
     const allSelected = filtered.length > 0 && filtered.every(r => selected.has(`${r.batch_id}:${r.record_id}`))
 
     const toggleSelectRow = (row: ResultRow, checked: boolean) => {
@@ -378,8 +377,6 @@ export function ResultsDashboard({
     }
 
     const selectedRows = filtered.filter(r => selected.has(`${r.batch_id}:${r.record_id}`))
-    const selectedBatchRows = batchFilter !== 'all' ? filtered.filter((r) => String(r.batch_id || '') === batchFilter) : []
-
     const collectPdfs = useCallback(async (rows: ResultRow[], scope: 'selected' | 'batch', batchId?: string, nextOnly = false) => {
         if (!rows.length) {
             onNotify?.('Không có record để gom PDF', 'warning')
@@ -428,11 +425,11 @@ export function ResultsDashboard({
         <div className="flex flex-col h-full min-h-0 bg-base/5">
             <div className="flex items-center gap-8 px-5 py-3 border-b border-border bg-base/20 shrink-0 select-none">
                 <div className="flex flex-col">
-                    <span className="text-[10px] text-muted uppercase tracking-widest font-medium">Outcomes</span>
+                    <span className="text-[10px] text-muted uppercase tracking-widest font-medium">{locale === 'en' ? 'Outcomes' : 'Kết quả'}</span>
                     <div className="flex items-center gap-4 mt-0.5">
                         <div className="flex items-baseline gap-1.5">
                             <span className="text-xl font-bold text-text tabular-nums">{stats.total}</span>
-                            <span className="text-[10px] text-muted uppercase">Results</span>
+                            <span className="text-[10px] text-muted uppercase">{locale === 'en' ? 'Results' : 'Dòng'}</span>
                         </div>
                         <div className="h-6 w-px bg-border/40" />
                         <div className="flex items-center gap-4">
@@ -440,42 +437,42 @@ export function ResultsDashboard({
                                 <CheckCircle2 className="w-4 h-4 text-success" />
                                 <div className="flex flex-col leading-none">
                                     <span className="text-sm font-bold text-success tabular-nums">{stats.done}</span>
-                                    <span className="text-[9px] text-muted uppercase">Confirmed</span>
+                                    <span className="text-[9px] text-muted uppercase">{locale === 'en' ? 'Completed' : 'Hoàn tất'}</span>
                                 </div>
                             </div>
                             <div className="flex items-center gap-2">
                                 <AlertCircle className="w-4 h-4 text-danger" />
                                 <div className="flex flex-col leading-none">
                                     <span className="text-sm font-bold text-danger tabular-nums">{stats.failed}</span>
-                                    <span className="text-[9px] text-muted uppercase">Failed</span>
+                                    <span className="text-[9px] text-muted uppercase">{locale === 'en' ? 'Failed' : 'Thất bại'}</span>
                                 </div>
                             </div>
                         </div>
                     </div>
                 </div>
                 <div className="flex flex-col ml-10">
-                    <span className="text-[10px] text-muted uppercase tracking-widest font-medium">Performance</span>
+                    <span className="text-[10px] text-muted uppercase tracking-widest font-medium">{locale === 'en' ? 'Performance' : 'Hiệu suất'}</span>
                     <div className="flex items-center gap-4 mt-1">
                         <div className="flex items-center gap-2">
                             <BarChart3 className="w-3.5 h-3.5 text-muted" />
                             <span className="text-xs font-semibold tabular-nums text-text/80">{stats.total ? Math.round(stats.done / stats.total * 100) : 0}%</span>
-                            <span className="text-[10px] text-muted uppercase">Success Rate</span>
+                            <span className="text-[10px] text-muted uppercase">{locale === 'en' ? 'Success Rate' : 'Tỷ lệ thành công'}</span>
                         </div>
                         <div className="flex items-center gap-2">
                             <Clock className="w-3.5 h-3.5 text-muted" />
                             <span className="text-xs font-semibold tabular-nums text-text/80">{stats.avgDuration}s</span>
-                            <span className="text-[10px] text-muted uppercase">Avg Time</span>
+                            <span className="text-[10px] text-muted uppercase">{locale === 'en' ? 'Avg Time' : 'TG trung bình'}</span>
                         </div>
                     </div>
                 </div>
                 <div className="ml-auto flex items-center gap-3">
                     <Button variant="ghost" size="xs" className="gap-1.5 text-muted hover:text-text" onClick={() => download(filtered, 'filtered')}>
-                        <Download className="w-3.5 h-3.5" />Export
+                        <Download className="w-3.5 h-3.5" />{locale === 'en' ? 'Export' : 'Xuất'}
                     </Button>
                     {selectedRows.length > 0 && (
                         <>
                             <Button variant="ghost" size="xs" className="gap-1.5 text-accent" onClick={() => download(selectedRows, 'selected')}>
-                                <Download className="w-3.5 h-3.5" />Selected ({selectedRows.length})
+                        <Download className="w-3.5 h-3.5" />{locale === 'en' ? 'Selected' : 'Đã chọn'} ({selectedRows.length})
                             </Button>
                             <Button
                                 variant="ghost"
@@ -488,21 +485,21 @@ export function ResultsDashboard({
                                     setSelected(new Set())
                                 }}
                             >
-                                <X className="w-3.5 h-3.5" />Remove Selected
+                                <X className="w-3.5 h-3.5" />{locale === 'en' ? 'Remove Selected' : 'Xóa mục chọn'}
                             </Button>
                         </>
                     )}
                 </div>
             </div>
 
-            <div className="px-4 py-2 border-b border-border bg-panel shrink-0 overflow-x-auto">
-                <div className="flex items-center gap-2 min-w-max whitespace-nowrap">
+            <div className="px-4 py-2 border-b border-border bg-panel shrink-0">
+                <div className="flex flex-wrap items-center gap-2">
                 <div className="relative group shrink-0">
                     <Search className="w-3.5 h-3.5 text-muted absolute left-2.5 top-1/2 -translate-y-1/2 group-focus-within:text-accent transition-colors" />
                     <input
                         value={search}
                         onChange={e => setSearch(e.target.value)}
-                        placeholder="Search records, EIN, confirmations..."
+                        placeholder={locale === 'en' ? 'Search records...' : 'Tìm record...'}
                         className="h-8 pl-8 pr-3 text-[11px] bg-surface border border-border rounded-xl text-text placeholder:text-muted/40 focus:outline-none focus:border-accent/40 w-64 transition-all"
                     />
                 </div>
@@ -512,37 +509,41 @@ export function ResultsDashboard({
                         <button key={s} onClick={() => setStatusFilter(s)}
                             className={`h-7 px-3 text-[10px] font-semibold rounded-lg transition-all ${statusFilter === s ? (s === 'done' ? 'bg-success text-white' : s === 'failed' ? 'bg-danger text-white' : 'bg-accent text-white') : 'text-muted hover:text-text'}`}
                         >
-                            {s === 'all' ? 'All' : s === 'done' ? 'Confirmed' : 'Failed'}
+                            {s === 'all' ? (locale === 'en' ? 'All' : 'Tất cả') : s === 'done' ? (locale === 'en' ? 'Completed' : 'Hoàn tất') : (locale === 'en' ? 'Failed' : 'Thất bại')}
                         </button>
                     ))}
                 </div>
                 <div className="w-px h-5 bg-border mx-1" />
                 <div className="flex items-center gap-2 shrink-0">
                     <div className="flex items-center gap-1.5 text-[10px] font-medium text-muted mr-1">
-                        <Calendar className="w-3 h-3" /> Period:
+                        <Calendar className="w-3 h-3" /> {locale === 'en' ? 'Time:' : 'Thời gian:'}
                     </div>
-                    <select value={dateFilter} onChange={e => setDateFilter(e.target.value as typeof dateFilter)}
-                        className="h-8 px-2 text-[11px] bg-surface border border-border rounded-xl text-text focus:outline-none focus:border-accent/40 cursor-pointer w-[140px]">
-                        <option value="since_6pm">From Last 6PM</option>
-                        <option value="all">Unlimited History</option>
-                        <option value="7d">Last 7 Sessions</option>
-                        <option value="30d">Last 30 Sessions</option>
-                    </select>
+                    <input
+                        type="datetime-local"
+                        value={dateFrom}
+                        onChange={e => setDateFrom(e.target.value)}
+                        className="h-8 px-2 text-[11px] bg-surface border border-border rounded-xl text-text focus:outline-none focus:border-accent/40 w-[182px]"
+                        title="From date/time"
+                    />
+                    <span className="text-[10px] text-muted">to</span>
+                    <input
+                        type="datetime-local"
+                        value={dateTo}
+                        onChange={e => setDateTo(e.target.value)}
+                        className="h-8 px-2 text-[11px] bg-surface border border-border rounded-xl text-text focus:outline-none focus:border-accent/40 w-[182px]"
+                        title="To date/time"
+                    />
                 </div>
-                <select value={sourceFilter} onChange={e => setSourceFilter(e.target.value)}
-                    className="h-8 px-2 text-[11px] bg-surface border border-border rounded-xl text-muted focus:outline-none focus:border-accent/40 w-[140px]">
-                    {sourceFiles.map(f => <option key={f} value={f}>{f === 'all' ? 'Every source' : f}</option>)}
-                </select>
                 <select value={batchFilter} onChange={e => setBatchFilter(e.target.value)}
-                    className="h-8 px-2 text-[11px] bg-surface border border-border rounded-xl text-muted focus:outline-none focus:border-accent/40 w-[150px]">
-                    {batches.map(b => <option key={b} value={b}>{b === 'all' ? 'Every batch' : b}</option>)}
+                    className="h-8 px-2 text-[11px] bg-surface border border-border rounded-xl text-muted focus:outline-none focus:border-accent/40 w-[180px]">
+                    {batches.map(b => <option key={b} value={b}>{b === 'all' ? (locale === 'en' ? 'All batches' : 'Tất cả batch') : b}</option>)}
                 </select>
                 {hasFilter && (
                     <button onClick={resetFilters} className="h-8 px-2 rounded-xl border border-border bg-danger/5 text-[10px] text-danger hover:bg-danger/10 transition-colors flex items-center gap-1.5">
                         <X className="w-3 h-3" />Clear
                     </button>
                 )}
-                <div className="ml-auto flex items-center gap-3 shrink-0 pl-2">
+                <div className="ml-auto flex flex-wrap items-center gap-2 shrink-0 pl-2">
                     <Button
                         variant="secondary"
                         size="xs"
@@ -550,7 +551,7 @@ export function ResultsDashboard({
                         onClick={() => collectPdfs(selectedRows, 'selected', batchFilter !== 'all' ? String(batchFilter) : undefined)}
                         disabled={selectedRows.length === 0}
                     >
-                        <Download className="w-3.5 h-3.5" />PDF Selected {selectedRows.length ? `(${selectedRows.length})` : ''}
+                        <Download className="w-3.5 h-3.5" />{locale === 'en' ? 'Export PDFs' : 'Xuất PDF'} {selectedRows.length ? `(${selectedRows.length})` : ''}
                     </Button>
                     <Button
                         variant="secondary"
@@ -559,16 +560,7 @@ export function ResultsDashboard({
                         onClick={() => collectPdfs(selectedRows, 'selected', batchFilter !== 'all' ? String(batchFilter) : undefined, true)}
                         disabled={selectedRows.length === 0}
                     >
-                        <Download className="w-3.5 h-3.5" />PDF Next
-                    </Button>
-                    <Button
-                        variant="secondary"
-                        size="xs"
-                        className="h-8 gap-1.5 rounded-xl px-3"
-                        onClick={() => collectPdfs(selectedBatchRows, 'batch', String(batchFilter))}
-                        disabled={batchFilter === 'all' || selectedBatchRows.length === 0}
-                    >
-                        <Download className="w-3.5 h-3.5" />PDF Batch
+                        <Download className="w-3.5 h-3.5" />{locale === 'en' ? 'Next PDFs' : 'PDF tiếp theo'}
                     </Button>
                     <Button
                         variant="secondary"
@@ -576,8 +568,19 @@ export function ResultsDashboard({
                         className="h-8 gap-1.5 rounded-xl px-3"
                         onClick={() => onOpenOutputFolder?.()}
                     >
-                        <FolderOpen className="w-3.5 h-3.5" />Output
+                        <FolderOpen className="w-3.5 h-3.5" />{locale === 'en' ? 'Output' : 'Thư mục output'}
                     </Button>
+                    {onRefresh && (
+                        <Button
+                            variant="secondary"
+                            size="xs"
+                            className="h-8 gap-1.5 rounded-xl px-3"
+                            onClick={() => onRefresh()}
+                            title="Tải lại toàn bộ kết quả từ ổ đĩa"
+                        >
+                            <RefreshCw className="w-3.5 h-3.5" />{locale === 'en' ? 'Refresh' : 'Làm mới'}
+                        </Button>
+                    )}
                     <Button
                         variant="secondary"
                         size="xs"
@@ -592,38 +595,25 @@ export function ResultsDashboard({
                         }}
                         disabled={selectedRows.length === 0}
                     >
-                        <Download className="w-3.5 h-3.5" />Report Selected {selectedRows.length ? `(${selectedRows.length})` : ''}
+                        <Download className="w-3.5 h-3.5" />{locale === 'en' ? 'Export Report' : 'Xuất báo cáo'} {selectedRows.length ? `(${selectedRows.length})` : ''}
                     </Button>
                     <Button
                         variant="secondary"
                         size="xs"
-                        className="h-8 gap-1.5 rounded-xl px-3"
+                        className={`h-8 gap-1.5 rounded-xl px-3 ${quickExportSelectedNextRunning ? 'opacity-80' : ''}`}
                         onClick={() => {
+                            if (quickExportSelectedNextRunning) return
                             if (!selectedRows.length) {
-                                onNotify?.('Hãy tick ít nhất 1 record để export report next', 'warning')
+                                onNotify?.('Hãy tick ít nhất 1 record để upload selected', 'warning')
                                 return
                             }
                             const reportType = statusFilter === 'failed' ? 'failures' : 'report'
                             onQuickExportSelectedNext?.(selectedRows, reportType)
                         }}
-                        disabled={selectedRows.length === 0}
+                        disabled={selectedRows.length === 0 || quickExportSelectedNextRunning}
                     >
-                        <Download className="w-3.5 h-3.5" />Report Next
-                    </Button>
-                    <Button
-                        variant="secondary"
-                        size="xs"
-                        className="h-8 gap-1.5 rounded-xl px-3"
-                        onClick={() => {
-                            if (batchFilter === 'all') {
-                                onNotify?.('Hãy chọn 1 batch cụ thể trước khi export report', 'warning')
-                                return
-                            }
-                            const reportType = statusFilter === 'failed' ? 'failures' : 'report'
-                            onQuickExportStyled?.(String(batchFilter), reportType)
-                        }}
-                    >
-                        <Download className="w-3.5 h-3.5" />Report XLSX
+                        {quickExportSelectedNextRunning ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : <Download className="w-3.5 h-3.5" />}
+                        {quickExportSelectedNextRunning ? quickExportSelectedNextLabel : (locale === 'en' ? 'Upload Selection' : 'Tải lên mục đã chọn')}
                     </Button>
                 </div>
                 </div>
@@ -635,7 +625,7 @@ export function ResultsDashboard({
                         <div className="w-16 h-16 rounded-full bg-surface border border-border flex items-center justify-center">
                             <Filter className="w-8 h-8" />
                         </div>
-                        <div className="text-center font-bold">No records found</div>
+                        <div className="text-center font-bold">{locale === 'en' ? 'No records found' : 'Không có record'}</div>
                     </div>
                 ) : (
                     <table className="w-full text-[11px] border-separate border-spacing-0">
@@ -652,12 +642,12 @@ export function ResultsDashboard({
                                 <th className="w-8 p-0" />
                                 {[
                                     { label: 'Record / EIN', f: 'name' as SortField },
-                                    { label: 'Status', f: 'status' as SortField },
-                                    { label: 'Confirmation' },
-                                    { label: 'Detail' },
+                                    { label: locale === 'en' ? 'Status' : 'Trạng thái', f: 'status' as SortField },
+                                    { label: 'Confirm' },
+                                    { label: locale === 'en' ? 'Detail' : 'Chi tiết' },
                                     { label: 'Proxy' },
-                                    { label: 'Time', f: 'duration_s' as SortField },
-                                    { label: 'Completed', f: 'completed_at' as SortField },
+                                    { label: locale === 'en' ? 'Time' : 'Thời gian', f: 'duration_s' as SortField },
+                                    { label: locale === 'en' ? 'Completed' : 'Xong lúc', f: 'completed_at' as SortField },
                                 ].map(col => (
                                     <th key={col.label}
                                         onClick={col.f ? () => toggleSort(col.f!) : undefined}
@@ -695,8 +685,8 @@ export function ResultsDashboard({
                                         </td>
                                         <td className="px-3 py-3">
                                             {row.status === 'done'
-                                                ? <span className="inline-flex items-center gap-1.5 text-[10px] font-bold text-success bg-success/10 px-2 py-1 rounded-full"><Check className="w-3 h-3" />Done</span>
-                                                : <span className="inline-flex items-center gap-1.5 text-[10px] font-bold text-danger bg-danger/10 px-2 py-1 rounded-full"><X className="w-3 h-3" />Fail</span>
+                                                ? <span className="inline-flex items-center gap-1.5 text-[10px] font-bold text-success bg-success/10 px-2 py-1 rounded-full"><Check className="w-3 h-3" />{locale === 'en' ? 'Completed' : 'Hoàn tất'}</span>
+                                                : <span className="inline-flex items-center gap-1.5 text-[10px] font-bold text-danger bg-danger/10 px-2 py-1 rounded-full"><X className="w-3 h-3" />{locale === 'en' ? 'Failed' : 'Thất bại'}</span>
                                             }
                                         </td>
                                         <td className="px-3 py-3">

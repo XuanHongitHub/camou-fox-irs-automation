@@ -798,6 +798,73 @@ function AppContent({
     }
   }
 
+  const loadResultsFromDisk = useCallback(async () => {
+    const ipc = window.electron?.ipcRenderer
+    if (!ipc) return
+    try {
+      const res = await ipc.invoke('irs:results:load')
+      if (res?.ok && Array.isArray(res.rows) && res.rows.length > 0) {
+        const mapped: ResultRow[] = res.rows.map((r: any) => ({
+          record_id: String(r.record_id || ''),
+          name: String(r.record_name || r.name || ''),
+          ein: String(r.step6_ein || r.confirmation_number || r.ein || ''),
+          status: (String(r.status || '').toLowerCase() === 'success' || String(r.status || '').toLowerCase() === 'done') ? 'done' : 'failed',
+          confirmation_number: String(r.confirmation_number || '') || undefined,
+          error_type: String(r.error_type || '') || undefined,
+          error_code: String(r.error_code || '') || undefined,
+          error_message: String(r.error_message || '') || undefined,
+          last_step: String(r.last_step || '') || undefined,
+          proxy_used: String(r.proxy_used || '') || undefined,
+          proxy_ip: String(r.proxy_ip || '') || undefined,
+          step6_legal_name: String(r.step6_legal_name || '') || undefined,
+          step6_name_control: String(r.step6_name_control || '') || undefined,
+          step6_phone_number: String(r.step6_phone_number || '') || undefined,
+          step6_county: String(r.step6_county || '') || undefined,
+          step6_state: String(r.step6_state || '') || undefined,
+          step6_start_date: String(r.step6_start_date || '') || undefined,
+          step6_principal_activity: String(r.step6_principal_activity || '') || undefined,
+          step6_principal_product_service: String(r.step6_principal_product_service || '') || undefined,
+          step6_reason_for_applying: String(r.step6_reason_for_applying || '') || undefined,
+          step6_physical_location: String(r.step6_physical_location || '') || undefined,
+          step6_responsible_name: String(r.step6_responsible_name || '') || undefined,
+          step6_responsible_ssn_itin: String(r.step6_responsible_ssn_itin || '') || undefined,
+          step6_data_json: String(r.step6_data_json || '') || undefined,
+          pdf_path: String(r.pdf_path || r.final_pdf_path || '') || undefined,
+          final_pdf_path: String(r.final_pdf_path || r.pdf_path || '') || undefined,
+          artifact_dir: String(r.artifact_dir || '') || undefined,
+          attempt_count: Number(r.attempt_count || 1),
+          started_at: String(r.started_at || '') || undefined,
+          completed_at: String(r.ended_at || r.completed_at || '') || undefined,
+          batch_id: String(r.batch_id || '') || undefined,
+        }))
+        _setResults(prev => {
+          const map = new Map<string, ResultRow>()
+          for (const m of mapped) {
+            const k = `${m.batch_id || ''}:${m.record_id}`
+            map.set(k, m)
+          }
+          for (const p of prev) {
+            const k = `${p.batch_id || ''}:${p.record_id}`
+            if (!map.has(k)) map.set(k, p)
+          }
+          return Array.from(map.values())
+        })
+      }
+    } catch {
+      // ignore
+    }
+  }, [])
+
+  useEffect(() => {
+    loadResultsFromDisk()
+  }, [loadResultsFromDisk])
+
+  useEffect(() => {
+    if (activeTab === 'results') {
+      loadResultsFromDisk()
+    }
+  }, [activeTab, loadResultsFromDisk])
+
   useEffect(() => {
     let inFlight = false
     const t = setInterval(async () => {
@@ -2480,6 +2547,7 @@ function AppContent({
               results={results}
               onResultsChange={_setResults}
               onOpenOutputFolder={openOutputFolder}
+              onRefresh={loadResultsFromDisk}
               onQuickExportStyled={quickExportStyled}
               onQuickExportSelected={quickExportSelectedStyled}
               onQuickExportSelectedNext={quickExportSelectedStyledNext}

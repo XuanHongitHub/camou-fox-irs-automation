@@ -3103,6 +3103,20 @@ app.whenReady().then(async () => {
       return { ok: false, error: String(err) }
     }
   })
+  ipcMain.handle('irs:results:load', async () => {
+    try {
+      const userDir = storageRootDir()
+      const resultsPath = join(userDir, 'outputs', 'results.csv')
+      if (!existsSync(resultsPath)) return { ok: true, rows: [] }
+      const raw = await fs.readFile(resultsPath, 'utf-8')
+      const wb = XLSX.read(raw, { type: 'string' })
+      const sheet = wb.Sheets[wb.SheetNames[0]]
+      const rows = XLSX.utils.sheet_to_json<Record<string, unknown>>(sheet, { defval: '' })
+      return { ok: true, rows }
+    } catch (err) {
+      return { ok: false, error: String(err), rows: [] }
+    }
+  })
   ipcMain.handle('irs:queue:remove', async (_event, payload) => {
     try {
       const ids = Array.isArray(payload?.ids) ? payload.ids.map((x: any) => String(x).trim()).filter(Boolean) : []
