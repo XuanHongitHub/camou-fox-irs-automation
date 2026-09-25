@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import sys
 import json
 import logging
 import os
@@ -11,6 +12,12 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List
 from zoneinfo import ZoneInfo
+if __package__ is None or __package__ == "":
+    import sys
+    _parent = str(Path(__file__).resolve().parent.parent)
+    if _parent not in sys.path:
+        sys.path.insert(0, _parent)
+    __package__ = "irs_bot"
 
 from .config import ConfigError, load_config
 from .excel_ingest import load_csv_rows, load_excel_rows, validate_rows
@@ -46,6 +53,8 @@ def _batch_short(batch_id: str) -> str:
 def _detect_mode(batch_rows: List[Dict[str, Any]]) -> str:
     for row in batch_rows:
         q = str(row.get("queue_name", "")).lower()
+        if "observe" in q:
+            return "observe"
         if "sandbox" in q:
             return "sandbox"
         if "manual" in q:
@@ -438,10 +447,11 @@ def _parser() -> argparse.ArgumentParser:
     renew = proxy_sp.add_parser("renew", help="Renew VM codes")
     renew.add_argument("--codes", required=True, help="Comma-separated VM codes")
 
-    manual = sp.add_parser("manual", help="Start manual browser session with rotate IP + HTML snapshots")
+    manual = sp.add_parser("manual", help="Start manual browser session")
     manual.add_argument("--url", default="", help="Start URL. Default is config.target_url")
     manual.add_argument("--snapshot-dir", default="artifacts/manual", help="Snapshot output directory")
     manual.add_argument("--skip-rotate", action="store_true", help="Skip ProxyXoay rotate API and open directly")
+    manual.add_argument("--direct", action="store_true", help="Open direct browser without proxy")
 
     queue = sp.add_parser("queue", help="Queue DB actions")
     queue_sp = queue.add_subparsers(dest="queue_cmd", required=True)
@@ -563,6 +573,7 @@ def cmd_worker(args: argparse.Namespace) -> int:
             cfg.queue.queue_high,
             cfg.queue.queue_default,
             cfg.queue.queue_retry,
+            cfg.queue.queue_observe,
             "ein.sandbox",
         ]
     # keep order, remove duplicates
@@ -588,7 +599,9 @@ def cmd_worker(args: argparse.Namespace) -> int:
         f"{stagger_seconds:g}",
         queues,
     )
-    stop_event = threading.Event()
+    from .worker_jobs import process_record_job, GLOBAL_WORKER_STOP_EVENT
+    stop_event = GLOBAL_WORKER_STOP_EVENT
+    stop_event.clear()
 
     def _worker_loop(worker_idx: int) -> None:
         if stagger_seconds > 0 and worker_idx > 1:
@@ -606,6 +619,8 @@ def cmd_worker(args: argparse.Namespace) -> int:
             try:
                 job = get_next_job(cfg, queues)
                 if job:
+                    if stop_event.is_set():
+                        break
                     logger.info("[W%s] Picked up job %s", worker_idx, job["job_id"])
                     try:
                         process_record_job(job)
@@ -630,7 +645,7 @@ def cmd_worker(args: argparse.Namespace) -> int:
         t.start()
 
     try:
-        while any(t.is_alive() for t in threads):
+        while any(t.is_alive() for t in threads) and not stop_event.is_set():
             time.sleep(0.5)
     except KeyboardInterrupt:
         logger.info("Worker stop requested by user.")
@@ -775,12 +790,17 @@ def cmd_manual(args: argparse.Namespace) -> int:
         start_url=start_url,
         snapshot_dir=args.snapshot_dir,
         skip_rotate=args.skip_rotate,
+        direct=bool(getattr(args, "direct", False)),
     )
     return 0
 
 
 
 def main() -> int:
+    import multiprocessing
+    multiprocessing.freeze_support()
+    if any(arg.startswith("parent_pid=") or "multiprocessing-fork" in arg for arg in sys.argv[1:]):
+        return 0
     setup_logging()
     parser = _parser()
     args = parser.parse_args()

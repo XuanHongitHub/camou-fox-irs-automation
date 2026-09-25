@@ -1,13 +1,15 @@
 import { app, shell, BrowserWindow, ipcMain, dialog } from 'electron'
-import { join, basename, extname } from 'path'
+import { join, extname, basename, dirname } from 'path'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
 import { autoUpdater } from 'electron-updater'
 import icon from '../renderer/src/assets/app-logo.png?asset'
 import { spawn, ChildProcess } from 'child_process'
 import net from 'net'
+import tls from 'tls'
+import { createSign } from 'crypto'
 import { mkdirSync, existsSync, readFileSync, writeFileSync } from 'fs'
 import { promises as fs } from 'fs'
-import * as XLSX from 'xlsx'
+import * as XLSX from 'xlsx-js-style'
 
 let pythonProcess: ChildProcess | null = null
 let lineBuffer = ''
@@ -17,6 +19,7 @@ let stopPythonBackendPromise: Promise<void> | null = null
 let workerShouldRun = false
 let appIsQuitting = false
 let devPythonReady = false
+let pythonProcessMode: 'worker' | 'manual' | null = null
 type UpdateStatus = 'disabled' | 'idle' | 'checking' | 'available' | 'not-available' | 'downloading' | 'downloaded' | 'error'
 let updateState: {
   status: UpdateStatus
@@ -118,10 +121,20 @@ function setupAutoUpdater() {
   })
 
   autoUpdater.on('error', (err) => {
+    const msg = String(err?.message || err)
+    if (msg.includes('404')) {
+      setUpdateState({
+        status: 'not-available',
+        message: 'Chưa có bản phát hành mới trên GitHub (App đang là bản mới nhất)',
+        checkedAt: new Date().toISOString(),
+        error: undefined,
+      })
+      return
+    }
     setUpdateState({
       status: 'error',
-      message: `Update error: ${String(err?.message || err)}`,
-      error: String(err?.stack || err?.message || err),
+      message: `Update error: ${msg}`,
+      error: String(err?.stack || msg),
       checkedAt: new Date().toISOString(),
     })
   })
@@ -129,10 +142,20 @@ function setupAutoUpdater() {
   // Light startup check.
   setTimeout(() => {
     autoUpdater.checkForUpdates().catch((err) => {
+      const msg = String(err?.message || err)
+      if (msg.includes('404')) {
+        setUpdateState({
+          status: 'not-available',
+          message: 'Chưa có bản phát hành mới trên GitHub (App đang là bản mới nhất)',
+          checkedAt: new Date().toISOString(),
+          error: undefined,
+        })
+        return
+      }
       setUpdateState({
         status: 'error',
-        message: `Update check failed: ${String(err)}`,
-        error: String(err),
+        message: `Update check failed: ${msg}`,
+        error: msg,
       })
     })
   }, 3000)
@@ -190,6 +213,9 @@ function userDataDir() {
   return app.getPath('userData')
 }
 
+const DEFAULT_GOOGLE_DRIVE_EXPORT_FOLDER_ID = '1T2dKn2ZKq77xsPBV-fI_Qo-DUyyZi5-d'
+const GOOGLE_DRIVE_CHUNK_SIZE = 200
+
 function runtimeConfigPath() {
   const dir = join(userDataDir(), 'irs-bot')
   mkdirSync(dir, { recursive: true })
@@ -208,6 +234,10 @@ type AppUiSettings = {
   queueCountry?: string
   queueStartHour?: number
   forceRunNow?: boolean
+  workerCount?: number
+  proxies?: any[]
+  proxyAuth?: any
+  globalRotateSecs?: number
 }
 
 function loadAppSettings(): AppUiSettings {
@@ -221,6 +251,10 @@ function loadAppSettings(): AppUiSettings {
       queueCountry: raw?.queueCountry ? String(raw.queueCountry) : undefined,
       queueStartHour: Number.isFinite(Number(raw?.queueStartHour)) ? Number(raw.queueStartHour) : undefined,
       forceRunNow: Boolean(raw?.forceRunNow),
+      workerCount: Number.isFinite(Number(raw?.workerCount)) ? Number(raw.workerCount) : undefined,
+      proxies: Array.isArray(raw?.proxies) ? raw.proxies : undefined,
+      proxyAuth: raw?.proxyAuth ? raw.proxyAuth : undefined,
+      globalRotateSecs: Number.isFinite(Number(raw?.globalRotateSecs)) ? Number(raw.globalRotateSecs) : undefined,
     }
   } catch {
     return {}
@@ -236,12 +270,152 @@ function saveAppSettings(patch: Partial<AppUiSettings>) {
 function normalizeRuntimePath(input: string) {
   const raw = String(input || '').trim()
   if (!raw) return ''
-  if (process.platform === 'win32') return raw
+  if (process.platform === 'win32') {
+    const marker = /[\\/]AppData[\\/]Roaming[\\/]bug-auto[\\/](.*)$/i
+    const match = raw.match(marker)
+    if (match && match[1]) {
+      const relocated = join(userDataDir(), match[1])
+      if (existsSync(relocated) || !existsSync(raw)) {
+        return relocated
+      }
+    }
+    return raw
+  }
   const m = raw.match(/^([a-zA-Z]):[\\/](.*)$/)
   if (!m) return raw
   const drive = m[1].toLowerCase()
   const rest = m[2].replace(/\\/g, '/')
   return `/mnt/${drive}/${rest}`
+}
+
+function formatDobForReport(input: unknown) {
+  const raw = String(input ?? '').trim()
+  if (!raw) return ''
+  if (/^\d{8}$/.test(raw)) {
+    const mm = raw.slice(0, 2)
+    const dd = raw.slice(2, 4)
+    const yyyy = raw.slice(4, 8)
+    return `${mm}/${dd}/${yyyy}`
+  }
+  if (/^\d+(\.\d+)?$/.test(raw)) {
+    const serial = Number(raw)
+    // Excel/Sheets serial date; allow older DOB values (e.g. 18044 => 1949-05-19).
+    if (Number.isFinite(serial) && serial >= 1 && serial < 100000) {
+      const utcDays = Math.floor(serial - 25569)
+      const ms = utcDays * 86400 * 1000
+      const dt = new Date(ms)
+      const mm = String(dt.getUTCMonth() + 1).padStart(2, '0')
+      const dd = String(dt.getUTCDate()).padStart(2, '0')
+      const yyyy = String(dt.getUTCFullYear())
+      return `${mm}/${dd}/${yyyy}`
+    }
+  }
+  return raw
+}
+
+function normalizeBodForReport(input: unknown) {
+  return formatDobForReport(String(input ?? '').trim())
+}
+
+function buildSelectedReportRows(rows: any[]) {
+  const toText = (v: unknown) => String(v ?? '').trim()
+  return rows.map((row) => {
+    return {
+      NAME: toText(row?.NAME),
+      SSN: toText(row?.SSN),
+      ADDRESS: toText(row?.ADDRESS),
+      CITI: toText(row?.CITI),
+      BANG: toText(row?.BANG),
+      ZIP: toText(row?.ZIP),
+      BOD: normalizeBodForReport(row?.BOD),
+      GENDER: toText(row?.GENDER),
+      EIN: toText(row?.EIN),
+      'NAME LLC': toText(row?.['NAME LLC']),
+      'ADDRESS LLC': toText(row?.['ADDRESS LLC']),
+      'CITI LLC': toText(row?.['CITI LLC']),
+      'BANG LLC': toText(row?.['BANG LLC']),
+      'ZIP LLC': toText(row?.['ZIP LLC']),
+      PDF: toText(row?.PDF),
+      FOLDER_URL: toText(row?.FOLDER_URL),
+    }
+  })
+}
+
+type GoogleDriveConfig = {
+  authMode: 'oauth_user' | 'service_account'
+  serviceAccountPath?: string
+  oauthClientPath?: string
+  oauthRefreshTokenPath?: string
+  folderId: string
+}
+
+type GoogleServiceAccount = {
+  client_email: string
+  private_key: string
+  token_uri?: string
+}
+
+type GoogleOAuthWebClient = {
+  web?: {
+    client_id?: string
+    client_secret?: string
+    token_uri?: string
+  }
+}
+
+const googleDriveFolderCache = new Map<string, string>()
+const googleDriveLockChains = new Map<string, Promise<void>>()
+
+async function withGoogleDriveLock<T>(key: string, fn: () => Promise<T>): Promise<T> {
+  const prior = googleDriveLockChains.get(key) || Promise.resolve()
+  let release!: () => void
+  const current = new Promise<void>((resolve) => { release = resolve })
+  googleDriveLockChains.set(key, prior.then(() => current))
+  await prior
+  try {
+    return await fn()
+  } finally {
+    release()
+    if (googleDriveLockChains.get(key) === current) {
+      googleDriveLockChains.delete(key)
+    }
+  }
+}
+
+function applyReportSheetLayout(ws: XLSX.WorkSheet, headers: string[], rows: Array<Record<string, unknown>>) {
+  const textColumns = new Set(['SSN', 'ZIP', 'BOD', 'EIN', 'GENDER', 'PDF', 'FOLDER_URL', 'REPORT_URL', 'DATE'])
+  ws['!cols'] = headers.map((header) => {
+    const maxLen = Math.max(
+      header.length,
+      ...rows.map((row) => String(row?.[header] ?? '').length),
+    )
+    const maxWidth = header === 'PDF' || header === 'FOLDER_URL' || header === 'REPORT_URL' ? 96 : 36
+    return { wch: Math.min(Math.max(maxLen + 2, 12), maxWidth) }
+  })
+  for (let rowIdx = 0; rowIdx < rows.length; rowIdx += 1) {
+    for (let colIdx = 0; colIdx < headers.length; colIdx += 1) {
+      const header = headers[colIdx]
+      if (!textColumns.has(header)) continue
+      const addr = XLSX.utils.encode_cell({ r: rowIdx + 1, c: colIdx })
+      const cell = ws[addr]
+      if (!cell) continue
+      cell.t = 's'
+      cell.v = String(rows[rowIdx]?.[header] ?? '')
+      delete cell.z
+      delete cell.w
+    }
+  }
+  const genderIndex = headers.indexOf('GENDER')
+  if (genderIndex >= 0) {
+    const femaleFill = { patternType: 'solid', fgColor: { rgb: 'DDEBF7' } }
+    for (let rowIdx = 0; rowIdx < rows.length; rowIdx += 1) {
+      if (String(rows[rowIdx]?.GENDER ?? '').trim().toUpperCase() !== 'F') continue
+      for (let colIdx = 0; colIdx < headers.length; colIdx += 1) {
+        const cell = ws[XLSX.utils.encode_cell({ r: rowIdx + 1, c: colIdx })]
+        if (cell) cell.s = { ...(cell.s || {}), fill: femaleFill }
+      }
+    }
+  }
 }
 
 function storageRootDir() {
@@ -288,8 +462,9 @@ function saveWindowState(win: BrowserWindow) {
 }
 
 function resolveWorkerCount() {
-  const raw = Number(process.env.BUG_AUTO_WORKERS || '1')
-  if (!Number.isFinite(raw)) return 1
+  const saved = loadAppSettings().workerCount
+  const raw = Number.isFinite(saved) ? saved! : Number(process.env.BUG_AUTO_WORKERS || '3')
+  if (!Number.isFinite(raw)) return 3
   return Math.max(1, Math.min(8, Math.floor(raw)))
 }
 
@@ -320,9 +495,18 @@ function killProcessTree(proc: ChildProcess) {
     }
     if (process.platform === 'win32') {
       const killer = spawn('taskkill', ['/PID', String(pid), '/T', '/F'], { windowsHide: true })
-      killer.on('close', () => resolve())
+      killer.on('close', () => {
+        try {
+          const browserKiller = spawn('taskkill', ['/IM', 'camoufox.exe', '/F'], { windowsHide: true })
+          browserKiller.on('close', () => resolve())
+          browserKiller.on('error', () => resolve())
+        } catch {
+          resolve()
+        }
+      })
       killer.on('error', () => {
         try { proc.kill() } catch { /* ignore */ }
+        try { spawn('taskkill', ['/IM', 'camoufox.exe', '/F'], { windowsHide: true }) } catch { /* ignore */ }
         resolve()
       })
       return
@@ -360,21 +544,40 @@ async function startPythonBackend() {
     if (pythonProcess && pythonProcess.exitCode === null) {
       return
     }
+    const runtime = await ensureRuntimeConfig()
+    const flowMode = String(runtime?.flowMode || 'full')
     const workerCount = resolveWorkerCount()
-    console.log(`Starting Python worker x${workerCount}...`)
+    console.log(`Starting Python backend mode=${flowMode} workers=${workerCount}...`)
 
-    if (is.dev) {
+    if (flowMode === 'manual') {
+      pythonProcessMode = 'manual'
+      if (is.dev) {
+        const foxAutoRoot = foxAutoRootPath()
+        const launch = pythonDevLaunch(['-m', 'irs_bot', '--config', runtimeConfigPath(), 'manual'])
+        pythonProcess = spawn(launch.cmd, launch.args, {
+          cwd: foxAutoRoot,
+          env: { ...process.env, PYTHONPATH: foxAutoRoot }
+        })
+      } else {
+        const exePath = cliBinaryPath()
+        pythonProcess = spawn(exePath, ['--config', runtimeConfigPath(), 'manual'], {
+          cwd: process.resourcesPath
+        })
+      }
+    } else if (is.dev) {
+      pythonProcessMode = 'worker'
       // In dev: run as package module to preserve relative imports.
       const foxAutoRoot = foxAutoRootPath()
-      const launch = pythonDevLaunch(['-m', 'irs_bot', '--config', runtimeConfigPath(), 'worker', '--queues', 'ein.high,ein.default,ein.retry,ein.sandbox', '--workers', String(workerCount)])
+      const launch = pythonDevLaunch(['-m', 'irs_bot', '--config', runtimeConfigPath(), 'worker', '--queues', 'ein.high,ein.default,ein.retry,ein.observe,ein.sandbox', '--workers', String(workerCount)])
       pythonProcess = spawn(launch.cmd, launch.args, {
         cwd: foxAutoRoot,
         env: { ...process.env, PYTHONPATH: foxAutoRoot }
       })
     } else {
+      pythonProcessMode = 'worker'
       // In production: run the bundled PyInstaller exe.
       const exePath = cliBinaryPath()
-      pythonProcess = spawn(exePath, ['--config', runtimeConfigPath(), 'worker', '--queues', 'ein.high,ein.default,ein.retry,ein.sandbox', '--workers', String(workerCount)], {
+      pythonProcess = spawn(exePath, ['--config', runtimeConfigPath(), 'worker', '--queues', 'ein.high,ein.default,ein.retry,ein.observe,ein.sandbox', '--workers', String(workerCount)], {
         cwd: process.resourcesPath
       })
     }
@@ -398,6 +601,22 @@ async function startPythonBackend() {
           try {
             const payload = JSON.parse(line.slice(EVENT_PREFIX.length))
             const eventType: string = payload.event
+            if (eventType === 'job_complete') {
+              void (async () => {
+                await autoPushConfirmedPdfToDrive(payload)
+                await autoPushBatchReportOnConfirm(String(payload?.batch_id || ''))
+              })()
+            }
+            if (eventType === 'system_stop_requested') {
+              void (async () => {
+                await stopPythonBackend()
+                try {
+                  if (process.platform === 'win32') {
+                    spawn('taskkill', ['/IM', 'camoufox.exe', '/F'], { windowsHide: true })
+                  }
+                } catch { /* ignore */ }
+              })()
+            }
             BrowserWindow.getAllWindows().forEach(win => {
               win.webContents.send(`py:${eventType}`, payload)
             })
@@ -433,8 +652,9 @@ async function startPythonBackend() {
       BrowserWindow.getAllWindows().forEach(win => {
         win.webContents.send('py:worker-stopped', { code })
       })
-      const shouldRestart = workerShouldRun && !appIsQuitting
+      const shouldRestart = workerShouldRun && !appIsQuitting && pythonProcessMode === 'worker'
       pythonProcess = null
+      pythonProcessMode = null
       if (shouldRestart) {
         setTimeout(() => {
           startPythonBackend().catch((err) => {
@@ -464,6 +684,7 @@ async function stopPythonBackend() {
     if (pythonProcess === proc) {
       pythonProcess = null
     }
+    pythonProcessMode = null
   })().finally(() => {
     stopPythonBackendPromise = null
   })
@@ -527,11 +748,12 @@ function parseProxyEndpointInput(input: {
   let username = normalizeUrlLike(String(input.username || ''))
   let password = normalizeUrlLike(String(input.password || ''))
   let socketHost = host
+  let scheme = 'http'
 
   if (host.includes('://')) {
     try {
       const parsed = new URL(host)
-      const scheme = normalizeProxyScheme(parsed.protocol.replace(':', ''))
+      scheme = normalizeProxyScheme(parsed.protocol.replace(':', ''))
       const parsedHost = String(parsed.hostname || '').trim()
       if (parsedHost) {
         socketHost = parsedHost
@@ -573,41 +795,940 @@ function parseProxyEndpointInput(input: {
     username,
     password,
     socketHost,
+    scheme,
   }
 }
 
-function buildSelectedReportRows(rows: any[]) {
-  const toText = (v: unknown) => String(v ?? '').trim()
-  const toNumOrBlank = (v: unknown) => {
-    const n = Number(v)
-    return Number.isFinite(n) ? n : ''
+function buildProxyAuthHeader(username: string, password: string) {
+  if (!username && !password) return ''
+  return `Basic ${Buffer.from(`${username}:${password}`, 'utf-8').toString('base64')}`
+}
+
+async function openProxyTunnel(payload: {
+  proxyHost: string
+  proxyPort: number
+  username?: string
+  password?: string
+  targetHost: string
+  targetPort: number
+  timeoutMs: number
+}) {
+  const {
+    proxyHost, proxyPort, username = '', password = '', targetHost, targetPort, timeoutMs,
+  } = payload
+  return await new Promise<net.Socket>((resolve, reject) => {
+    const socket = net.createConnection({ host: proxyHost, port: proxyPort })
+    let settled = false
+    let buffer = ''
+
+    const finish = (err?: Error) => {
+      if (settled) return
+      settled = true
+      if (err) {
+        try { socket.destroy() } catch { /* ignore */ }
+        reject(err)
+      } else {
+        socket.removeAllListeners('data')
+        socket.removeAllListeners('error')
+        socket.removeAllListeners('timeout')
+        resolve(socket)
+      }
+    }
+
+    socket.setTimeout(timeoutMs)
+    socket.once('connect', () => {
+      const auth = buildProxyAuthHeader(username, password)
+      const lines = [
+        `CONNECT ${targetHost}:${targetPort} HTTP/1.1`,
+        `Host: ${targetHost}:${targetPort}`,
+      ]
+      if (auth) lines.push(`Proxy-Authorization: ${auth}`)
+      lines.push('Connection: keep-alive', '', '')
+      socket.write(lines.join('\r\n'))
+    })
+    socket.on('data', (chunk) => {
+      buffer += chunk.toString('latin1')
+      if (!buffer.includes('\r\n\r\n')) return
+      const header = buffer.slice(0, buffer.indexOf('\r\n\r\n'))
+      const firstLine = header.split('\r\n')[0] || ''
+      const match = firstLine.match(/^HTTP\/\d\.\d\s+(\d{3})/)
+      const statusCode = match ? Number(match[1]) : 0
+      if (statusCode === 200) {
+        finish()
+        return
+      }
+      finish(new Error(firstLine || 'Proxy CONNECT failed'))
+    })
+    socket.once('timeout', () => finish(new Error(`timeout ${timeoutMs}ms`)))
+    socket.once('error', (err) => finish(err))
+  })
+}
+
+async function requestIrsViaProxy(payload: {
+  proxyHost: string
+  proxyPort: number
+  username?: string
+  password?: string
+  timeoutMs: number
+}) {
+  const tunnel = await openProxyTunnel({
+    ...payload,
+    targetHost: 'sa.www4.irs.gov',
+    targetPort: 443,
+  })
+  return await new Promise<{ statusCode: number; statusLine: string; bodySnippet: string }>((resolve, reject) => {
+    const secure = tls.connect({
+      socket: tunnel,
+      servername: 'sa.www4.irs.gov',
+      timeout: payload.timeoutMs,
+    })
+    let raw = ''
+    let settled = false
+
+    const finish = (err?: Error, result?: { statusCode: number; statusLine: string; bodySnippet: string }) => {
+      if (settled) return
+      settled = true
+      try { secure.destroy() } catch { /* ignore */ }
+      if (err) reject(err)
+      else resolve(result || { statusCode: 0, statusLine: '', bodySnippet: '' })
+    }
+
+    secure.once('secureConnect', () => {
+      const request = [
+        'GET /applyein/legalStructure HTTP/1.1',
+        'Host: sa.www4.irs.gov',
+        'User-Agent: bug-auto-proxy-check/1.0',
+        'Accept: text/html,application/xhtml+xml',
+        'Connection: close',
+        '',
+        '',
+      ].join('\r\n')
+      secure.write(request)
+    })
+    secure.setEncoding('utf8')
+    secure.on('data', (chunk) => {
+      raw += chunk
+      if (raw.length >= 8192) {
+        const headerEnd = raw.indexOf('\r\n\r\n')
+        const header = headerEnd >= 0 ? raw.slice(0, headerEnd) : raw
+        const body = headerEnd >= 0 ? raw.slice(headerEnd + 4) : ''
+        const firstLine = header.split('\r\n')[0] || ''
+        const match = firstLine.match(/^HTTP\/\d\.\d\s+(\d{3})/)
+        finish(undefined, {
+          statusCode: match ? Number(match[1]) : 0,
+          statusLine: firstLine,
+          bodySnippet: body.slice(0, 400),
+        })
+      }
+    })
+    secure.once('end', () => {
+      const headerEnd = raw.indexOf('\r\n\r\n')
+      const header = headerEnd >= 0 ? raw.slice(0, headerEnd) : raw
+      const body = headerEnd >= 0 ? raw.slice(headerEnd + 4) : ''
+      const firstLine = header.split('\r\n')[0] || ''
+      const match = firstLine.match(/^HTTP\/\d\.\d\s+(\d{3})/)
+      finish(undefined, {
+        statusCode: match ? Number(match[1]) : 0,
+        statusLine: firstLine,
+        bodySnippet: body.slice(0, 400),
+      })
+    })
+    secure.once('timeout', () => finish(new Error(`timeout ${payload.timeoutMs}ms`)))
+    secure.once('error', (err) => finish(err))
+  })
+}
+
+
+function googleDriveServiceAccountCandidates() {
+  return [
+    process.env.BUG_AUTO_GOOGLE_DRIVE_SERVICE_ACCOUNT || '',
+    join(userDataDir(), 'google-drive', 'service-account.json'),
+    join(storageRootDir(), 'google-drive', 'service-account.json'),
+    is.dev ? join(foxAutoRootPath(), 'private', 'google-drive', 'service-account.json') : '',
+  ].filter(Boolean)
+}
+
+function googleDriveOAuthClientCandidates() {
+  return [
+    process.env.BUG_AUTO_GOOGLE_OAUTH_CLIENT || '',
+    join(userDataDir(), 'google-drive', 'oauth-web-client.json'),
+    join(storageRootDir(), 'google-drive', 'oauth-web-client.json'),
+    is.dev ? join(foxAutoRootPath(), 'private', 'google-drive', 'oauth-web-client.json') : '',
+  ].filter(Boolean)
+}
+
+function googleDriveOAuthRefreshTokenCandidates() {
+  return [
+    process.env.BUG_AUTO_GOOGLE_OAUTH_REFRESH_TOKEN_FILE || '',
+    join(userDataDir(), 'google-drive', 'oauth-user.json'),
+    join(storageRootDir(), 'google-drive', 'oauth-user.json'),
+    is.dev ? join(foxAutoRootPath(), 'private', 'google-drive', 'oauth-user.json') : '',
+  ].filter(Boolean)
+}
+
+function resolveGoogleDriveConfig(): GoogleDriveConfig | null {
+  const folderId = String(process.env.BUG_AUTO_GOOGLE_DRIVE_FOLDER_ID || DEFAULT_GOOGLE_DRIVE_EXPORT_FOLDER_ID).trim()
+  if (!folderId) return null
+  for (const clientPath of googleDriveOAuthClientCandidates()) {
+    if (!existsSync(clientPath)) continue
+    for (const refreshTokenPath of googleDriveOAuthRefreshTokenCandidates()) {
+      if (!existsSync(refreshTokenPath)) continue
+      return {
+        authMode: 'oauth_user',
+        oauthClientPath: clientPath,
+        oauthRefreshTokenPath: refreshTokenPath,
+        folderId,
+      }
+    }
   }
-  return rows.map((row) => {
-    const pdfPath = toText(row?.final_pdf_path || row?.pdf_path)
+  for (const candidate of googleDriveServiceAccountCandidates()) {
+    if (existsSync(candidate)) {
+      return {
+        authMode: 'service_account',
+        serviceAccountPath: candidate,
+        folderId,
+      }
+    }
+  }
+  return null
+}
+
+function base64UrlEncode(input: Buffer | string) {
+  return Buffer.from(input)
+    .toString('base64')
+    .replace(/\+/g, '-')
+    .replace(/\//g, '_')
+    .replace(/=+$/g, '')
+}
+
+async function fetchServiceAccountToken(serviceAccountPath: string): Promise<string> {
+  const raw = JSON.parse(await fs.readFile(serviceAccountPath, 'utf-8')) as GoogleServiceAccount
+  const iat = Math.floor(Date.now() / 1000)
+  const exp = iat + 3600
+  const header = base64UrlEncode(JSON.stringify({ alg: 'RS256', typ: 'JWT' }))
+  const claimSet = base64UrlEncode(JSON.stringify({
+    iss: raw.client_email,
+    scope: 'https://www.googleapis.com/auth/drive',
+    aud: raw.token_uri || 'https://oauth2.googleapis.com/token',
+    exp,
+    iat,
+  }))
+  const signer = createSign('RSA-SHA256')
+  signer.update(`${header}.${claimSet}`)
+  signer.end()
+  const signature = base64UrlEncode(signer.sign(raw.private_key))
+  const assertion = `${header}.${claimSet}.${signature}`
+  const body = new URLSearchParams({
+    grant_type: 'urn:ietf:params:oauth:grant-type:jwt-bearer',
+    assertion,
+  })
+  const resp = await fetch(raw.token_uri || 'https://oauth2.googleapis.com/token', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body,
+  })
+  const data = await resp.json() as { access_token?: string; error?: string; error_description?: string }
+  if (!resp.ok || !data.access_token) {
+    throw new Error(data.error_description || data.error || `Google service account token error ${resp.status}`)
+  }
+  return data.access_token
+}
+
+async function fetchGoogleDriveAccessToken(config: GoogleDriveConfig): Promise<string> {
+  if (config.authMode === 'oauth_user' && config.oauthClientPath && config.oauthRefreshTokenPath) {
+    try {
+      const oauthClient = JSON.parse(await fs.readFile(config.oauthClientPath, 'utf-8')) as GoogleOAuthWebClient
+      const refreshRaw = JSON.parse(await fs.readFile(config.oauthRefreshTokenPath, 'utf-8')) as { refresh_token?: string }
+      const clientId = String(oauthClient?.web?.client_id || '').trim()
+      const clientSecret = String(oauthClient?.web?.client_secret || '').trim()
+      const refreshToken = String(refreshRaw?.refresh_token || '').trim()
+      if (clientId && clientSecret && refreshToken) {
+        const body = new URLSearchParams({
+          client_id: clientId,
+          client_secret: clientSecret,
+          refresh_token: refreshToken,
+          grant_type: 'refresh_token',
+        })
+        const resp = await fetch(oauthClient?.web?.token_uri || 'https://oauth2.googleapis.com/token', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+          body,
+        })
+        const data = await resp.json() as { access_token?: string; error?: string; error_description?: string }
+        if (resp.ok && data.access_token) {
+          return data.access_token
+        }
+        console.warn(`[Google Drive] OAuth refresh token failed (${data.error || 'unknown'}), falling back to Service Account...`)
+      }
+    } catch (oauthErr) {
+      console.warn(`[Google Drive] OAuth token attempt failed: ${String(oauthErr)}, falling back to Service Account...`)
+    }
+  }
+
+  // Fallback or primary: Service Account
+  for (const candidate of googleDriveServiceAccountCandidates()) {
+    if (existsSync(candidate)) {
+      try {
+        return await fetchServiceAccountToken(candidate)
+      } catch (saErr) {
+        console.warn(`[Google Drive] Service Account candidate ${candidate} failed: ${String(saErr)}`)
+      }
+    }
+  }
+
+  throw new Error('Google Drive authentication failed: OAuth token expired and Service Account not available.')
+}
+
+async function googleDriveFindFileIdByName(token: string, folderId: string, fileName: string) {
+  const q = encodeURIComponent(`'${folderId}' in parents and name = '${fileName.replace(/'/g, "\\'")}' and trashed = false`)
+  const url = `https://www.googleapis.com/drive/v3/files?q=${q}&fields=files(id,name)&supportsAllDrives=true&includeItemsFromAllDrives=true`
+  const resp = await fetch(url, {
+    headers: { Authorization: `Bearer ${token}` },
+  })
+  const data = await resp.json() as { files?: Array<{ id: string; name: string }> }
+  if (!resp.ok) {
+    throw new Error(`Google list error ${resp.status}`)
+  }
+  return data.files?.[0]?.id || ''
+}
+
+async function googleDriveListChildren(token: string, folderId: string) {
+  const q = encodeURIComponent(`'${folderId}' in parents and trashed = false`)
+  const url = `https://www.googleapis.com/drive/v3/files?q=${q}&fields=files(id,name,mimeType,modifiedTime)&pageSize=1000&supportsAllDrives=true&includeItemsFromAllDrives=true`
+  const resp = await fetch(url, {
+    headers: { Authorization: `Bearer ${token}` },
+  })
+  const data = await resp.json() as { files?: Array<{ id: string; name: string; mimeType: string; modifiedTime?: string }> }
+  if (!resp.ok) {
+    throw new Error(`Google list error ${resp.status}`)
+  }
+  return data.files || []
+}
+
+async function googleDriveDeleteFile(token: string, fileId: string) {
+  const resp = await fetch(`https://www.googleapis.com/drive/v3/files/${fileId}?supportsAllDrives=true`, {
+    method: 'DELETE',
+    headers: { Authorization: `Bearer ${token}` },
+  })
+  if (!resp.ok && resp.status !== 404) {
+    const text = await resp.text()
+    throw new Error(text || `Google delete error ${resp.status}`)
+  }
+}
+
+async function clearDirectoryContents(dirPath: string) {
+  let entries: Array<import('fs').Dirent>
+  try {
+    entries = await fs.readdir(dirPath, { withFileTypes: true }) as Array<import('fs').Dirent>
+  } catch {
+    return
+  }
+  for (const entry of entries) {
+    const fullPath = join(dirPath, entry.name)
+    if (entry.isDirectory()) {
+      await fs.rm(fullPath, { recursive: true, force: true })
+    } else {
+      await fs.unlink(fullPath).catch(() => {})
+    }
+  }
+}
+
+async function googleDriveDeleteChildrenExcept(token: string, folderId: string, keepNames: Set<string>) {
+  const children = await googleDriveListChildren(token, folderId)
+  const toDelete = children.filter((child) => !keepNames.has(String(child?.name || '')))
+  await Promise.all(toDelete.map((child) => googleDriveDeleteFile(token, String(child.id || '')).catch(() => {})))
+}
+
+async function googleSheetsGetSpreadsheet(token: string, spreadsheetId: string) {
+  const resp = await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}`, {
+    headers: { Authorization: `Bearer ${token}` },
+  })
+  const data = await resp.json() as {
+    sheets?: Array<{ properties?: { sheetId?: number; title?: string } }>
+  }
+  if (!resp.ok) {
+    throw new Error(`Google Sheets get error ${resp.status}`)
+  }
+  return data
+}
+
+async function googleDriveEnsureSpreadsheetFile(token: string, folderId: string, fileName: string) {
+  const existingId = await googleDriveFindFileIdByName(token, folderId, fileName)
+  if (existingId) return existingId
+  const resp = await fetch('https://www.googleapis.com/drive/v3/files?supportsAllDrives=true', {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${token}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      name: fileName,
+      mimeType: 'application/vnd.google-apps.spreadsheet',
+      parents: [folderId],
+    }),
+  })
+  const data = await resp.json() as { id?: string; error?: { message?: string } }
+  if (!resp.ok || !data.id) {
+    throw new Error(data.error?.message || `Google spreadsheet create error ${resp.status}`)
+  }
+  return data.id
+}
+
+function buildSheetCellData(value: unknown) {
+  const text = String(value ?? '')
+  return {
+    userEnteredValue: { stringValue: text },
+  }
+}
+
+async function googleSheetsWriteBundleReport(token: string, spreadsheetId: string, headers: string[], rows: Array<Record<string, unknown>>) {
+  const spreadsheet = await googleSheetsGetSpreadsheet(token, spreadsheetId)
+  const sheetId = Number(spreadsheet?.sheets?.[0]?.properties?.sheetId || 0)
+  const headerRow = {
+    values: headers.map((header) => buildSheetCellData(header)),
+  }
+  const dataRows = rows.map((row) => ({
+    values: headers.map((header) => {
+      return buildSheetCellData(row?.[header])
+    }),
+  }))
+  const requests: any[] = [
+    {
+      updateSheetProperties: {
+        properties: {
+          sheetId,
+          title: 'report',
+          gridProperties: {
+            rowCount: Math.max(rows.length + 20, 200),
+            columnCount: Math.max(headers.length + 2, 18),
+          },
+        },
+        fields: 'title,gridProperties.rowCount,gridProperties.columnCount',
+      },
+    },
+    {
+      updateCells: {
+        range: {
+          sheetId,
+        },
+        rows: [],
+        fields: 'userEnteredValue',
+      },
+    },
+    {
+      updateCells: {
+        start: {
+          sheetId,
+          rowIndex: 0,
+          columnIndex: 0,
+        },
+        rows: [headerRow, ...dataRows],
+        fields: 'userEnteredValue',
+      },
+    },
+    {
+      repeatCell: {
+        range: {
+          sheetId,
+          startRowIndex: 0,
+          endRowIndex: 1,
+          startColumnIndex: 0,
+          endColumnIndex: headers.length,
+        },
+        cell: {
+          userEnteredFormat: {
+            textFormat: {
+              bold: true,
+            },
+          },
+        },
+        fields: 'userEnteredFormat.textFormat.bold',
+      },
+    },
+    ...headers.map((header, index) => ({
+      updateDimensionProperties: {
+        range: {
+          sheetId,
+          dimension: 'COLUMNS',
+          startIndex: index,
+          endIndex: index + 1,
+        },
+        properties: {
+          pixelSize: header === 'PDF' || header === 'FOLDER_URL' ? 420 : 160,
+        },
+        fields: 'pixelSize',
+      },
+    })),
+  ]
+  const genderIndex = headers.indexOf('GENDER')
+  if (genderIndex >= 0) {
+    for (let rowIndex = 0; rowIndex < rows.length; rowIndex += 1) {
+      if (String(rows[rowIndex]?.GENDER ?? '').trim().toUpperCase() !== 'F') continue
+      requests.push({
+        repeatCell: {
+          range: {
+            sheetId,
+            startRowIndex: rowIndex + 1,
+            endRowIndex: rowIndex + 2,
+            startColumnIndex: 0,
+            endColumnIndex: headers.length,
+          },
+          cell: { userEnteredFormat: { backgroundColor: { red: 0.866, green: 0.922, blue: 0.969 } } },
+          fields: 'userEnteredFormat.backgroundColor',
+        },
+      })
+    }
+  }
+  const resp = await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}:batchUpdate`, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${token}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ requests }),
+  })
+  const data = await resp.json() as { error?: { message?: string } }
+  if (!resp.ok) {
+    throw new Error(data?.error?.message || `Google Sheets batchUpdate error ${resp.status}`)
+  }
+}
+
+async function googleDriveEnsureChildFolder(token: string, parentId: string, folderName: string) {
+  const cacheKey = `${parentId}:${folderName}`
+  const cached = googleDriveFolderCache.get(cacheKey)
+  if (cached) return cached
+  return await withGoogleDriveLock(`folder:${cacheKey}`, async () => {
+    const fromCache = googleDriveFolderCache.get(cacheKey)
+    if (fromCache) return fromCache
+    const children = await googleDriveListChildren(token, parentId)
+    const matches = children
+      .filter((file) => file.name === folderName && file.mimeType === 'application/vnd.google-apps.folder')
+      .sort((a, b) => String(a.id).localeCompare(String(b.id)))
+    if (matches[0]?.id) {
+      googleDriveFolderCache.set(cacheKey, matches[0].id)
+      return matches[0].id
+    }
+    const resp = await fetch('https://www.googleapis.com/drive/v3/files?supportsAllDrives=true', {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${token}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        name: folderName,
+        mimeType: 'application/vnd.google-apps.folder',
+        parents: [parentId],
+      }),
+    })
+    const data = await resp.json() as { id?: string; error?: { message?: string } }
+    if (!resp.ok || !data.id) {
+      throw new Error(data.error?.message || `Google folder create error ${resp.status}`)
+    }
+    googleDriveFolderCache.set(cacheKey, data.id)
+    return data.id
+  })
+}
+
+async function googleDriveResolveBatchContainer(token: string, batchId: string) {
+  const cfg = resolveGoogleDriveConfig()
+  if (!cfg) throw new Error('Google Drive config missing')
+  const batchToken = prettifyBatchToken(batchId, 'mixed')
+  return await withGoogleDriveLock(`resolve-batch-container:${batchToken}`, async () => {
+    const batchRootId = await googleDriveEnsureChildFolder(token, cfg.folderId, batchToken)
     return {
-      record_id: toText(row?.record_id),
-      name: toText(row?.name),
-      status: toText(row?.status),
-      confirmation_number: toText(row?.confirmation_number),
-      step6_ein: toText(row?.step6_ein || row?.confirmation_number || row?.ein),
-      step6_legal_name: toText(row?.step6_legal_name),
-      step6_county: toText(row?.step6_county),
-      step6_state: toText(row?.step6_state),
-      step6_start_date: toText(row?.step6_start_date),
-      step6_principal_activity: toText(row?.step6_principal_activity),
-      step6_principal_product_service: toText(row?.step6_principal_product_service),
-      step6_reason_for_applying: toText(row?.step6_reason_for_applying),
-      error_code: toText(row?.error_code),
-      error_message: toText(row?.error_message),
-      last_step: toText(row?.last_step),
-      proxy_used: toText(row?.proxy_used),
-      proxy_ip: toText(row?.proxy_ip),
-      duration_s: toNumOrBlank(row?.duration_s),
-      completed_at: toText(row?.completed_at),
-      pdf_file: pdfPath ? basename(pdfPath) : '',
-      artifact_folder: toText(row?.artifact_dir) ? basename(toText(row?.artifact_dir)) : '',
-      source: toText(row?.source_file) ? basename(toText(row?.source_file)) : '',
-      batch_id: toText(row?.batch_id),
+      rootId: cfg.folderId,
+      batchRootId,
+      batchToken,
+    }
+  })
+}
+
+async function googleDriveResolveChunkFolder(token: string, batchId: string, chunkIndex: number) {
+  const batch = await googleDriveResolveBatchContainer(token, batchId)
+  const chunkLabel = chunkLabelFromIndex(chunkIndex)
+  const chunkFolderId = await googleDriveEnsureChildFolder(token, batch.batchRootId, chunkLabel)
+  return {
+    ...batch,
+    chunkIndex,
+    chunkLabel,
+    chunkFolderId,
+  }
+}
+
+async function googleDriveUploadFile(input: {
+  token: string
+  folderId: string
+  localPath: string
+  remoteName: string
+  mimeType: string
+  replaceExisting?: boolean
+}) {
+  const fileBuffer = await fs.readFile(input.localPath)
+  const boundary = `bugauto-${Date.now()}-${Math.random().toString(16).slice(2)}`
+  const metadata = JSON.stringify({
+    name: input.remoteName,
+    parents: [input.folderId],
+  })
+  const body = Buffer.concat([
+    Buffer.from(`--${boundary}\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n${metadata}\r\n`),
+    Buffer.from(`--${boundary}\r\nContent-Type: ${input.mimeType}\r\n\r\n`),
+    fileBuffer,
+    Buffer.from(`\r\n--${boundary}--\r\n`),
+  ])
+  const existingId = input.replaceExisting
+    ? await googleDriveFindFileIdByName(input.token, input.folderId, input.remoteName)
+    : ''
+  const uploadUrl = existingId
+    ? `https://www.googleapis.com/upload/drive/v3/files/${existingId}?uploadType=multipart&supportsAllDrives=true`
+    : 'https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&supportsAllDrives=true'
+  const resp = await fetch(uploadUrl, {
+    method: existingId ? 'PATCH' : 'POST',
+    headers: {
+      Authorization: `Bearer ${input.token}`,
+      'Content-Type': `multipart/related; boundary=${boundary}`,
+    },
+    body,
+  })
+  const data = await resp.json() as { id?: string; error?: { message?: string } }
+  if (!resp.ok || !data.id) {
+    throw new Error(data.error?.message || `Google upload error ${resp.status}`)
+  }
+  return data.id
+}
+
+async function googleDriveMakePublic(token: string, fileId: string) {
+  const resp = await fetch(`https://www.googleapis.com/drive/v3/files/${fileId}/permissions?supportsAllDrives=true`, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${token}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      role: 'reader',
+      type: 'anyone',
+    }),
+  })
+  if (!resp.ok && resp.status !== 409) {
+    const text = await resp.text()
+    throw new Error(text || `Google permission error ${resp.status}`)
+  }
+}
+
+function googleDriveViewUrl(fileId: string) {
+  return `https://drive.google.com/file/d/${fileId}/view`
+}
+
+function googleDriveFolderUrl(folderId: string) {
+  return `https://drive.google.com/drive/folders/${folderId}`
+}
+
+function chunkIndexForOrdinal(ordinal: number) {
+  return Math.max(1, Math.floor(Math.max(0, ordinal - 1) / GOOGLE_DRIVE_CHUNK_SIZE) + 1)
+}
+
+function chunkLabelFromIndex(index: number) {
+  const safeIndex = Math.max(1, Number(index || 1))
+  const start = (safeIndex - 1) * GOOGLE_DRIVE_CHUNK_SIZE + 1
+  const end = safeIndex * GOOGLE_DRIVE_CHUNK_SIZE
+  return `chunk_${String(safeIndex).padStart(4, '0')}_${String(start).padStart(4, '0')}-${String(end).padStart(4, '0')}`
+}
+
+function buildUploadBundleName(rowCount: number) {
+  return `${hcmDateLabel()} - ${Math.max(0, Number(rowCount || 0))} DONE`
+}
+
+async function autoPushConfirmedPdfToDrive(row: any) {
+  const cfg = resolveGoogleDriveConfig()
+  if (!cfg) return
+  const ein = String(row?.confirmation_number || row?.step6_ein || '').trim()
+  if (!ein) return
+  const batchId = String(row?.batch_id || '').trim()
+  const recordId = String(row?.record_id || '').trim()
+  const stateKey = makeBatchRecordKey(batchId, recordId)
+  if (stateKey) {
+    const state = await loadGoogleDriveAutoPushState(storageRootDir())
+    if (String(state.pdf_url_by_batch_record[stateKey] || '').trim()) return
+  }
+  const localPath = normalizeRuntimePath(String(row?.final_pdf_path || row?.pdf_path || '').trim())
+  if (!localPath) return
+  try {
+    await fs.access(localPath)
+  } catch {
+    return
+  }
+  try {
+    await new Promise((resolve) => setTimeout(resolve, 200))
+    await withGoogleDriveLock(`batch-upload:${batchId}`, async () => {
+      const base = storageRootDir()
+      const confirmedRows = await loadConfirmedRowsForBatch(base, batchId)
+      const ordinal = confirmedRows.findIndex((item) => String(item?.record_id || '').trim() === recordId) + 1
+      const chunkIndex = chunkIndexForOrdinal(ordinal > 0 ? ordinal : confirmedRows.length || 1)
+      const token = await fetchGoogleDriveAccessToken(cfg)
+      const chunk = await googleDriveResolveChunkFolder(token, batchId, chunkIndex)
+      const remoteName = buildPrettyPdfFileName(row, 1, extname(localPath) || '.pdf')
+      const fileId = await googleDriveUploadFile({
+        token,
+        folderId: chunk.chunkFolderId,
+        localPath,
+        remoteName,
+        mimeType: 'application/pdf',
+        replaceExisting: true,
+      })
+      await googleDriveMakePublic(token, fileId)
+      const state = await loadGoogleDriveAutoPushState(storageRootDir())
+      if (stateKey) {
+        state.pdf_url_by_batch_record[stateKey] = googleDriveViewUrl(fileId)
+        await saveGoogleDriveAutoPushState(storageRootDir(), state)
+      }
+    })
+  } catch (err) {
+    console.warn(`Google Drive auto PDF push skipped: ${String(err)}`)
+  }
+}
+
+async function reconcileGoogleDriveChunkOutputs(token: string, batchId: string, chunkIndex: number, chunkRows: any[]) {
+  const chunk = await googleDriveResolveChunkFolder(token, batchId, chunkIndex)
+  const keepPdfNames = new Set<string>()
+  chunkRows.forEach((row, idx) => {
+    const localPath = normalizeRuntimePath(String(row?.final_pdf_path || row?.pdf_path || '').trim())
+    const ext = extname(localPath || '') || '.pdf'
+    keepPdfNames.add(buildPrettyPdfFileName(row, idx + 1, ext))
+  })
+  const children = (await googleDriveListChildren(token, chunk.chunkFolderId))
+    .filter((file) => String(file?.mimeType || '').toLowerCase() !== 'application/vnd.google-apps.folder')
+    .sort((a, b) => String(b.modifiedTime || '').localeCompare(String(a.modifiedTime || '')) || String(a.id).localeCompare(String(b.id)))
+  const keptPdfNames = new Set<string>()
+  let keptReport = false
+  for (const file of children) {
+    const isReport = file.name === 'report.xlsx'
+    if (isReport && !keptReport) {
+      keptReport = true
+      continue
+    }
+    if (isReport) {
+      await googleDriveDeleteFile(token, file.id)
+      continue
+    }
+    const shouldKeep = keepPdfNames.has(file.name) && !keptPdfNames.has(file.name)
+    if (shouldKeep) {
+      keptPdfNames.add(file.name)
+      continue
+    }
+    await googleDriveDeleteFile(token, file.id)
+  }
+}
+
+async function updateGoogleDriveBatchSummary(token: string, baseDir: string, batchId: string, confirmedRows: any[]) {
+  const batch = await googleDriveResolveBatchContainer(token, batchId)
+  const batchToken = prettifyBatchToken(batchId, 'mixed')
+  const summaryRows: Array<Record<string, unknown>> = []
+  const chunkCount = chunkIndexForOrdinal(Math.max(1, confirmedRows.length))
+  for (let chunkIndex = 1; chunkIndex <= chunkCount; chunkIndex += 1) {
+    const start = (chunkIndex - 1) * GOOGLE_DRIVE_CHUNK_SIZE
+    const chunkRows = confirmedRows.slice(start, start + GOOGLE_DRIVE_CHUNK_SIZE)
+    if (!chunkRows.length) continue
+    const chunk = await googleDriveResolveChunkFolder(token, batchId, chunkIndex)
+    const reportId = await googleDriveFindFileIdByName(token, chunk.chunkFolderId, 'report.xlsx')
+    const latestCompletedAt = String(chunkRows[chunkRows.length - 1]?.completed_at || new Date().toISOString()).trim()
+    summaryRows.push({
+      CHUNK: chunk.chunkLabel,
+      FOLDER_URL: googleDriveFolderUrl(chunk.chunkFolderId),
+      REPORT_URL: reportId ? googleDriveViewUrl(reportId) : '',
+      ROWS: chunkRows.length,
+      DATE: latestCompletedAt,
+    })
+  }
+  const { xlsxPath } = await writeBatchChunkSummaryBundle(baseDir, batchToken, summaryRows)
+  const summaryId = await googleDriveUploadFile({
+    token,
+    folderId: batch.batchRootId,
+    localPath: xlsxPath,
+    remoteName: 'summary.xlsx',
+    mimeType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    replaceExisting: true,
+  })
+  await googleDriveMakePublic(token, summaryId)
+}
+
+async function loadArchivedInputByRecordIds(base: string, recordIds: string[]) {
+  const wanted = new Set(recordIds.map((v) => String(v || '').trim()).filter(Boolean))
+  const byRecord = new Map<string, Record<string, string>>()
+  if (!wanted.size) return byRecord
+  const candidateFiles = new Map<string, number>()
+  const archiveDir = join(base, 'state', 'ui_archive')
+  if (existsSync(archiveDir)) {
+    const entries = await fs.readdir(archiveDir)
+    const archiveFiles = await Promise.all(
+      entries
+        .filter((name) => name.toLowerCase().endsWith('.csv'))
+        .map(async (name) => {
+          const fullPath = join(archiveDir, name)
+          const stat = await fs.stat(fullPath)
+          return { fullPath, mtimeMs: stat.mtimeMs }
+        }),
+    )
+    for (const file of archiveFiles) {
+      candidateFiles.set(file.fullPath, file.mtimeMs)
+    }
+  }
+  const batchDir = join(base, 'state', 'batches')
+  if (existsSync(batchDir)) {
+    const batchEntries = await fs.readdir(batchDir)
+    for (const name of batchEntries) {
+      if (!name.toLowerCase().endsWith('.json')) continue
+      const fullPath = join(batchDir, name)
+      try {
+        const stat = await fs.stat(fullPath)
+        const payload = JSON.parse(await fs.readFile(fullPath, 'utf-8')) as { source_file?: string }
+        const sourceFile = normalizeRuntimePath(String(payload?.source_file || '').trim())
+        if (!sourceFile) continue
+        if (!existsSync(sourceFile)) continue
+        candidateFiles.set(sourceFile, Math.max(candidateFiles.get(sourceFile) || 0, stat.mtimeMs))
+      } catch {
+        // ignore broken batch manifest
+      }
+    }
+  }
+  const queueDbPath = join(base, 'state', 'queue.db')
+  if (existsSync(queueDbPath)) {
+    try {
+      const BetterSqlite3 = (await import('better-sqlite3')).default
+      const db = new BetterSqlite3(queueDbPath, { readonly: true })
+      const jobRows = db.prepare('SELECT payload FROM jobs').all() as Array<{ payload?: string }>
+      for (const jobRow of jobRows) {
+        try {
+          const payload = JSON.parse(String(jobRow?.payload || '')) as { record?: Record<string, unknown> }
+          const record = payload?.record || {}
+          const recordId = String(record.record_id || '').trim()
+          if (!recordId || !wanted.has(recordId)) continue
+          byRecord.set(recordId, Object.fromEntries(
+            Object.entries(record).map(([key, value]) => [key, String(value ?? '').trim()]),
+          ))
+        } catch {
+          // ignore bad queue payload
+        }
+      }
+      db.close()
+    } catch {
+      // queue db fallback only
+    }
+  }
+  const csvFiles = Array.from(candidateFiles.entries()).map(([fullPath, mtimeMs]) => ({ fullPath, mtimeMs }))
+  csvFiles.sort((a, b) => a.mtimeMs - b.mtimeMs)
+  for (const file of csvFiles) {
+    const raw = await fs.readFile(file.fullPath, 'utf-8')
+    const wb = XLSX.read(raw, { type: 'string' })
+    const sheet = wb.Sheets[wb.SheetNames[0]]
+    const rows = XLSX.utils.sheet_to_json<Record<string, unknown>>(sheet, { defval: '' })
+    for (const row of rows) {
+      const recordId = String(row?.record_id || '').trim()
+      if (!recordId || !wanted.has(recordId)) continue
+      byRecord.set(recordId, Object.fromEntries(
+        Object.entries(row).map(([key, value]) => [key, String(value ?? '').trim()]),
+      ))
+    }
+  }
+  return byRecord
+}
+
+async function enrichSelectedReportRows(base: string, rows: any[]) {
+  const inputs = await loadArchivedInputByRecordIds(base, rows.map((row) => String(row?.record_id || '')))
+  const pushState = await loadGoogleDriveAutoPushState(base)
+  const driveConfig = resolveGoogleDriveConfig()
+  const pdfUrls = new Map<string, string>()
+  const chunkFolderUrls = new Map<string, string>()
+  if (driveConfig) {
+    try {
+      const token = await fetchGoogleDriveAccessToken(driveConfig)
+      const batchIds = Array.from(new Set(rows.map((row) => String(row?.batch_id || '').trim()).filter(Boolean)))
+      const confirmedRowsByBatch = new Map<string, any[]>()
+      const chunkFolderByKey = new Map<string, string>()
+      for (const batchId of batchIds) {
+        confirmedRowsByBatch.set(batchId, await loadConfirmedRowsForBatch(base, batchId))
+      }
+      const uploadedByPath = new Map<string, string>()
+      for (let idx = 0; idx < rows.length; idx += 1) {
+        const row = rows[idx] || {}
+        const batchId = String(row?.batch_id || '').trim()
+        const recordId = String(row?.record_id || '').trim()
+        const confirmedEin = String(row?.confirmation_number || row?.step6_ein || '').trim()
+        if (!confirmedEin) continue
+        const confirmedRows = confirmedRowsByBatch.get(batchId) || []
+        const ordinal = confirmedRows.findIndex((item) => String(item?.record_id || '').trim() === recordId) + 1
+        const chunkIndex = chunkIndexForOrdinal(ordinal > 0 ? ordinal : confirmedRows.length || idx + 1)
+        const chunkKey = `${batchId}::${chunkIndex}`
+        let chunkFolderUrl = chunkFolderByKey.get(chunkKey) || ''
+        let chunkFolderId = ''
+        if (!chunkFolderUrl) {
+          const chunk = await googleDriveResolveChunkFolder(token, batchId, chunkIndex)
+          chunkFolderId = chunk.chunkFolderId
+          chunkFolderUrl = googleDriveFolderUrl(chunk.chunkFolderId)
+          chunkFolderByKey.set(chunkKey, chunkFolderUrl)
+        }
+        chunkFolderUrls.set(recordId, chunkFolderUrl)
+        const stateKey = makeBatchRecordKey(batchId, recordId)
+        const cachedPdfUrl = stateKey ? String(pushState.pdf_url_by_batch_record[stateKey] || '').trim() : ''
+        if (cachedPdfUrl) {
+          pdfUrls.set(recordId, cachedPdfUrl)
+          continue
+        }
+        const localPath = normalizeRuntimePath(String(row?.final_pdf_path || row?.pdf_path || '').trim())
+        if (!localPath) continue
+        try {
+          await fs.access(localPath)
+        } catch {
+          continue
+        }
+        let fileId = uploadedByPath.get(localPath) || ''
+        if (!fileId) {
+          const remoteName = buildPrettyPdfFileName(row, idx + 1, extname(localPath) || '.pdf')
+          const targetFolderId = chunkFolderId || (await googleDriveResolveChunkFolder(token, batchId, chunkIndex)).chunkFolderId
+          fileId = await googleDriveUploadFile({
+            token,
+            folderId: targetFolderId,
+            localPath,
+            remoteName,
+            mimeType: 'application/pdf',
+            replaceExisting: true,
+          })
+          await googleDriveMakePublic(token, fileId)
+          uploadedByPath.set(localPath, fileId)
+        }
+        const pdfUrl = googleDriveViewUrl(fileId)
+        pdfUrls.set(recordId, pdfUrl)
+        if (stateKey) {
+          pushState.pdf_url_by_batch_record[stateKey] = pdfUrl
+        }
+      }
+    } catch (err) {
+      console.warn(`Google Drive PDF upload skipped: ${String(err)}`)
+    }
+  }
+  await saveGoogleDriveAutoPushState(base, pushState)
+
+  return rows.map((row) => {
+    const input = inputs.get(String(row?.record_id || '').trim()) || {}
+    const inputAddress = String(input.ADDRESS || '').trim()
+    const inputCity = String(input.CITI || '').trim()
+    const inputState = String(input.BANG || '').trim()
+    const inputZip = String(input.ZIP || '').trim()
+    return {
+      NAME: String(input.NAME || row?.name || row?.record_name || '').trim(),
+      SSN: String(input.SSN || '').trim(),
+      ADDRESS: inputAddress,
+      CITI: inputCity,
+      BANG: inputState,
+      ZIP: inputZip,
+      BOD: formatDobForReport(input.DOB || ''),
+      GENDER: String(input.GENDER || '').trim(),
+      EIN: String(row?.confirmation_number || row?.step6_ein || '').trim(),
+      'NAME LLC': String(row?.step6_legal_name || input.NAME || row?.name || row?.record_name || '').trim(),
+      'ADDRESS LLC': inputAddress,
+      'CITI LLC': inputCity,
+      'BANG LLC': String(row?.step6_state || inputState || '').trim(),
+      'ZIP LLC': inputZip,
+      PDF: pdfUrls.get(String(row?.record_id || '').trim()) || '',
+      FOLDER_URL: chunkFolderUrls.get(String(row?.record_id || '').trim()) || '',
     }
   })
 }
@@ -620,7 +1741,14 @@ type ExportContinuationState = {
   last_seq_by_token: Record<string, number>
 }
 
+type GoogleDriveAutoPushState = {
+  version: 1
+  report_pushed_count_by_batch: Record<string, number>
+  pdf_url_by_batch_record: Record<string, string>
+}
+
 const EXPORT_CONTINUATION_FILENAME = 'continuation-v1.json'
+const GOOGLE_DRIVE_AUTO_PUSH_FILENAME = 'google-drive-auto-v1.json'
 
 function emptyExportContinuationState(): ExportContinuationState {
   return {
@@ -630,6 +1758,529 @@ function emptyExportContinuationState(): ExportContinuationState {
     part_by_token: {},
     last_seq_by_token: {},
   }
+}
+
+function emptyGoogleDriveAutoPushState(): GoogleDriveAutoPushState {
+  return {
+    version: 1,
+    report_pushed_count_by_batch: {},
+    pdf_url_by_batch_record: {},
+  }
+}
+
+type BundleMasterIndexEntry = {
+  bundle_name: string
+  date: string
+  rows: number
+  batch_id: string
+  local_folder: string
+  local_report_path: string
+  drive_folder_url: string
+  drive_report_url: string
+  created_at: string
+}
+
+async function loadBundleMasterIndex(baseDir: string): Promise<BundleMasterIndexEntry[]> {
+  const stateDir = join(baseDir, 'outputs', 'export_state')
+  const statePath = join(stateDir, 'bundle_master_index.json')
+  try {
+    const raw = JSON.parse(await fs.readFile(statePath, 'utf-8'))
+    return Array.isArray(raw) ? raw : []
+  } catch {
+    return []
+  }
+}
+
+async function saveBundleMasterIndex(baseDir: string, entries: BundleMasterIndexEntry[]) {
+  const stateDir = join(baseDir, 'outputs', 'export_state')
+  const statePath = join(stateDir, 'bundle_master_index.json')
+  await fs.mkdir(stateDir, { recursive: true })
+  await fs.writeFile(statePath, JSON.stringify(entries, null, 2), 'utf-8')
+}
+
+function upsertBundleMasterIndexEntry(entries: BundleMasterIndexEntry[], next: BundleMasterIndexEntry) {
+  const without = entries.filter((entry) => String(entry.bundle_name || '').trim() !== next.bundle_name)
+  return [next, ...without].sort((a, b) => String(b.created_at || '').localeCompare(String(a.created_at || '')))
+}
+
+function makeBatchRecordKey(batchId: unknown, recordId: unknown) {
+  const batch = String(batchId || '').trim()
+  const record = String(recordId || '').trim()
+  if (!batch || !record) return ''
+  return `${batch}::${record}`
+}
+
+async function loadGoogleDriveAutoPushState(baseDir: string): Promise<GoogleDriveAutoPushState> {
+  const stateDir = join(baseDir, 'outputs', 'export_state')
+  const statePath = join(stateDir, GOOGLE_DRIVE_AUTO_PUSH_FILENAME)
+  try {
+    const raw = JSON.parse(await fs.readFile(statePath, 'utf-8'))
+    return {
+      version: 1,
+      report_pushed_count_by_batch: raw?.report_pushed_count_by_batch && typeof raw.report_pushed_count_by_batch === 'object'
+        ? raw.report_pushed_count_by_batch
+        : {},
+      pdf_url_by_batch_record: raw?.pdf_url_by_batch_record && typeof raw.pdf_url_by_batch_record === 'object'
+        ? raw.pdf_url_by_batch_record
+        : {},
+    }
+  } catch {
+    return emptyGoogleDriveAutoPushState()
+  }
+}
+
+async function saveGoogleDriveAutoPushState(baseDir: string, state: GoogleDriveAutoPushState) {
+  const stateDir = join(baseDir, 'outputs', 'export_state')
+  const statePath = join(stateDir, GOOGLE_DRIVE_AUTO_PUSH_FILENAME)
+  await fs.mkdir(stateDir, { recursive: true })
+  await fs.writeFile(statePath, JSON.stringify(state, null, 2), 'utf-8')
+}
+
+async function loadResultsRowsForBatch(baseDir: string, batchId: string) {
+  const resultsPath = join(baseDir, 'outputs', 'results.csv')
+  if (!existsSync(resultsPath)) return []
+  const raw = await fs.readFile(resultsPath, 'utf-8')
+  const wb = XLSX.read(raw, { type: 'string' })
+  const sheet = wb.Sheets[wb.SheetNames[0]]
+  const rows = XLSX.utils.sheet_to_json<Record<string, unknown>>(sheet, { defval: '' })
+  return rows.filter((row) => String(row?.batch_id || '').trim() === batchId)
+}
+
+async function loadConfirmedRowsForBatch(baseDir: string, batchId: string) {
+  const batchRows = await loadResultsRowsForBatch(baseDir, batchId)
+  return batchRows.filter((row) => String(row?.confirmation_number || row?.step6_ein || '').trim())
+}
+
+async function writeCompactReportBundle(baseDir: string, fileBase: string, sheetRows: Array<Record<string, unknown>>) {
+  const headers = [
+    'NAME',
+    'SSN',
+    'ADDRESS',
+    'CITI',
+    'BANG',
+    'ZIP',
+    'BOD',
+    'GENDER',
+    'EIN',
+    'NAME LLC',
+    'ADDRESS LLC',
+    'CITI LLC',
+    'BANG LLC',
+    'ZIP LLC',
+    'PDF',
+    'FOLDER_URL',
+  ]
+  const ws = XLSX.utils.json_to_sheet(sheetRows, { header: headers })
+  applyReportSheetLayout(ws, headers, sheetRows)
+  const wb = XLSX.utils.book_new()
+  XLSX.utils.book_append_sheet(wb, ws, 'report')
+  const outDir = join(baseDir, 'outputs', 'reports')
+  await fs.mkdir(outDir, { recursive: true })
+  const csvPath = join(outDir, `${fileBase}.csv`)
+  const xlsxPath = join(outDir, `${fileBase}.xlsx`)
+  await fs.writeFile(csvPath, XLSX.utils.sheet_to_csv(ws), 'utf-8')
+  XLSX.writeFile(wb, xlsxPath)
+  return { csvPath, xlsxPath }
+}
+
+async function writeBatchChunkSummaryBundle(baseDir: string, batchToken: string, rows: Array<Record<string, unknown>>) {
+  const headers = ['CHUNK', 'FOLDER_URL', 'REPORT_URL', 'ROWS', 'DATE']
+  const ws = XLSX.utils.json_to_sheet(rows, { header: headers })
+  applyReportSheetLayout(ws, headers, rows)
+  const wb = XLSX.utils.book_new()
+  XLSX.utils.book_append_sheet(wb, ws, 'chunks')
+  const outDir = join(baseDir, 'outputs', 'reports')
+  await fs.mkdir(outDir, { recursive: true })
+  const xlsxPath = join(outDir, `summary_${batchToken}.xlsx`)
+  XLSX.writeFile(wb, xlsxPath)
+  return { xlsxPath }
+}
+
+async function writeBundleMasterIndexWorkbook(filePath: string, rows: BundleMasterIndexEntry[]) {
+  const headers = [
+    'DATE',
+    'BUNDLE_NAME',
+    'ROWS',
+    'BATCH_ID',
+    'LOCAL_FOLDER',
+    'LOCAL_REPORT_PATH',
+    'DRIVE_FOLDER_URL',
+    'DRIVE_REPORT_URL',
+    'CREATED_AT',
+  ]
+  const sheetRows = rows.map((row) => ({
+    DATE: row.date,
+    BUNDLE_NAME: row.bundle_name,
+    ROWS: row.rows,
+    BATCH_ID: row.batch_id,
+    LOCAL_FOLDER: row.local_folder,
+    LOCAL_REPORT_PATH: row.local_report_path,
+    DRIVE_FOLDER_URL: row.drive_folder_url,
+    DRIVE_REPORT_URL: row.drive_report_url,
+    CREATED_AT: row.created_at,
+  }))
+  const ws = XLSX.utils.json_to_sheet(sheetRows, { header: headers })
+  applyReportSheetLayout(ws, headers, sheetRows)
+  const wb = XLSX.utils.book_new()
+  XLSX.utils.book_append_sheet(wb, ws, 'bundles')
+  await fs.mkdir(dirname(filePath), { recursive: true })
+  XLSX.writeFile(wb, filePath)
+}
+
+async function googleSheetsWriteGenericTable(token: string, spreadsheetId: string, headers: string[], rows: Array<Record<string, unknown>>) {
+  const spreadsheet = await googleSheetsGetSpreadsheet(token, spreadsheetId)
+  const sheetId = Number(spreadsheet?.sheets?.[0]?.properties?.sheetId || 0)
+  const headerRow = {
+    values: headers.map((header) => buildSheetCellData(header)),
+  }
+  const dataRows = rows.map((row) => ({
+    values: headers.map((header) => {
+      return buildSheetCellData(row?.[header])
+    }),
+  }))
+  const requests = [
+    {
+      updateSheetProperties: {
+        properties: {
+          sheetId,
+          title: 'bundles',
+          gridProperties: {
+            rowCount: Math.max(rows.length + 20, 200),
+            columnCount: Math.max(headers.length + 2, 16),
+          },
+        },
+        fields: 'title,gridProperties.rowCount,gridProperties.columnCount',
+      },
+    },
+    {
+      updateCells: {
+        range: { sheetId },
+        rows: [],
+        fields: 'userEnteredValue',
+      },
+    },
+    {
+      updateCells: {
+        start: { sheetId, rowIndex: 0, columnIndex: 0 },
+        rows: [headerRow, ...dataRows],
+        fields: 'userEnteredValue',
+      },
+    },
+    {
+      repeatCell: {
+        range: { sheetId, startRowIndex: 0, endRowIndex: 1, startColumnIndex: 0, endColumnIndex: headers.length },
+        cell: { userEnteredFormat: { textFormat: { bold: true } } },
+        fields: 'userEnteredFormat.textFormat.bold',
+      },
+    },
+    ...headers.map((header, index) => ({
+      updateDimensionProperties: {
+        range: { sheetId, dimension: 'COLUMNS', startIndex: index, endIndex: index + 1 },
+        properties: {
+          pixelSize: header.endsWith('_URL') || header.startsWith('LOCAL_') ? 360 : 170,
+        },
+        fields: 'pixelSize',
+      },
+    })),
+  ]
+  const resp = await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}:batchUpdate`, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${token}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ requests }),
+  })
+  const data = await resp.json() as { error?: { message?: string } }
+  if (!resp.ok) {
+    throw new Error(data?.error?.message || `Google Sheets batchUpdate error ${resp.status}`)
+  }
+}
+
+async function updateBundleMasterIndexes(baseDir: string, entry: BundleMasterIndexEntry) {
+  const nextEntries = upsertBundleMasterIndexEntry(await loadBundleMasterIndex(baseDir), entry)
+  await saveBundleMasterIndex(baseDir, nextEntries)
+
+  const desktopDir = app.getPath('desktop')
+  const localMasterPath = join(desktopDir, '_MASTER_UPLOAD_INDEX.xlsx')
+  await writeBundleMasterIndexWorkbook(localMasterPath, nextEntries)
+
+  const driveConfig = resolveGoogleDriveConfig()
+  if (!driveConfig) return
+  const token = await fetchGoogleDriveAccessToken(driveConfig)
+  const spreadsheetId = await googleDriveEnsureSpreadsheetFile(token, driveConfig.folderId, '_MASTER_UPLOAD_INDEX')
+  const rows = nextEntries.map((row) => ({
+    DATE: row.date,
+    BUNDLE_NAME: row.bundle_name,
+    ROWS: row.rows,
+    BATCH_ID: row.batch_id,
+    LOCAL_FOLDER: row.local_folder,
+    LOCAL_REPORT_PATH: row.local_report_path,
+    DRIVE_FOLDER_URL: row.drive_folder_url,
+    DRIVE_REPORT_URL: row.drive_report_url,
+    CREATED_AT: row.created_at,
+  }))
+  await googleSheetsWriteGenericTable(token, spreadsheetId, [
+    'DATE',
+    'BUNDLE_NAME',
+    'ROWS',
+    'BATCH_ID',
+    'LOCAL_FOLDER',
+    'LOCAL_REPORT_PATH',
+    'DRIVE_FOLDER_URL',
+    'DRIVE_REPORT_URL',
+    'CREATED_AT',
+  ], rows)
+  await googleDriveMakePublic(token, spreadsheetId)
+}
+
+async function buildAndUploadDriveBundle(input: {
+  baseDir: string
+  rows: any[]
+  batchId: string
+  folderName: string
+  onProgress?: (payload: { percent: number; message: string; current?: number; total?: number }) => void
+}) {
+  const driveConfig = resolveGoogleDriveConfig()
+  if (!driveConfig) throw new Error('Google Drive config missing')
+  const desktopDir = app.getPath('desktop')
+  const localFolder = join(desktopDir, input.folderName)
+  const localPdfFolder = join(localFolder, 'PDF')
+  await fs.mkdir(localFolder, { recursive: true })
+  await clearDirectoryContents(localFolder)
+  await fs.mkdir(localFolder, { recursive: true })
+  await fs.mkdir(localPdfFolder, { recursive: true })
+
+  const token = await fetchGoogleDriveAccessToken(driveConfig)
+  input.onProgress?.({ percent: 5, message: 'Preparing folder...' })
+  const driveFolderId = await googleDriveEnsureChildFolder(token, driveConfig.folderId, input.folderName)
+  const drivePdfFolderId = await googleDriveEnsureChildFolder(token, driveFolderId, 'PDF')
+  await googleDriveDeleteChildrenExcept(token, driveFolderId, new Set(['PDF']))
+  await googleDriveMakePublic(token, driveFolderId).catch(() => {})
+  await googleDriveMakePublic(token, drivePdfFolderId).catch(() => {})
+  const driveFolderUrl = googleDriveFolderUrl(driveFolderId)
+  const existingPdfChildren = await googleDriveListChildren(token, drivePdfFolderId)
+  const existingPdfByName = new Map(
+    existingPdfChildren
+      .filter((child) => String(child?.mimeType || '') !== 'application/vnd.google-apps.folder')
+      .map((child) => [String(child.name || ''), String(child.id || '')]),
+  )
+  const inputs = await loadArchivedInputByRecordIds(input.baseDir, input.rows.map((row) => String(row?.record_id || '')))
+  const reportRows: Array<Record<string, unknown>> = []
+  const uploadedNames = new Set<string>()
+  let reusedPdfCount = 0
+  const totalSteps = Math.max(1, input.rows.length + 2)
+  input.onProgress?.({
+    percent: 8,
+    message: `Checking existing PDFs (${existingPdfByName.size} found on Drive)`,
+    current: 0,
+    total: input.rows.length,
+  })
+
+  type PreparedPdfItem = {
+    idx: number
+    row: Record<string, unknown>
+    source: Record<string, unknown>
+    sourcePdfPath: string
+    fileName: string
+    localPdfPath: string
+    hasPdf: boolean
+  }
+
+  const items: PreparedPdfItem[] = []
+  for (let idx = 0; idx < input.rows.length; idx += 1) {
+    const row = input.rows[idx] || {}
+    const source = inputs.get(String(row?.record_id || '').trim()) || {}
+    const sourcePdfPath = normalizeRuntimePath(String(row?.final_pdf_path || row?.pdf_path || '').trim())
+    let fileName = ''
+    let localPdfPath = ''
+    let hasPdf = false
+    if (sourcePdfPath) {
+      fileName = buildPrettyPdfFileName({ ...row, ...source }, idx + 1, extname(sourcePdfPath) || '.pdf')
+      if (uploadedNames.has(fileName)) {
+        const ext = extname(fileName) || '.pdf'
+        const stem = fileName.slice(0, -ext.length)
+        fileName = `${stem} - ${slugFilePart(row?.record_id, 24)}${ext}`
+      }
+      uploadedNames.add(fileName)
+      localPdfPath = join(localPdfFolder, fileName)
+      hasPdf = true
+    }
+    items.push({ idx, row, source, sourcePdfPath, fileName, localPdfPath, hasPdf })
+  }
+
+  const pdfUrlByIndex = new Map<number, string>()
+  let processedCount = 0
+  const UPLOAD_CONCURRENCY = 8
+
+  let cursor = 0
+  const workers = Array.from({ length: Math.min(UPLOAD_CONCURRENCY, Math.max(1, items.length)) }, async () => {
+    while (cursor < items.length) {
+      const item = items[cursor++]
+      if (!item) break
+      if (item.hasPdf) {
+        try {
+          await fs.access(item.sourcePdfPath)
+          await fs.copyFile(item.sourcePdfPath, item.localPdfPath)
+          let fileId = String(existingPdfByName.get(item.fileName) || '').trim()
+          if (fileId) {
+            reusedPdfCount += 1
+          } else {
+            for (let attempt = 1; attempt <= 2; attempt += 1) {
+              try {
+                fileId = await googleDriveUploadFile({
+                  token,
+                  folderId: drivePdfFolderId,
+                  localPath: item.localPdfPath,
+                  remoteName: item.fileName,
+                  mimeType: 'application/pdf',
+                  replaceExisting: true,
+                })
+                existingPdfByName.set(item.fileName, fileId)
+                break
+              } catch (upErr) {
+                if (attempt === 2) throw upErr
+                await new Promise((r) => setTimeout(r, 1000))
+              }
+            }
+          }
+          await googleDriveMakePublic(token, fileId).catch(() => {})
+          pdfUrlByIndex.set(item.idx, googleDriveViewUrl(fileId))
+        } catch {
+          // keep empty PDF url when local file is unavailable
+        }
+      }
+      processedCount += 1
+      input.onProgress?.({
+        percent: Math.min(90, Math.round((processedCount / totalSteps) * 100)),
+        message: `PDF ${processedCount}/${input.rows.length} · reused ${reusedPdfCount}`,
+        current: processedCount,
+        total: input.rows.length,
+      })
+    }
+  })
+  await Promise.all(workers)
+
+  for (let idx = 0; idx < input.rows.length; idx += 1) {
+    const item = items[idx]
+    const row = item.row
+    const source = item.source
+    const pdfUrl = pdfUrlByIndex.get(idx) || ''
+    const inputAddress = String(source.ADDRESS || '').trim()
+    const inputCity = String(source.CITI || '').trim()
+    const inputState = String(source.BANG || '').trim()
+    const inputZip = String(source.ZIP || '').trim()
+    reportRows.push({
+      NAME: String(source.NAME || row?.name || row?.record_name || '').trim(),
+      SSN: String(source.SSN || '').trim(),
+      ADDRESS: inputAddress,
+      CITI: inputCity,
+      BANG: inputState,
+      ZIP: inputZip,
+      BOD: formatDobForReport(source.DOB || ''),
+      GENDER: String(source.GENDER || '').trim(),
+      EIN: String(row?.confirmation_number || row?.step6_ein || '').trim(),
+      'NAME LLC': String(row?.step6_legal_name || source.NAME || row?.name || row?.record_name || '').trim(),
+      'ADDRESS LLC': inputAddress,
+      'CITI LLC': inputCity,
+      'BANG LLC': String(row?.step6_state || inputState || '').trim(),
+      'ZIP LLC': inputZip,
+      PDF: pdfUrl,
+      FOLDER_URL: driveFolderUrl,
+    })
+  }
+
+  const headers = [
+    'NAME',
+    'SSN',
+    'ADDRESS',
+    'CITI',
+    'BANG',
+    'ZIP',
+    'BOD',
+    'GENDER',
+    'EIN',
+    'NAME LLC',
+    'ADDRESS LLC',
+    'CITI LLC',
+    'BANG LLC',
+    'ZIP LLC',
+    'PDF',
+    'FOLDER_URL',
+  ]
+  const ws = XLSX.utils.json_to_sheet(reportRows, { header: headers })
+  applyReportSheetLayout(ws, headers, reportRows)
+  const wb = XLSX.utils.book_new()
+  XLSX.utils.book_append_sheet(wb, ws, 'report')
+  const localReportPath = join(localFolder, `${input.folderName}.xlsx`)
+  XLSX.writeFile(wb, localReportPath)
+  const manifestPath = join(localFolder, 'manifest.json')
+  await fs.writeFile(manifestPath, JSON.stringify({
+    schema_version: 1,
+    created_at: new Date().toISOString(),
+    bundle_name: input.folderName,
+    batch_id: input.batchId,
+    rows: reportRows.length,
+    report_file: `${input.folderName}.xlsx`,
+    pdf_folder: 'PDF',
+  }, null, 2), 'utf-8')
+  await googleDriveDeleteChildrenExcept(token, drivePdfFolderId, uploadedNames)
+  input.onProgress?.({ percent: 92, message: 'Building Google Sheet...', current: input.rows.length, total: input.rows.length })
+  const reportSheetName = input.folderName
+  const reportId = await googleDriveEnsureSpreadsheetFile(token, driveFolderId, reportSheetName)
+  await googleSheetsWriteBundleReport(token, reportId, headers, reportRows)
+  await googleDriveMakePublic(token, reportId)
+  input.onProgress?.({ percent: 100, message: 'Completed' })
+
+  return {
+    localFolder,
+    localReportPath,
+    driveFolderUrl,
+    driveReportUrl: googleDriveViewUrl(reportId),
+    rows: reportRows.length,
+  }
+}
+
+async function autoPushBatchReportOnConfirm(batchId: string) {
+  const cleanBatchId = String(batchId || '').trim()
+  if (!cleanBatchId) return
+  const base = storageRootDir()
+  await new Promise((resolve) => setTimeout(resolve, 350))
+  const confirmedRows = await loadConfirmedRowsForBatch(base, cleanBatchId)
+  const confirmedCount = confirmedRows.length
+  if (confirmedCount < 1) return
+  const state = await loadGoogleDriveAutoPushState(base)
+  const lastPushed = Number(state.report_pushed_count_by_batch[cleanBatchId] || 0)
+  if (lastPushed >= confirmedCount) return
+  const chunkIndex = chunkIndexForOrdinal(confirmedCount)
+  const chunkStart = (chunkIndex - 1) * GOOGLE_DRIVE_CHUNK_SIZE
+  const rowsForReport = confirmedRows.slice(chunkStart, chunkStart + GOOGLE_DRIVE_CHUNK_SIZE)
+  const enrichedRows = await enrichSelectedReportRows(base, rowsForReport)
+  const sheetRows = buildSelectedReportRows(enrichedRows)
+  const batchToken = prettifyBatchToken(cleanBatchId, 'mixed')
+  const fileBase = `report_${batchToken}_${chunkLabelFromIndex(chunkIndex)}`
+  const { xlsxPath } = await writeCompactReportBundle(base, fileBase, sheetRows as Array<Record<string, unknown>>)
+  const driveConfig = resolveGoogleDriveConfig()
+  if (!driveConfig) return
+  await withGoogleDriveLock(`batch-upload:${cleanBatchId}`, async () => {
+    const token = await fetchGoogleDriveAccessToken(driveConfig)
+    const chunk = await googleDriveResolveChunkFolder(token, cleanBatchId, chunkIndex)
+    const xlsxLatestId = await googleDriveUploadFile({
+      token,
+      folderId: chunk.chunkFolderId,
+      localPath: xlsxPath,
+      remoteName: 'report.xlsx',
+      mimeType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      replaceExisting: true,
+    })
+    await googleDriveMakePublic(token, xlsxLatestId)
+    if (confirmedCount <= 5 || confirmedCount % 10 === 0 || confirmedCount % GOOGLE_DRIVE_CHUNK_SIZE === 0) {
+      await reconcileGoogleDriveChunkOutputs(token, cleanBatchId, chunkIndex, rowsForReport)
+    }
+    await updateGoogleDriveBatchSummary(token, base, cleanBatchId, confirmedRows)
+  })
+  state.report_pushed_count_by_batch[cleanBatchId] = confirmedCount
+  await saveGoogleDriveAutoPushState(base, state)
 }
 
 function ensureTokenExportMap(state: ExportContinuationState, token: string): Record<string, true> {
@@ -660,6 +2311,64 @@ function makeExportRowKey(row: any): string {
   const ein = normalizeExportKeyPart(row?.step6_ein || row?.confirmation_number || row?.ein)
   if (name && ein) return `name_ein:${name}:${ein}`
   return ''
+}
+
+function slugFilePart(v: unknown, max = 48): string {
+  return String(v || '')
+    .normalize('NFKD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[^a-z0-9]+/gi, '-')
+    .replace(/-+/g, '-')
+    .replace(/^-|-$/g, '')
+    .slice(0, max)
+}
+
+function prettifyBatchToken(batchId: string, fallback = 'mixed'): string {
+  const cleaned = String(batchId || '').trim()
+  if (!cleaned) return fallback
+  return slugFilePart(cleaned, 36) || fallback
+}
+
+function buildSelectedExportBaseName(input: {
+  reportType: 'report' | 'failures'
+  batchId: string
+  rowCount: number
+  nextOnly?: boolean
+  part?: number
+  ts: string
+}) {
+  const scope = prettifyBatchToken(input.batchId, 'mixed')
+  const kind = input.reportType === 'failures' ? 'failures' : 'report'
+  const countToken = `${Math.max(0, Number(input.rowCount || 0))}rows`
+  if (input.nextOnly) {
+    const partToken = input.part && input.part > 0 ? `part${input.part}` : 'part1'
+    return `${kind}_${scope}_${countToken}_${partToken}_${input.ts}`
+  }
+  return `${kind}_${scope}_${countToken}_${input.ts}`
+}
+
+function buildPrettyPdfFileName(row: any, sequence: number, ext: string) {
+  const person = String(row?.name || row?.record_name || row?.NAME || '')
+    .normalize('NFKD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[^A-Za-z0-9\s]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 60)
+  const docId = String(row?.confirmation_number || row?.step6_ein || row?.ein || '')
+    .replace(/[^A-Za-z0-9-]+/g, '')
+    .trim()
+    .slice(0, 24)
+  const recordId = slugFilePart(row?.record_id, 24)
+  const fallbackOrdinal = String(sequence).padStart(3, '0')
+  const label = [
+    person || 'Record',
+    docId || fallbackOrdinal,
+    recordId,
+  ]
+    .filter(Boolean)
+    .join(' - ')
+  return `${label}${ext}`
 }
 
 async function readReportRows(filePath: string): Promise<any[]> {
@@ -764,20 +2473,22 @@ async function detectMaxPdfSequence(baseDir: string, batchToken: string, scope: 
 function buildLegacyCompactReportRows(rows: any[]) {
   const toText = (v: unknown) => String(v ?? '').trim()
   return rows.map((row) => {
-    const pdfPath = toText(row?.final_pdf_path || row?.pdf_path)
     return {
-      name: toText(row?.name),
-      confirmation_number: toText(row?.confirmation_number),
-      legal_name: toText(row?.step6_legal_name),
-      county: toText(row?.step6_county),
-      state: toText(row?.step6_state),
-      start_date: toText(row?.step6_start_date),
-      principal_activity: toText(row?.step6_principal_activity),
-      principal_product_service: toText(row?.step6_principal_product_service),
-      reason_for_applying: toText(row?.step6_reason_for_applying),
-      pdf_file: pdfPath ? basename(pdfPath) : '',
-      record_id: toText(row?.record_id),
-      batch_id: toText(row?.batch_id),
+      NAME: toText(row?.NAME),
+      SSN: toText(row?.SSN),
+      ADDRESS: toText(row?.ADDRESS),
+      CITI: toText(row?.CITI),
+      BANG: toText(row?.BANG),
+      ZIP: toText(row?.ZIP),
+      BOD: normalizeBodForReport(row?.BOD),
+      GENDER: toText(row?.GENDER),
+      EIN: toText(row?.EIN),
+      'NAME LLC': toText(row?.['NAME LLC']),
+      'ADDRESS LLC': toText(row?.['ADDRESS LLC']),
+      'CITI LLC': toText(row?.['CITI LLC']),
+      'BANG LLC': toText(row?.['BANG LLC']),
+      'ZIP LLC': toText(row?.['ZIP LLC']),
+      PDF: toText(row?.PDF),
     }
   })
 }
@@ -844,12 +2555,41 @@ async function writeRuntimeConfig(payload: {
   mkdirSync(artifactsDir, { recursive: true })
   mkdirSync(stateDir, { recursive: true })
   mkdirSync(join(userDir, 'outputs'), { recursive: true })
-  const activeProxy = (payload.proxies || []).find((p) => p.enabled) || (payload.proxies || [])[0] || {}
+
+  const savedSettings = loadAppSettings()
+  const rawProxyInput = Array.isArray(payload.proxies) && payload.proxies.length > 0
+    ? payload.proxies
+    : (Array.isArray(savedSettings.proxies) && savedSettings.proxies.length > 0 ? savedSettings.proxies : [])
+
+  const normalizedProxyList = rawProxyInput
+    .map((p) => {
+      const parsed = parseProxyEndpointInput({
+        host: String(p?.host || ''),
+        port: p?.port || 0,
+        username: String(p?.username || ''),
+        password: String(p?.password || ''),
+      })
+      return {
+        enabled: Boolean(p?.enabled ?? true),
+        host: String(parsed.host || '').trim(),
+        port: Number(parsed.port || 0),
+        username: String(parsed.username || ''),
+        password: String(parsed.password || ''),
+      }
+    })
+    .filter((p) => !!p.host && Number.isFinite(p.port) && p.port > 0)
+
+  if (Array.isArray(payload.proxies) && payload.proxies.length > 0) {
+    saveAppSettings({ proxies: normalizedProxyList })
+  }
+
+  const activeProxy = normalizedProxyList.find((p) => p.enabled) || normalizedProxyList[0] || {}
   let preservedRotateUrl = ''
   let preservedProxyHost = ''
   let preservedProxyPort = 0
   let preservedProxyUsername = ''
   let preservedProxyPassword = ''
+  let preservedProxyListYaml = ''
   try {
     const prev = await fs.readFile(configPath, 'utf-8')
     const runtimeBlock = (prev.match(/proxy_runtime:\n([\s\S]*?)\n\nqueue:/m)?.[1] || '')
@@ -863,11 +2603,17 @@ async function writeRuntimeConfig(payload: {
     preservedProxyPassword = normalizeUrlLike(getRuntimeValue('password'))
     const parsedPort = Number(getRuntimeValue('port'))
     preservedProxyPort = Number.isFinite(parsedPort) ? parsedPort : 0
+    const listMatch = runtimeBlock.match(/proxy_list:\n([\s\S]*?)\n\s*rotate_url:/m)
+    if (listMatch && listMatch[1] && !listMatch[1].includes('[]')) {
+      preservedProxyListYaml = listMatch[1].trimEnd()
+    }
   } catch {
     // ignore
   }
   const flowMode = String(payload.flowMode || 'sandbox')
-  const rotateUrl = normalizeUrlLike(String(payload.rotateUrl || preservedRotateUrl || ''))
+  const hasRotateUrlInPayload = Object.prototype.hasOwnProperty.call(payload || {}, 'rotateUrl')
+  const rotateUrlSource = hasRotateUrlInPayload ? payload.rotateUrl : preservedRotateUrl
+  const rotateUrl = normalizeUrlLike(String(rotateUrlSource ?? ''))
   const queueTimezone = String(payload.queueTimezone || loadAppSettings().queueTimezone || 'Asia/Ho_Chi_Minh')
   const queueCountry = String(payload.queueCountry || loadAppSettings().queueCountry || 'VN')
   const configuredQueueStartHour = Number.isFinite(Number(payload.queueStartHour))
@@ -892,8 +2638,7 @@ async function writeRuntimeConfig(payload: {
   const proxyPassword = String(parsedProxy.password || '')
 
   const browserMode = String(payload.browserMode || 'silent').toLowerCase()
-  // Running multiple workers in headed mode is unstable; force silent/headless.
-  const autoHeadless = browserMode !== 'browser' || resolveWorkerCount() > 1
+  const autoHeadless = browserMode !== 'browser'
   const rotateWaitSecondsRaw = Number.isFinite(Number(payload.globalRotateSecs))
     ? Number(payload.globalRotateSecs)
     : 5
@@ -903,7 +2648,8 @@ async function writeRuntimeConfig(payload: {
     if (rotateUrl && normalized === 600) return 5
     return normalized
   })()
-  const configText = `target_url: ${toYamlScalar(targetUrl)}
+  const configText = `app_flow_mode: ${toYamlScalar(flowMode)}
+target_url: ${toYamlScalar(targetUrl)}
 
 required_columns:
   - NAME
@@ -931,8 +2677,18 @@ proxy_runtime:
   port: ${proxyPort}
   username: ${toYamlScalar(proxyUsername)}
   password: ${toYamlScalar(proxyPassword)}
+  proxy_list:
+${normalizedProxyList.length
+  ? normalizedProxyList.map((p) => [
+      `    - enabled: ${p.enabled ? 'true' : 'false'}`,
+      `      host: ${toYamlScalar(p.host)}`,
+      `      port: ${Number.isFinite(p.port) ? p.port : 8178}`,
+      `      username: ${toYamlScalar(p.username)}`,
+      `      password: ${toYamlScalar(p.password)}`,
+    ].join('\n')).join('\n')
+  : (preservedProxyListYaml ? preservedProxyListYaml : '    []')}
   rotate_url: ${toYamlScalar(rotateUrl)}
-  change_ip_wait_seconds: ${Number.isFinite(rotateWaitSeconds) ? rotateWaitSeconds : 0}
+  change_ip_wait_seconds: ${Number.isFinite(rotateWaitSeconds) ? rotateWaitSeconds : 10}
   healthcheck_url: "http://api.ipify.org?format=json"
   skip_healthcheck: true
 
@@ -941,6 +2697,7 @@ queue:
   queue_default: "ein.default"
   queue_retry: "ein.retry"
   queue_manual: "ein.manual"
+  queue_observe: "ein.observe"
   queue_timezone: ${toYamlScalar(queueTimezone)}
   queue_country: ${toYamlScalar(queueCountry)}
   queue_start_hour: ${Number.isFinite(queueStartHour) ? queueStartHour : 18}
@@ -975,6 +2732,14 @@ browser:
   timeout_ms: 30000
   step_delay_ms: 180
   step_delay_jitter_ms: 120
+  observe_mode_active: false
+  observe_step_delay_multiplier: 2.5
+  observe_extra_delay_ms: 350
+  observe_min_delay_ms: 1400
+  observe_min_jitter_ms: 450
+  observe_disable_ready_speedup: true
+  observe_type_char_delay_ms: 140
+  observe_field_pause_ms: 800
   manual_window_width: 1600
   manual_window_height: 960
   manual_autosave_seconds: 1.0
@@ -1001,8 +2766,10 @@ async function ensureRuntimeConfig() {
     let browserMode = 'silent'
     try {
       const prev = await fs.readFile(path, 'utf-8')
+      const savedFlow = normalizeUrlLike(String(prev.match(/^\s*app_flow_mode:\s*["']?(.*?)["']?\s*$/m)?.[1] || ''))
+      if (savedFlow) flowMode = savedFlow
       const target = normalizeUrlLike(String(prev.match(/^\s*target_url:\s*["']?(.*?)["']?\s*$/m)?.[1] || ''))
-      if (target.toLowerCase().includes('ein-sandbox.test')) flowMode = 'sandbox'
+      if (!savedFlow && target.toLowerCase().includes('ein-sandbox.test')) flowMode = 'sandbox'
       const headlessRaw = String(prev.match(/^\s*headless:\s*(true|false)\s*$/m)?.[1] || '').toLowerCase()
       if (headlessRaw === 'false') browserMode = 'browser'
     } catch {
@@ -1012,16 +2779,18 @@ async function ensureRuntimeConfig() {
       flowMode,
       browserMode,
     })
+    return { flowMode, browserMode }
   } catch {
-      await writeRuntimeConfig({
-        flowMode: 'full',
-        proxies: [],
-        globalRotateSecs: 5,
-        bearerToken: '',
-        providerUsername: '',
-        providerPassword: '',
-        browserMode: 'silent',
-      })
+    await writeRuntimeConfig({
+      flowMode: 'full',
+      proxies: [],
+      globalRotateSecs: 5,
+      bearerToken: '',
+      providerUsername: '',
+      providerPassword: '',
+      browserMode: 'silent',
+    })
+    return { flowMode: 'full', browserMode: 'silent' }
   }
 }
 
@@ -1108,6 +2877,15 @@ app.whenReady().then(async () => {
       return { ok: true }
     } catch (err) {
       const error = String(err)
+      if (error.includes('404')) {
+        setUpdateState({
+          status: 'not-available',
+          message: 'Chưa có bản phát hành mới trên GitHub (App đang là bản mới nhất)',
+          checkedAt: new Date().toISOString(),
+          error: undefined,
+        })
+        return { ok: true, message: 'Chưa có bản phát hành mới trên GitHub (App đang là bản mới nhất)' }
+      }
       setUpdateState({ status: 'error', message: `Update check failed: ${error}`, error })
       return { ok: false, error }
     }
@@ -1147,6 +2925,18 @@ app.whenReady().then(async () => {
   })
   ipcMain.handle('irs:worker:stop', async () => {
     await stopPythonBackend()
+    try {
+      if (process.platform === 'win32') {
+        const killBrowser = spawn('taskkill', ['/IM', 'camoufox.exe', '/F'], { windowsHide: true })
+        await new Promise<void>((resolve) => {
+          killBrowser.on('close', () => resolve())
+          killBrowser.on('error', () => resolve())
+          setTimeout(resolve, 1000)
+        })
+      }
+    } catch {
+      // ignore
+    }
     try {
       await runPythonCli(['queue', 'recover-running', '--stale-seconds', '0'])
     } catch (err) {
@@ -1263,8 +3053,46 @@ app.whenReady().then(async () => {
       return { ok: false, error: String(err) }
     }
   })
+  function getQueueDbPath(): string {
+    const candidates = [
+      join(storageRootDir(), 'state', 'queue.db'),
+      join(foxAutoRootPath(), 'state', 'queue.db'),
+      join(userDataDir(), 'state', 'queue.db'),
+    ]
+    for (const c of candidates) {
+      if (existsSync(c)) return c
+    }
+    return candidates[0]
+  }
+
   ipcMain.handle('irs:queue:list', async () => {
     try {
+      const dbPath = getQueueDbPath()
+      if (existsSync(dbPath)) {
+        const BetterSqlite3 = (await import('better-sqlite3')).default
+        const db = new BetterSqlite3(dbPath, { readonly: true, timeout: 2000 })
+        try {
+          const stmt = db.prepare('SELECT job_id, queue_name, status, payload, created_at, updated_at FROM jobs ORDER BY created_at ASC')
+          const rawRows = stmt.all() as Array<{ job_id: string; queue_name: string; status: string; payload: string; created_at: number; updated_at: number }>
+          const rows = rawRows.map((r) => {
+            let parsedPayload: any = {}
+            try {
+              parsedPayload = JSON.parse(r.payload || '{}')
+            } catch {}
+            return {
+              job_id: r.job_id,
+              queue_name: r.queue_name,
+              status: r.status,
+              payload: parsedPayload,
+              created_at: Number(r.created_at || 0),
+              updated_at: Number(r.updated_at || 0),
+            }
+          })
+          return { ok: true, rows }
+        } finally {
+          db.close()
+        }
+      }
       const result = await runPythonCli(['queue', 'list'])
       if (result.code !== 0) {
         return { ok: false, error: result.stderr || result.stdout || `exit ${result.code}` }
@@ -1279,6 +3107,23 @@ app.whenReady().then(async () => {
     try {
       const ids = Array.isArray(payload?.ids) ? payload.ids.map((x: any) => String(x).trim()).filter(Boolean) : []
       if (!ids.length) return { ok: true, deleted: 0 }
+      const dbPath = getQueueDbPath()
+      if (existsSync(dbPath)) {
+        const BetterSqlite3 = (await import('better-sqlite3')).default
+        const db = new BetterSqlite3(dbPath, { timeout: 3000 })
+        try {
+          let deleted = 0
+          for (let i = 0; i < ids.length; i += 80) {
+            const chunk = ids.slice(i, i + 80)
+            const placeholders = chunk.map(() => '?').join(',')
+            const info = db.prepare(`DELETE FROM jobs WHERE job_id IN (${placeholders})`).run(...chunk)
+            deleted += info.changes
+          }
+          return { ok: true, deleted }
+        } finally {
+          db.close()
+        }
+      }
       let deleted = 0
       for (let i = 0; i < ids.length; i += 80) {
         const chunk = ids.slice(i, i + 80)
@@ -1298,6 +3143,24 @@ app.whenReady().then(async () => {
     try {
       const ids = Array.isArray(payload?.ids) ? payload.ids.map((x: any) => String(x).trim()).filter(Boolean) : []
       if (!ids.length) return { ok: true, requeued: 0 }
+      const dbPath = getQueueDbPath()
+      if (existsSync(dbPath)) {
+        const BetterSqlite3 = (await import('better-sqlite3')).default
+        const db = new BetterSqlite3(dbPath, { timeout: 3000 })
+        try {
+          let requeued = 0
+          const now = Date.now() / 1000
+          for (let i = 0; i < ids.length; i += 80) {
+            const chunk = ids.slice(i, i + 80)
+            const placeholders = chunk.map(() => '?').join(',')
+            const info = db.prepare(`UPDATE jobs SET status = 'pending', updated_at = ? WHERE job_id IN (${placeholders})`).run(now, ...chunk)
+            requeued += info.changes
+          }
+          return { ok: true, requeued }
+        } finally {
+          db.close()
+        }
+      }
       let requeued = 0
       for (let i = 0; i < ids.length; i += 80) {
         const chunk = ids.slice(i, i + 80)
@@ -1354,14 +3217,15 @@ app.whenReady().then(async () => {
       const batchToken = (batchId || 'mixed').replace(/[^a-z0-9_-]+/gi, '_')
       const filteredRows = reportType === 'failures'
         ? sourceRows.filter((row: any) => String(row?.status || '').toLowerCase() === 'failed')
-        : sourceRows
+        : sourceRows.filter((row: any) => String(row?.confirmation_number || row?.step6_ein || '').trim())
       if (!filteredRows.length) {
         return { ok: false, error: reportType === 'failures' ? 'No failed rows in selection' : 'No rows after filter' }
       }
 
-      const legacyCompact = nextOnly && reportType === 'report'
+      const compactReport = reportType === 'report'
+      const legacyCompact = nextOnly && compactReport
       const reportDedupeToken = legacyCompact ? 'legacy_report:F' : `report_selected:${reportType}:${batchToken}`
-      let rowsForKey = legacyCompact ? buildLegacyCompactReportRows(filteredRows) : buildSelectedReportRows(filteredRows)
+      let rowsForKey = filteredRows
       let skippedDuplicates = 0
       let part = 0
       const base = storageRootDir()
@@ -1401,18 +3265,29 @@ app.whenReady().then(async () => {
         }
       }
 
-      const headers = legacyCompact
+      if (compactReport) {
+        const enrichedRows = await enrichSelectedReportRows(base, rowsForKey)
+        rowsForKey = legacyCompact ? buildLegacyCompactReportRows(enrichedRows) : buildSelectedReportRows(enrichedRows)
+      }
+
+      const headers = compactReport
         ? [
-          'name',
-          'confirmation_number',
-          'legal_name',
-          'county',
-          'state',
-          'start_date',
-          'principal_activity',
-          'principal_product_service',
-          'reason_for_applying',
-          'pdf_file',
+          'NAME',
+          'SSN',
+          'ADDRESS',
+          'CITI',
+          'BANG',
+          'ZIP',
+          'BOD',
+          'GENDER',
+          'EIN',
+          'NAME LLC',
+          'ADDRESS LLC',
+          'CITI LLC',
+          'BANG LLC',
+          'ZIP LLC',
+          'PDF',
+          'FOLDER_URL',
         ]
         : [
           'record_id',
@@ -1439,21 +3314,30 @@ app.whenReady().then(async () => {
           'source',
           'batch_id',
         ]
-      const sheetRows = legacyCompact
+      const sheetRows = compactReport
         ? rowsForKey.map((row) => ({
-          name: row.name,
-          confirmation_number: row.confirmation_number,
-          legal_name: row.legal_name,
-          county: row.county,
-          state: row.state,
-          start_date: row.start_date,
-          principal_activity: row.principal_activity,
-          principal_product_service: row.principal_product_service,
-          reason_for_applying: row.reason_for_applying,
-          pdf_file: row.pdf_file,
+          NAME: row.NAME,
+          SSN: row.SSN,
+          ADDRESS: row.ADDRESS,
+          CITI: row.CITI,
+          BANG: row.BANG,
+          ZIP: row.ZIP,
+          BOD: row.BOD,
+          GENDER: row.GENDER,
+          EIN: row.EIN,
+          'NAME LLC': row['NAME LLC'],
+          'ADDRESS LLC': row['ADDRESS LLC'],
+          'CITI LLC': row['CITI LLC'],
+          'BANG LLC': row['BANG LLC'],
+          'ZIP LLC': row['ZIP LLC'],
+          PDF: row.PDF,
+          FOLDER_URL: row.FOLDER_URL,
         }))
         : rowsForKey
       const ws = XLSX.utils.json_to_sheet(sheetRows, { header: headers })
+      if (compactReport) {
+        applyReportSheetLayout(ws, headers, sheetRows as Array<Record<string, unknown>>)
+      }
       const wb = XLSX.utils.book_new()
       XLSX.utils.book_append_sheet(wb, ws, 'report')
 
@@ -1462,12 +3346,25 @@ app.whenReady().then(async () => {
       await fs.mkdir(outDir, { recursive: true })
       const fileBase = legacyCompact
         ? `${hcmDateLabel()}-F${part}`
-        : nextOnly
-          ? `selected_${reportType}_${batchToken}_part${part}_${ts}`
-          : `selected_${reportType}_${batchToken}_${ts}`
+        : buildSelectedExportBaseName({
+          reportType,
+          batchId: batchToken,
+          rowCount: rowsForKey.length,
+          nextOnly,
+          part,
+          ts,
+        })
       const xlsxPath = join(outDir, `${fileBase}.xlsx`)
       const csvPath = join(outDir, `${fileBase}.csv`)
-      const writeBothFormats = legacyCompact
+      const writeBothFormats = legacyCompact || compactReport
+      let driveBatch: Awaited<ReturnType<typeof googleDriveResolveBatchContainer>> | null = null
+      if (compactReport) {
+        const driveConfig = resolveGoogleDriveConfig()
+        if (driveConfig) {
+          const driveToken = await fetchGoogleDriveAccessToken(driveConfig)
+          driveBatch = await googleDriveResolveBatchContainer(driveToken, batchToken)
+        }
+      }
 
       if (format === 'csv') {
         const csv = XLSX.utils.sheet_to_csv(ws)
@@ -1484,6 +3381,42 @@ app.whenReady().then(async () => {
           }
           await saveExportContinuationState(base, continuationState)
         }
+        let googleDrive: Record<string, string> | undefined
+        if (compactReport) {
+          try {
+            const driveConfig = resolveGoogleDriveConfig()
+            if (driveConfig) {
+              googleDrive = {}
+              await withGoogleDriveLock(`batch-upload:${batchToken}`, async () => {
+                const token = await fetchGoogleDriveAccessToken(driveConfig)
+                const reportFolderId = driveBatch?.batchRootId || (await googleDriveResolveBatchContainer(token, batchToken)).batchRootId
+                if (writeBothFormats) {
+                  const archiveXlsxId = await googleDriveUploadFile({
+                    token,
+                    folderId: reportFolderId,
+                    localPath: xlsxPath,
+                    remoteName: basename(xlsxPath),
+                    mimeType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+                  })
+                  await googleDriveMakePublic(token, archiveXlsxId)
+                  const latestXlsxId = await googleDriveUploadFile({
+                    token,
+                    folderId: reportFolderId,
+                    localPath: xlsxPath,
+                    remoteName: 'manual_report_latest.xlsx',
+                    mimeType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+                    replaceExisting: true,
+                  })
+                  await googleDriveMakePublic(token, latestXlsxId)
+                  googleDrive!.xlsx_archive_url = googleDriveViewUrl(archiveXlsxId)
+                  googleDrive!.xlsx_latest_url = googleDriveViewUrl(latestXlsxId)
+                }
+              })
+            }
+          } catch (err) {
+            console.warn(`Google Drive report upload skipped: ${String(err)}`)
+          }
+        }
         return {
           ok: true,
           rows: rowsForKey.length,
@@ -1495,6 +3428,7 @@ app.whenReady().then(async () => {
           skipped_duplicates: skippedDuplicates,
           part,
           next_only: nextOnly,
+          google_drive: googleDrive,
         }
       }
 
@@ -1512,6 +3446,41 @@ app.whenReady().then(async () => {
         }
         await saveExportContinuationState(base, continuationState)
       }
+      let googleDrive: Record<string, string> | undefined
+      if (compactReport) {
+        try {
+          const driveConfig = resolveGoogleDriveConfig()
+          if (driveConfig) {
+            await withGoogleDriveLock(`batch-upload:${batchToken}`, async () => {
+              const token = await fetchGoogleDriveAccessToken(driveConfig)
+              const reportFolderId = driveBatch?.batchRootId || (await googleDriveResolveBatchContainer(token, batchToken)).batchRootId
+              const archiveXlsxId = await googleDriveUploadFile({
+                token,
+                folderId: reportFolderId,
+                localPath: xlsxPath,
+                remoteName: basename(xlsxPath),
+                mimeType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+              })
+              await googleDriveMakePublic(token, archiveXlsxId)
+              const latestXlsxId = await googleDriveUploadFile({
+                token,
+                folderId: reportFolderId,
+                localPath: xlsxPath,
+                remoteName: 'manual_report_latest.xlsx',
+                mimeType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+                replaceExisting: true,
+              })
+              await googleDriveMakePublic(token, latestXlsxId)
+              googleDrive = {
+                xlsx_archive_url: googleDriveViewUrl(archiveXlsxId),
+                xlsx_latest_url: googleDriveViewUrl(latestXlsxId),
+              }
+            })
+          }
+        } catch (err) {
+          console.warn(`Google Drive report upload skipped: ${String(err)}`)
+        }
+      }
       return {
         ok: true,
         rows: rowsForKey.length,
@@ -1523,8 +3492,126 @@ app.whenReady().then(async () => {
         skipped_duplicates: skippedDuplicates,
         part,
         next_only: nextOnly,
+        google_drive: googleDrive,
       }
     } catch (err) {
+      return { ok: false, error: String(err) }
+    }
+  })
+  ipcMain.handle('irs:bundle:upload-next', async (_event, payload) => {
+    try {
+      const sourceRows = Array.isArray(payload?.rows) ? payload.rows : []
+      if (!sourceRows.length) return { ok: false, error: 'No selected rows' }
+      const filteredRows = sourceRows.filter((row: any) => String(row?.confirmation_number || row?.step6_ein || '').trim())
+      if (!filteredRows.length) return { ok: false, error: 'No confirmed rows after filter' }
+      const base = storageRootDir()
+      const nextOnly = Boolean(payload?.nextOnly ?? true)
+      const uniqueBatches = Array.from(new Set(filteredRows.map((row: any) => String(row?.batch_id || '').trim()).filter(Boolean)))
+      const batchToken = String(uniqueBatches.length === 1 ? uniqueBatches[0] : 'mixed')
+      const uploadToken = `bundle_upload:${batchToken}`
+      let rowsToUpload = filteredRows
+      let skippedDuplicates = 0
+      let part = 1
+      let continuationState: ExportContinuationState | null = null
+      if (nextOnly) {
+        continuationState = await loadExportContinuationState(base)
+        const tokenExported = ensureTokenExportMap(continuationState, uploadToken)
+        const seen = new Set<string>()
+        const dedupedRows: any[] = []
+        for (const row of filteredRows) {
+          const key = makeExportRowKey(row)
+          if (!key) {
+            dedupedRows.push(row)
+            continue
+          }
+          if (tokenExported[key] || seen.has(key)) {
+            skippedDuplicates += 1
+            continue
+          }
+          seen.add(key)
+          dedupedRows.push(row)
+        }
+        rowsToUpload = dedupedRows
+        if (!rowsToUpload.length) return { ok: false, error: 'No new rows after removing duplicates (already uploaded)' }
+        part = nextPartNumber(continuationState, uploadToken)
+        continuationState.part_by_token[uploadToken] = part
+      }
+
+      const folderName = buildUploadBundleName(rowsToUpload.length)
+      const bundle = await withGoogleDriveLock(`bundle-upload:${folderName}`, async () => {
+        return await buildAndUploadDriveBundle({
+          baseDir: base,
+          rows: rowsToUpload,
+          batchId: batchToken,
+          folderName,
+          onProgress: (progress) => {
+            sendToAllWindows('bundle-upload-progress', {
+              running: true,
+              percent: progress.percent,
+              message: progress.message,
+              current: progress.current,
+              total: progress.total,
+              folderName,
+              rows: rowsToUpload.length,
+            })
+          },
+        })
+      })
+
+      await updateBundleMasterIndexes(base, {
+        bundle_name: folderName,
+        date: hcmDateLabel(),
+        rows: bundle.rows,
+        batch_id: batchToken,
+        local_folder: bundle.localFolder,
+        local_report_path: bundle.localReportPath,
+        drive_folder_url: bundle.driveFolderUrl,
+        drive_report_url: bundle.driveReportUrl,
+        created_at: new Date().toISOString(),
+      })
+
+      if (nextOnly && continuationState) {
+        const tokenExported = ensureTokenExportMap(continuationState, uploadToken)
+        for (const row of rowsToUpload) {
+          const key = makeExportRowKey(row)
+          if (!key) continue
+          tokenExported[key] = true
+        }
+        await saveExportContinuationState(base, continuationState)
+      }
+
+      sendToAllWindows('bundle-upload-progress', {
+        running: false,
+        percent: 100,
+        message: 'Completed',
+        current: rowsToUpload.length,
+        total: rowsToUpload.length,
+        folderName,
+        rows: rowsToUpload.length,
+      })
+
+      return {
+        ok: true,
+        rows: bundle.rows,
+        part,
+        skipped_duplicates: skippedDuplicates,
+        folder: bundle.localFolder,
+        preferred_path: bundle.localReportPath,
+        local_report_path: bundle.localReportPath,
+        google_drive: {
+          folder_url: bundle.driveFolderUrl,
+          report_url: bundle.driveReportUrl,
+        },
+      }
+    } catch (err) {
+      sendToAllWindows('bundle-upload-progress', {
+        running: false,
+        percent: 0,
+        message: String(err),
+        current: 0,
+        total: 0,
+        error: true,
+      })
       return { ok: false, error: String(err) }
     }
   })
@@ -1585,21 +3672,10 @@ app.whenReady().then(async () => {
       let copied = 0
       const missing: string[] = []
       const copiedKeys: string[] = []
-      const slug = (v: string, max = 48) =>
-        String(v || '')
-          .normalize('NFKD')
-          .replace(/[\u0300-\u036f]/g, '')
-          .replace(/[^a-z0-9]+/gi, '-')
-          .replace(/-+/g, '-')
-          .replace(/^-|-$/g, '')
-          .slice(0, max)
-      const stripExt = (name: string) => String(name || '').replace(/\.[^/.]+$/, '')
       for (let i = 0; i < rowsToCopy.length; i++) {
         const r = rowsToCopy[i] || {}
         const src = String(r.final_pdf_path || r.pdf_path || '').trim()
         const rid = String(r.record_id || `row-${i + 1}`).trim()
-        const person = String(r.name || '').trim()
-        const ein = String(r.step6_ein || r.confirmation_number || '').trim()
         if (!src) {
           missing.push(rid)
           continue
@@ -1611,20 +3687,13 @@ app.whenReady().then(async () => {
           continue
         }
         const ext = extname(src) || '.pdf'
-        const baseName = stripExt(basename(src))
         const seqForFile = sequence + 1
-        const parts = [
-          String(seqForFile).padStart(3, '0'),
-          slug(person, 40),
-          slug(rid, 44),
-          slug(ein, 24),
-          slug(baseName, 40),
-        ].filter(Boolean)
-        let fileName = `${parts.join('_')}${ext}`
+        let fileName = buildPrettyPdfFileName(r, seqForFile, ext)
         let target = join(outDir, fileName)
         let dup = 2
         while (existsSync(target)) {
-          fileName = `${parts.join('_')}_${dup}${ext}`
+          const fallbackId = String(r.confirmation_number || r.step6_ein || r.ein || rid || '').trim()
+          fileName = buildPrettyPdfFileName({ ...r, confirmation_number: `${fallbackId}-${dup}` }, seqForFile, ext)
           target = join(outDir, fileName)
           dup += 1
         }
@@ -1722,6 +3791,10 @@ app.whenReady().then(async () => {
         queueCountry: s.queueCountry || 'VN',
         queueStartHour: Number.isFinite(Number(s.queueStartHour)) ? Number(s.queueStartHour) : 18,
         forceRunNow: Boolean(s.forceRunNow),
+        workerCount: Number.isFinite(Number(s.workerCount)) ? Number(s.workerCount) : 3,
+        proxies: Array.isArray(s.proxies) ? s.proxies : [],
+        proxyAuth: s.proxyAuth || null,
+        globalRotateSecs: Number.isFinite(Number(s.globalRotateSecs)) ? Number(s.globalRotateSecs) : 5,
       }
     } catch (err) {
       return { ok: false, error: String(err) }
@@ -1733,8 +3806,14 @@ app.whenReady().then(async () => {
       const queueCountry = String(payload?.queueCountry || 'VN').trim() || 'VN'
       const queueStartHour = Math.min(23, Math.max(0, Number(payload?.queueStartHour ?? 18)))
       const forceRunNow = Boolean(payload?.forceRunNow)
-      saveAppSettings({ queueTimezone, queueCountry, queueStartHour, forceRunNow })
-      return { ok: true, queueTimezone, queueCountry, queueStartHour, forceRunNow }
+      const workerCount = Number.isFinite(Number(payload?.workerCount)) ? Math.max(1, Math.min(8, Math.floor(Number(payload.workerCount)))) : undefined
+      const patch: Partial<AppUiSettings> = { queueTimezone, queueCountry, queueStartHour, forceRunNow }
+      if (workerCount !== undefined) patch.workerCount = workerCount
+      if (Array.isArray(payload?.proxies)) patch.proxies = payload.proxies
+      if (payload?.proxyAuth) patch.proxyAuth = payload.proxyAuth
+      if (Number.isFinite(Number(payload?.globalRotateSecs))) patch.globalRotateSecs = Number(payload.globalRotateSecs)
+      saveAppSettings(patch)
+      return { ok: true, queueTimezone, queueCountry, queueStartHour, forceRunNow, workerCount: workerCount ?? loadAppSettings().workerCount ?? 3 }
     } catch (err) {
       return { ok: false, error: String(err) }
     }
@@ -1744,29 +3823,92 @@ app.whenReady().then(async () => {
       const parsedProxy = parseProxyEndpointInput({
         host: String(payload?.host || ''),
         port: payload?.port,
+        username: String(payload?.username || ''),
+        password: String(payload?.password || ''),
       })
       const host = String(parsedProxy.socketHost || '').trim()
       const port = Number(parsedProxy.port || 0)
       if (!host || !Number.isFinite(port) || port <= 0) return { ok: false, error: 'Invalid host/port' }
-      const timeoutMs = Math.min(15000, Math.max(500, Number(payload?.timeoutMs || 5000)))
+      const timeoutMs = Math.min(20000, Math.max(1000, Number(payload?.timeoutMs || 8000)))
+      if (String(parsedProxy.scheme || 'http').startsWith('socks')) {
+        return { ok: false, error: `IRS healthcheck chưa hỗ trợ ${parsedProxy.scheme} proxy` }
+      }
       const started = Date.now()
-      const result = await new Promise<{ ok: boolean; error?: string }>((resolve) => {
-        const socket = net.createConnection({ host, port })
-        let settled = false
-        const done = (ok: boolean, error?: string) => {
-          if (settled) return
-          settled = true
-          try { socket.destroy() } catch { /* ignore */ }
-          resolve({ ok, error })
+      let irs: { statusCode: number; statusLine: string; bodySnippet: string } | null = null
+      let lastTargetErr = ''
+      for (let attempt = 1; attempt <= 3; attempt++) {
+        try {
+          irs = await requestIrsViaProxy({
+            proxyHost: host,
+            proxyPort: port,
+            username: String(parsedProxy.username || ''),
+            password: String(parsedProxy.password || ''),
+            timeoutMs,
+          })
+          break
+        } catch (err) {
+          lastTargetErr = String(err || '')
+          if (attempt < 3) {
+            await new Promise((r) => setTimeout(r, 300 * attempt))
+          }
         }
-        socket.setTimeout(timeoutMs)
-        socket.once('connect', () => done(true))
-        socket.once('timeout', () => done(false, `timeout ${timeoutMs}ms`))
-        socket.once('error', (e) => done(false, String(e)))
-      })
-      return { ok: result.ok, error: result.error, latencyMs: Date.now() - started }
+      }
+      const latencyMs = Date.now() - started
+      if (!irs) {
+        const low = String(lastTargetErr || '').toLowerCase()
+        const looksTlsOrReset =
+          low.includes('ssleof')
+          || low.includes('eof')
+          || low.includes('tls')
+          || low.includes('econnreset')
+          || low.includes('connection reset')
+          || low.includes('socket hang up')
+        return {
+          ok: false,
+          resultKind: 'target_error',
+          latencyMs,
+          error: looksTlsOrReset
+            ? 'Target TLS/reset (proxy alive but target unstable/blocked)'
+            : `Target unreachable: ${lastTargetErr || 'unknown error'}`,
+        }
+      }
+      const body = String(irs.bodySnippet || '')
+      const looksBlocked = irs.statusCode === 403 || /access denied|reference #/i.test(body)
+      if (irs.statusCode >= 200 && irs.statusCode < 400 && !looksBlocked) {
+        return {
+          ok: true,
+          resultKind: 'proxy_ok',
+          latencyMs,
+          irsStatusCode: irs.statusCode,
+          irsStatusLine: irs.statusLine,
+        }
+      }
+      return {
+        ok: false,
+        resultKind: looksBlocked ? 'target_blocked_403' : 'target_error',
+        latencyMs,
+        irsStatusCode: irs.statusCode,
+        irsStatusLine: irs.statusLine,
+        error: looksBlocked
+          ? `IRS blocked (${irs.statusCode || 'n/a'})`
+          : `IRS healthcheck failed (${irs.statusCode || 'n/a'})`,
+      }
     } catch (err) {
-      return { ok: false, error: String(err) }
+      const message = String(err || '')
+      const low = message.toLowerCase()
+      if (low.includes('407') || low.includes('proxy authentication required')) {
+        return { ok: false, resultKind: 'proxy_auth_error', error: 'Proxy auth failed (407)' }
+      }
+      if (
+        low.includes('connect failed')
+        || low.includes('econnrefused')
+        || low.includes('econnreset')
+        || low.includes('timeout')
+        || low.includes('proxy')
+      ) {
+        return { ok: false, resultKind: 'proxy_error', error: message }
+      }
+      return { ok: false, resultKind: 'target_error', error: message }
     }
   })
   ipcMain.handle('irs:settings:pick-storage-dir', async () => {

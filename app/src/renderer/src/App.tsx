@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback, useMemo } from 'react'
+import { useState, useEffect, useRef, useCallback, useMemo, type Dispatch, type SetStateAction } from 'react'
 import { AppShell } from './components/layout/AppShell'
 import { SidebarPrimary } from './components/layout/SidebarPrimary'
 import { Button } from './components/base/Button'
@@ -6,6 +6,8 @@ import { CsvImportModal } from './components/modals/CsvImportModal'
 import { ProxyConfigModal } from './components/modals/ProxyConfigModal'
 import { ResultsDashboard } from './components/views/ResultsDashboard'
 import type { ResultRow } from './components/views/ResultsDashboard'
+import { I18nProvider } from './i18n/I18nProvider'
+import type { UILanguage } from './i18n/dictionaries'
 import {
   Zap, FlaskConical, Workflow, Settings,
   Play, Square, RefreshCw, TerminalSquare,
@@ -14,14 +16,14 @@ import {
   FileText,
   AlertTriangle, Copy, Filter, Inbox, BarChart2,
   Globe, RotateCw, Hash, BookOpen, ShieldAlert, Shield,
-  Check, AlertCircle, X, LayoutDashboard, ArrowDownToLine, Monitor, Ghost
+  Check, AlertCircle, X, LayoutDashboard, ArrowDownToLine, Monitor, Ghost, Users
 } from 'lucide-react'
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
-type FlowMode = 'manual' | 'sandbox' | 'full'
+type FlowMode = 'manual' | 'sandbox' | 'full' | 'observe'
 type BrowserMode = 'silent' | 'browser'
-type JobStatus = 'pending' | 'running' | 'done' | 'failed' | 'manual_required'
+type JobStatus = 'pending' | 'running' | 'done' | 'failed'
 type WorkspacePage = 'work' | 'proxy_manager' | 'settings'
 
 // Mirrors automation steps in runner.py
@@ -115,7 +117,8 @@ const STEP_ICONS: Record<AutoStep, React.ReactNode> = {
 const FLOWS = [
   { id: 'manual' as FlowMode, icon: <Zap className="w-3.5 h-3.5" />, label: 'Manual', desc: 'IRS trực tiếp, bỏ proxy', locked: true, color: 'text-warning', queue: 'ein.manual' },
   { id: 'sandbox' as FlowMode, icon: <FlaskConical className="w-3.5 h-3.5" />, label: 'Sandbox', desc: 'ein-sandbox.test', locked: false, color: 'text-accent', queue: 'ein.sandbox' },
-  { id: 'full' as FlowMode, icon: <Workflow className="w-3.5 h-3.5" />, label: 'Full Flow', desc: 'Proxy + Queue + IRS', locked: true, color: 'text-success', queue: 'ein.default' },
+  { id: 'full' as FlowMode, icon: <Workflow className="w-3.5 h-3.5" />, label: 'Tự động', desc: 'Proxy + Queue + IRS', locked: true, color: 'text-success', queue: 'ein.default' },
+  { id: 'observe' as FlowMode, icon: <Monitor className="w-3.5 h-3.5" />, label: 'Quan sát', desc: 'Full flow chậm hơn để quan sát', locked: true, color: 'text-warning', queue: 'ein.observe' },
 ]
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -152,6 +155,19 @@ function normalizeRotateSeconds(value: unknown) {
   return normalized
 }
 
+function formatHourForTimeInput(hour: number) {
+  const normalized = Math.max(0, Math.min(23, Number.isFinite(hour) ? Math.floor(hour) : 18))
+  return `${String(normalized).padStart(2, '0')}:00`
+}
+
+function parseHourFromTimeInput(value: string) {
+  const match = String(value || '').match(/^(\d{1,2}):(\d{2})$/)
+  if (!match) return 18
+  const hour = Math.max(0, Math.min(23, Number(match[1] || 18)))
+  const minutes = Math.max(0, Math.min(59, Number(match[2] || 0)))
+  return minutes >= 30 ? Math.min(23, hour + 1) : hour
+}
+
 function timeSince(ts: number) {
   const s = Math.floor(Date.now() / 1000 - ts)
   if (s < 60) return `${s}s`
@@ -185,7 +201,7 @@ function inferStepStates(lastStep: AutoStep, status: JobStatus, previous?: JobSt
     } else if (status === 'done') {
       // UX rule: once record is done, show full pipeline done.
       next = 'done'
-    } else if (status === 'failed' || status === 'manual_required') {
+    } else if (status === 'failed') {
       if (idx >= 0) {
         if (i < idx) next = 'done'
         else if (i === idx) next = 'failed'
@@ -210,7 +226,6 @@ function StatusBadge({ status }: { status: JobStatus }) {
     running: { icon: <Loader2 className="w-3 h-3 animate-spin" />, cls: 'text-accent border-accent/40 bg-accent/5', label: 'Running' },
     done: { icon: <CheckCircle2 className="w-3 h-3" />, cls: 'text-success border-success/40 bg-success/5', label: 'Done' },
     failed: { icon: <XCircle className="w-3 h-3" />, cls: 'text-danger border-danger/40 bg-danger/5', label: 'Failed' },
-    manual_required: { icon: <ShieldAlert className="w-3 h-3" />, cls: 'text-warning border-warning/40 bg-warning/5', label: 'Manual' },
   }
   const { icon, cls, label } = map[status]
   return (
@@ -462,13 +477,20 @@ function JobRow({
 
 // ─── Main App ─────────────────────────────────────────────────────────────────
 
-export default function App() {
+function AppContent({
+  uiLanguage,
+  setUiLanguage,
+}: {
+  uiLanguage: UILanguage
+  setUiLanguage: Dispatch<SetStateAction<UILanguage>>
+}) {
   const JOBS_STORAGE_KEY = 'fox_jobs_v1'
   const RESULTS_STORAGE_KEY = 'fox_results_v1'
   const [activeFlow, setActiveFlow] = useState<FlowMode>('full')
   const [workspacePage, setWorkspacePage] = useState<WorkspacePage>('work')
   const [workerRunning, setWorkerRunning] = useState(false)
   const [workerStarting, setWorkerStarting] = useState(false)
+  const [workerCount, setWorkerCount] = useState(3)
   const [jobs, setJobs] = useState<Job[]>(() => {
     const raw = localStorage.getItem(JOBS_STORAGE_KEY)
     if (!raw) return []
@@ -477,6 +499,16 @@ export default function App() {
   const jobsRef = useRef<Job[]>([])
   useEffect(() => { jobsRef.current = jobs }, [jobs])
   const [showCsvModal, setShowCsvModal] = useState(false)
+  const [bundleUploadRunning, setBundleUploadRunning] = useState(false)
+  const [bundleUploadLabel, setBundleUploadLabel] = useState('Tải lên mục đã chọn')
+  const [bundleUploadPercent, setBundleUploadPercent] = useState(0)
+  const [bundleUploadCurrent, setBundleUploadCurrent] = useState(0)
+  const [bundleUploadTotal, setBundleUploadTotal] = useState(0)
+  const [bundleUploadDetail, setBundleUploadDetail] = useState('')
+  const [bundleUploadFolderName, setBundleUploadFolderName] = useState('')
+  const [bundleUploadPanelOpen, setBundleUploadPanelOpen] = useState(false)
+  const [bundleUploadFolderUrl, setBundleUploadFolderUrl] = useState('')
+  const [bundleUploadReportUrl, setBundleUploadReportUrl] = useState('')
   const [showProxyModal, setShowProxyModal] = useState(false)
   const [logs, setLogs] = useState<LogLine[]>([])
   const [logFilter, setLogFilter] = useState<'all' | 'error' | 'success' | 'warning'>('all')
@@ -516,8 +548,16 @@ export default function App() {
   const [forceRunNow, setForceRunNow] = useState<boolean>(() => localStorage.getItem('fox_force_run_now') === '1')
   const [runArmed, setRunArmed] = useState<boolean>(() => localStorage.getItem('fox_run_armed') === '1')
   const [browserMode, setBrowserMode] = useState<BrowserMode>(() => (localStorage.getItem('fox_browser_mode') === 'browser' ? 'browser' : 'silent'))
-  const [proxyHealth, setProxyHealth] = useState<Record<string, { ok: boolean; latencyMs?: number; checkedAt: number; error?: string }>>({})
+  const [proxyHealth, setProxyHealth] = useState<Record<string, {
+    ok: boolean
+    latencyMs?: number
+    checkedAt: number
+    error?: string
+    irsStatusCode?: number
+    resultKind?: 'proxy_ok' | 'target_blocked_403' | 'target_error' | 'proxy_auth_error' | 'proxy_error'
+  }>>({})
   const [selectedExportBatch, setSelectedExportBatch] = useState<string>('')
+  const [queueBatchFilter, setQueueBatchFilter] = useState<string>('all')
   const [toasts, setToasts] = useState<Array<{ id: string; msg: string; type: 'success' | 'error' | 'warning' | 'info' }>>([])
   const toastDedupRef = useRef<Record<string, number>>({})
   const logDedupRef = useRef<Record<string, number>>({})
@@ -528,7 +568,7 @@ export default function App() {
   const [appVersion, setAppVersion] = useState<string>('')
   const [updateState, setUpdateState] = useState<UpdateState>({
     status: 'idle',
-    message: 'Idle',
+    message: 'Chưa kiểm tra',
     currentVersion: '',
   })
   const [recentRunNotice, setRecentRunNotice] = useState<{
@@ -569,7 +609,7 @@ export default function App() {
       if (!res?.ok) return
       setUpdateState({
         status: String(res.status || 'idle') as UpdateState['status'],
-        message: String(res.message || 'Idle'),
+        message: String(res.message || 'Chưa kiểm tra'),
         currentVersion: String(res.currentVersion || ''),
         targetVersion: res.targetVersion ? String(res.targetVersion) : undefined,
         percent: Number.isFinite(Number(res.percent)) ? Number(res.percent) : undefined,
@@ -599,6 +639,10 @@ export default function App() {
       setQueueCountry(String(res.queueCountry || 'VN'))
       setQueueStartHour(Number(res.queueStartHour ?? 18))
       setForceRunNow(Boolean(res.forceRunNow))
+      if (Number.isFinite(Number(res?.workerCount))) setWorkerCount(Number(res.workerCount))
+      if (Array.isArray(res?.proxies) && res.proxies.length > 0) setProxies(res.proxies)
+      if (res?.proxyAuth) setProxyAuth(res.proxyAuth)
+      if (Number.isFinite(Number(res?.globalRotateSecs))) setGlobalRotate(normalizeRotateSeconds(res.globalRotateSecs))
     }).catch(() => {
       // ignore
     })
@@ -669,7 +713,7 @@ export default function App() {
     if (v === 'pending') return 'pending'
     if (v === 'running') return 'running'
     if (v === 'done' || v === 'success') return 'done'
-    if (v === 'manual_required') return 'manual_required'
+    if (v === 'manual_required') return 'failed'
     if (v === 'failed' || v === 'cancelled') return 'failed'
     return 'pending'
   }
@@ -755,44 +799,55 @@ export default function App() {
   }
 
   useEffect(() => {
-    const t = setInterval(() => {
-      refreshQueueFromDb().catch(() => {
+    let inFlight = false
+    const t = setInterval(async () => {
+      if (inFlight) return
+      inFlight = true
+      try {
+        await refreshQueueFromDb()
+      } catch {
         // ignore periodic sync errors
-      })
-    }, 1000)
+      } finally {
+        inFlight = false
+      }
+    }, 1500)
     return () => clearInterval(t)
   }, [])
 
-  const handleCsvImport = useCallback(async (batchId: string, file: File, rows: Record<string, string>[]) => {
+  const handleCsvImport = useCallback(async (items: Array<{ batchId: string; file: File; rows: Record<string, string>[] }>) => {
     const ipc = window.electron?.ipcRenderer
     const ts = Date.now() / 1000
     const flow = FLOWS.find(f => f.id === activeFlow)!
     const toLocalRecordId = (row: Record<string, string>, idx: number) =>
       row.record_id || row.NAME || row.name || `row-${String(idx + 1).padStart(3, '0')}`
+    if (!items.length) return
 
     if (ipc) {
       try {
-        const res = await ipc.invoke('irs:import:rows', {
-          batchId,
-          sourceFileName: file.name,
-          rows,
-          queueName: flow.queue,
-        })
-        if (!res?.ok) {
-          showMessage(`Import queue lỗi: ${res?.error || 'unknown error'}`, 'error')
-          return
+        let totalEnqueued = 0
+        for (const item of items) {
+          const res = await ipc.invoke('irs:import:rows', {
+            batchId: item.batchId,
+            sourceFileName: item.file.name,
+            rows: item.rows,
+            queueName: flow.queue,
+          })
+          if (!res?.ok) {
+            showMessage(`Import queue lỗi: ${item.file.name} - ${res?.error || 'unknown error'}`, 'error')
+            return
+          }
+          const enqueued = Number(res?.enqueued || item.rows.length)
+          totalEnqueued += enqueued
+          setLogs(prev => [...prev, { id: crypto.randomUUID(), ts: new Date().toLocaleTimeString('vi', { hour12: false }), level: 'success', msg: `Imported ${enqueued} records from ${item.file.name} (batch: ${res?.batchId || item.batchId})` }])
         }
-        const enqueued = Number(res?.enqueued || rows.length)
-        if (enqueued <= 0) {
+        await refreshQueueFromDb()
+        if (totalEnqueued <= 0) {
           showMessage('Import xong nhưng không có job nào được enqueue', 'warning')
-          await refreshQueueFromDb()
           setShowCsvModal(false)
           setActiveTab('queue')
           return
         }
-        await refreshQueueFromDb()
-        setLogs(prev => [...prev, { id: crypto.randomUUID(), ts: new Date().toLocaleTimeString('vi', { hour12: false }), level: 'success', msg: `Imported ${enqueued} records from ${file.name} (batch: ${res?.batchId || batchId})` }])
-        showMessage(`Imported ${enqueued} records from ${file.name}`)
+        showMessage(`Imported ${totalEnqueued} records from ${items.length} file`)
         setShowCsvModal(false)
         setActiveTab('queue')
         return
@@ -802,7 +857,7 @@ export default function App() {
       }
     }
 
-    const newJobs: Job[] = rows.map((row, idx) => ({
+    const newJobs: Job[] = items.flatMap(({ batchId, file, rows }) => rows.map((row, idx) => ({
       job_id: `${batchId}:${toLocalRecordId(row, idx)}`,
       queue_name: flow.queue,
       status: 'pending' as JobStatus,
@@ -817,10 +872,10 @@ export default function App() {
       steps: STEP_ORDER.map(s => ({ step: s, status: 'pending' as const })),
       created_at: ts,
       updated_at: ts,
-    }))
+    })))
     setJobs(prev => [...prev, ...newJobs])
-    setLogs(prev => [...prev, { id: crypto.randomUUID(), ts: new Date().toLocaleTimeString('vi', { hour12: false }), level: 'success', msg: `Imported ${newJobs.length} records from ${file.name} (batch: ${batchId})` }])
-    showMessage(`Imported ${newJobs.length} records from ${file.name}`)
+    setLogs(prev => [...prev, { id: crypto.randomUUID(), ts: new Date().toLocaleTimeString('vi', { hour12: false }), level: 'success', msg: `Imported ${newJobs.length} records from ${items.length} file(s)` }])
+    showMessage(`Imported ${newJobs.length} records from ${items.length} file`)
     setShowCsvModal(false)
     setActiveTab('queue')
   }, [activeFlow])
@@ -907,7 +962,7 @@ export default function App() {
     const onAppUpdateState = (_e: unknown, ev: any) => {
       const next: UpdateState = {
         status: String(ev?.status || 'idle') as UpdateState['status'],
-        message: String(ev?.message || 'Idle'),
+        message: String(ev?.message || 'Chưa kiểm tra'),
         currentVersion: String(ev?.currentVersion || appVersion || ''),
         targetVersion: ev?.targetVersion ? String(ev.targetVersion) : undefined,
         percent: Number.isFinite(Number(ev?.percent)) ? Number(ev.percent) : undefined,
@@ -987,7 +1042,7 @@ export default function App() {
     }) => {
       const ts = new Date().toLocaleTimeString('vi', { hour12: false })
       const isDone = ev.status === 'success'
-      const finalStatus: JobStatus = isDone ? 'done' : ev.status === 'manual_required' ? 'manual_required' : 'failed'
+      const finalStatus: JobStatus = isDone ? 'done' : 'failed'
       const step6Data = (ev.step6_data || {}) as Record<string, unknown>
       const step6Text = (key: string) => String(step6Data[key] ?? '')
 
@@ -1097,7 +1152,7 @@ export default function App() {
         const pendingOrRunning = snapshot.filter(j => j.status === 'pending' || j.status === 'running').length
         if (snapshot.length > 0 && pendingOrRunning === 0) {
           const doneCount = snapshot.filter(j => j.status === 'done').length
-          const failedCount = snapshot.filter(j => j.status === 'failed' || j.status === 'manual_required').length
+          const failedCount = snapshot.filter(j => j.status === 'failed').length
           const key = `${ev.batch_id}:${doneCount}:${failedCount}:${snapshot.length}`
           if (batchDoneToastRef.current !== key) {
             batchDoneToastRef.current = key
@@ -1125,6 +1180,72 @@ export default function App() {
     }
     ipc.on('py:worker-stopped', onWorkerStopped)
 
+    const onSystemStopRequested = (_e: unknown, payload: any) => {
+      setWorkerRunning(false)
+      setWorkerStarting(false)
+      setRunArmed(false)
+      const msg = String(payload?.message || 'Hệ thống đã tự động dừng worker')
+      showMessage(msg, 'warning')
+      refreshQueueFromDb()
+    }
+    ipc.on('py:system_stop_requested', onSystemStopRequested)
+
+    const onBundleUploadProgress = (_e: unknown, ev: {
+      running?: boolean
+      percent?: number
+      message?: string
+      error?: boolean
+      current?: number
+      total?: number
+      folderName?: string
+    }) => {
+      const running = Boolean(ev?.running)
+      const percent = Number.isFinite(Number(ev?.percent)) ? Number(ev?.percent) : undefined
+      const message = String(ev?.message || '').trim()
+      const current = Number.isFinite(Number(ev?.current)) ? Number(ev?.current) : 0
+      const total = Number.isFinite(Number(ev?.total)) ? Number(ev?.total) : 0
+      const folderName = String(ev?.folderName || '').trim()
+      const localizedMessage = (() => {
+        if (uiLanguage === 'en') return message
+        if (/^Preparing folder/i.test(message)) return 'Đang chuẩn bị thư mục'
+        if (/^Uploading PDF/i.test(message)) return message.replace(/^Uploading PDF/i, 'Đang upload PDF')
+        if (/^Building Google Sheet/i.test(message)) return 'Đang tạo Google Sheet'
+        if (/^Completed$/i.test(message)) return 'Hoàn tất'
+        return message
+      })()
+      if (running) {
+        setBundleUploadRunning(true)
+        setBundleUploadPercent(percent !== undefined ? Math.max(0, Math.min(100, Math.round(percent))) : 0)
+        setBundleUploadCurrent(current)
+        setBundleUploadTotal(total)
+        setBundleUploadDetail(localizedMessage)
+        setBundleUploadFolderName(folderName)
+        setBundleUploadLabel(
+          percent !== undefined
+            ? `${localizedMessage || (uiLanguage === 'en' ? 'Uploading' : 'Đang upload')} ${Math.max(0, Math.min(100, Math.round(percent)))}%`
+            : (localizedMessage || (uiLanguage === 'en' ? 'Uploading...' : 'Đang upload...')),
+        )
+        return
+      }
+      if (ev?.error) {
+        setBundleUploadRunning(false)
+        setBundleUploadPercent(0)
+        setBundleUploadCurrent(0)
+        setBundleUploadTotal(0)
+        setBundleUploadDetail(localizedMessage || (uiLanguage === 'en' ? 'Upload failed' : 'Upload lỗi'))
+        setBundleUploadLabel(uiLanguage === 'en' ? 'Upload Selection' : 'Tải lên mục đã chọn')
+        return
+      }
+      setBundleUploadRunning(false)
+      setBundleUploadPercent(100)
+      setBundleUploadCurrent(total || current)
+      setBundleUploadTotal(total || current)
+      setBundleUploadDetail(localizedMessage || (uiLanguage === 'en' ? 'Completed' : 'Hoàn tất'))
+      if (folderName) setBundleUploadFolderName(folderName)
+      setBundleUploadLabel(localizedMessage ? `${localizedMessage} 100%` : (uiLanguage === 'en' ? 'Completed 100%' : 'Hoàn tất 100%'))
+    }
+    ipc.on('bundle-upload-progress', onBundleUploadProgress)
+
     ipc.invoke('irs:worker:status').then((res: any) => {
       if (res?.ok) {
         setWorkerRunning(Boolean(res.running))
@@ -1141,8 +1262,10 @@ export default function App() {
       ipc.removeListener('py:step_update', onStepUpdate)
       ipc.removeListener('py:job_complete', onJobComplete)
       ipc.removeListener('py:worker-stopped', onWorkerStopped)
+      ipc.removeListener('py:system_stop_requested', onSystemStopRequested)
+      ipc.removeListener('bundle-upload-progress', onBundleUploadProgress)
     }
-  }, [])
+  }, [uiLanguage])
 
   useEffect(() => {
     if (activeTab === 'logs' && logRef.current)
@@ -1158,23 +1281,27 @@ export default function App() {
     done: scopedJobs.filter(j => j.status === 'done').length,
     failed: scopedJobs.filter(j => j.status === 'failed').length,
   }
-  const runningNow = [...scopedJobs]
+  const runningJobs = [...scopedJobs]
     .filter(j => j.status === 'running')
-    .sort((a, b) => (b.updated_at || b.created_at) - (a.updated_at || a.created_at))[0]
-  const runningModeLabel = stats.running > 1 ? `Running Multi (${stats.running})` : stats.running === 1 ? 'Running Single' : 'Idle'
-  const runningStepsDone = runningNow ? runningNow.steps.filter(s => ['done', 'failed', 'skipped'].includes(s.status)).length : 0
-  const runningStepsTotal = runningNow ? Math.max(1, runningNow.steps.length || STEP_ORDER.length) : Math.max(1, STEP_ORDER.length)
-  const runningStepPct = runningNow ? Math.max(0, Math.min(100, Math.round((runningStepsDone / runningStepsTotal) * 100))) : 0
-  const runningHeartbeatSec = runningNow
-    ? Math.max(0, Math.floor((uiNowMs - Math.round((runningNow.updated_at || runningNow.created_at) * 1000)) / 1000))
-    : 0
-  const runningLooksStale = !!runningNow && runningHeartbeatSec >= 180
+    .sort((a, b) => (b.updated_at || b.created_at) - (a.updated_at || a.created_at))
+  const runningNow = runningJobs[0]
+  const runningModeLabel = uiLanguage === 'en'
+    ? (runningJobs.length > 1 ? `Running Multi (${runningJobs.length})` : runningJobs.length === 1 ? 'Running' : 'Idle')
+    : (runningJobs.length > 1 ? `Đang chạy nhiều (${runningJobs.length})` : runningJobs.length === 1 ? 'Đang chạy' : 'Rảnh')
+  const getJobProgress = (job: Job) => {
+    const done = job.steps.filter(s => ['done', 'failed', 'skipped'].includes(s.status)).length
+    const total = Math.max(1, job.steps.length || STEP_ORDER.length)
+    const pct = Math.max(0, Math.min(100, Math.round((done / total) * 100)))
+    const heartbeatSec = Math.max(0, Math.floor((uiNowMs - Math.round((job.updated_at || job.created_at) * 1000)) / 1000))
+    const looksStale = heartbeatSec >= 180
+    return { done, total, pct, heartbeatSec, looksStale }
+  }
   const showingRecentNotice = !runningNow && !!recentRunNotice && (Date.now() - recentRunNotice.at < 4500)
-  const miniQueueEmpty = !runningNow && !showingRecentNotice && stats.pending === 0 && otherQueuePending === 0
+  const miniQueueEmpty = runningJobs.length === 0 && !showingRecentNotice && stats.pending === 0 && otherQueuePending === 0
   useEffect(() => {
     if (miniQueueEmpty) setMiniRunCollapsed(true)
-    else if (stats.running > 0 || stats.pending > 0) setMiniRunCollapsed(false)
-  }, [miniQueueEmpty, stats.running, stats.pending])
+    else if (runningJobs.length > 0 || stats.pending > 0) setMiniRunCollapsed(false)
+  }, [miniQueueEmpty, runningJobs.length, stats.pending])
   const finished = stats.done + stats.failed
   const progressPct = stats.total > 0 ? Math.max(0, Math.min(100, Math.round((finished / stats.total) * 100))) : 0
   const doneInFinishedPct = finished > 0 ? Math.round((stats.done / finished) * 100) : 0
@@ -1182,11 +1309,18 @@ export default function App() {
   const runningPct = stats.total > 0 ? Math.round((stats.running / stats.total) * 100) : 0
 
   const sortedJobs = [...jobs]
+    .filter(j => queueBatchFilter === 'all' || j.batch_id === queueBatchFilter)
     .filter(j => jobFilter === 'all' || j.status === jobFilter)
     .sort((a, b) => {
-      const s = (st: string) => ({ running: 4, pending: 3, manual_required: 2, failed: 2, done: 1 }[st] || 0)
+      const s = (st: string) => ({ running: 4, pending: 3, failed: 2, done: 1 }[st] || 0)
       return s(b.status) - s(a.status) || b.created_at - a.created_at
     })
+  const queueBatchOptions = Array.from(new Set(jobs.map(j => String(j.batch_id || '').trim()).filter(Boolean))).sort()
+  useEffect(() => {
+    if (queueBatchFilter !== 'all' && !queueBatchOptions.includes(queueBatchFilter)) {
+      setQueueBatchFilter('all')
+    }
+  }, [queueBatchFilter, queueBatchOptions])
 
   const filteredLogs = logFilter === 'all' ? logs : logs.filter(l => l.level === logFilter)
   const selectedInView = sortedJobs.filter(j => selectedJobIds.has(j.job_id))
@@ -1201,8 +1335,14 @@ export default function App() {
 
   const copyLogs = useCallback(() => {
     navigator.clipboard.writeText(filteredLogs.map(l => `[${l.ts}][${l.level.toUpperCase()}] ${l.msg}`).join('\n'))
-    showMessage(`Đã copy ${filteredLogs.length} log lines`, 'info')
+    showMessage(`Đã copy ${filteredLogs.length} dòng log`, 'info')
   }, [filteredLogs])
+
+  const openExternalUrl = useCallback((url: string) => {
+    const target = String(url || '').trim()
+    if (!target) return
+    window.open(target, '_blank', 'noopener,noreferrer')
+  }, [])
 
   const toggleSelectJob = (jobId: string, checked: boolean) => {
     setSelectedJobIds(prev => {
@@ -1239,7 +1379,7 @@ export default function App() {
       showMessage(`Mở output folder lỗi: ${res?.error || 'unknown'}`, 'error')
       return
     }
-    showMessage('Đã mở output folder', 'info')
+    showMessage('Đã mở thư mục output', 'info')
   }, [storageDir, userDataPath])
 
   const quickExportStyled = useCallback(async (batchIdRaw: string, reportType: 'report' | 'failures' = 'report') => {
@@ -1257,7 +1397,7 @@ export default function App() {
     }
     const path = String(res.preferred_path || res.xlsx_path || res.csv_path || '')
     if (path) await ipc.invoke('irs:open-path', { path, reveal: true })
-    showMessage(`Đã export ${reportType === 'failures' ? 'failures' : 'report'} XLSX: ${batchId}`)
+    showMessage(`Đã export ${reportType === 'failures' ? 'fail' : 'report'} XLSX: ${batchId}`)
   }, [])
 
   const quickExportSelectedStyled = useCallback(async (rows: ResultRow[], reportType: 'report' | 'failures' = 'report') => {
@@ -1288,38 +1428,67 @@ export default function App() {
   const quickExportSelectedStyledNext = useCallback(async (rows: ResultRow[], reportType: 'report' | 'failures' = 'report') => {
     const ipc = window.electron?.ipcRenderer
     if (!ipc) return
+    if (bundleUploadRunning) return
     const selectedRows = Array.isArray(rows) ? rows : []
     if (!selectedRows.length) {
-      showMessage('Không có selected rows để export report next', 'warning')
+      showMessage('Không có dòng nào được chọn để upload', 'warning')
       return
     }
     const uniqueBatches = Array.from(new Set(selectedRows.map((r) => String(r.batch_id || '').trim()).filter(Boolean)))
     const batchToken = uniqueBatches.length === 1 ? uniqueBatches[0] : 'mixed'
-    const res = await ipc.invoke('irs:report:export-selected', {
-      rows: selectedRows,
-      batchId: batchToken,
-      format: 'xlsx',
-      type: reportType,
-      nextOnly: true,
-    })
-    if (!res?.ok) {
-      showMessage(`Export report next lỗi: ${res?.error || 'unknown'}`, 'error')
-      return
+    setBundleUploadRunning(true)
+    setBundleUploadPercent(0)
+    setBundleUploadCurrent(0)
+    setBundleUploadTotal(selectedRows.length)
+    setBundleUploadDetail('Đang chuẩn bị upload...')
+    setBundleUploadFolderName('')
+    setBundleUploadFolderUrl('')
+    setBundleUploadReportUrl('')
+    setBundleUploadLabel(uiLanguage === 'en' ? 'Uploading 0%' : 'Đang tải lên 0%')
+    try {
+      const res = await ipc.invoke('irs:bundle:upload-next', {
+        rows: selectedRows,
+        batchId: batchToken,
+        type: reportType,
+        nextOnly: false,
+      })
+      if (!res?.ok) {
+        showMessage(`Upload selected lỗi: ${res?.error || 'unknown'}`, 'error')
+        return
+      }
+      setBundleUploadFolderUrl(String(res?.google_drive?.folder_url || ''))
+      setBundleUploadReportUrl(String(res?.google_drive?.report_url || ''))
+      setBundleUploadLabel(uiLanguage === 'en' ? 'Opening...' : 'Đang mở...')
+      const path = String(res.folder || res.preferred_path || res.local_report_path || '')
+      if (path) await ipc.invoke('irs:open-path', { path, reveal: true })
+      const part = Number(res.part || 0)
+      const skipped = Number(res.skipped_duplicates || 0)
+      const partText = part > 0 ? ` part ${part}` : ''
+      showMessage(`Đã upload phần đã chọn${partText}: ${res.rows || selectedRows.length} dòng${skipped ? ` (trùng ${skipped})` : ''}`)
+    } finally {
+      setBundleUploadRunning(false)
+      setBundleUploadLabel(uiLanguage === 'en' ? 'Upload Selection' : 'Tải lên mục đã chọn')
     }
-    const path = String(res.preferred_path || res.xlsx_path || res.csv_path || '')
-    if (path) await ipc.invoke('irs:open-path', { path, reveal: true })
-    const part = Number(res.part || 0)
-    const skipped = Number(res.skipped_duplicates || 0)
-    const partText = part > 0 ? ` part ${part}` : ''
-    showMessage(`Đã export report next${partText}: ${res.rows || selectedRows.length} rows${skipped ? ` (trùng ${skipped})` : ''}`)
-  }, [])
+  }, [bundleUploadRunning])
 
   const applyRuntimeConfig = useCallback(async (override?: Partial<{ proxies: any[]; globalRotateSecs: number; bearerToken: string; providerUsername: string; providerPassword: string; rotateUrl: string; flowMode: FlowMode; browserMode: BrowserMode; forceRunNow: boolean }>) => {
     const ipc = window.electron?.ipcRenderer
     if (!ipc) return { ok: false, error: 'IPC unavailable' }
+    const effectiveProxies = (override?.proxies && override.proxies.length > 0)
+      ? override.proxies
+      : (proxies && proxies.length > 0
+          ? proxies
+          : (() => {
+              try {
+                const raw = localStorage.getItem('fox_proxies')
+                return raw ? JSON.parse(raw) : []
+              } catch {
+                return []
+              }
+            })())
     return ipc.invoke('irs:apply-runtime-config', {
       flowMode: override?.flowMode || activeFlow,
-      proxies: override?.proxies || proxies,
+      proxies: effectiveProxies,
       globalRotateSecs: normalizeRotateSeconds(
         Number.isFinite(Number(override?.globalRotateSecs)) ? Number(override?.globalRotateSecs) : _globalRotate,
       ),
@@ -1363,7 +1532,9 @@ export default function App() {
     const res = await ipc.invoke('irs:proxy:healthcheck', {
       host: String(proxy.host || ''),
       port: Number(proxy.port || 0),
-      timeoutMs: 5000,
+      username: String(proxy.username || ''),
+      password: String(proxy.password || ''),
+      timeoutMs: 8000,
     })
     setProxyHealth(prev => ({
       ...prev,
@@ -1371,13 +1542,15 @@ export default function App() {
         ok: Boolean(res?.ok),
         latencyMs: Number(res?.latencyMs || 0),
         checkedAt: Date.now(),
+        irsStatusCode: Number.isFinite(Number(res?.irsStatusCode)) ? Number(res.irsStatusCode) : undefined,
+        resultKind: String(res?.resultKind || (res?.ok ? 'proxy_ok' : 'target_error')) as any,
         error: res?.ok ? undefined : String(res?.error || 'healthcheck failed'),
       },
     }))
     if (res?.ok) {
-      showMessage(`Proxy ${String(proxy.code || key)} healthy (${Number(res?.latencyMs || 0)}ms)`, 'success')
+      showMessage(`Proxy ${String(proxy.code || key)} OK (${Number(res?.latencyMs || 0)}ms)`, 'success')
     } else {
-      showMessage(`Proxy ${String(proxy.code || key)} down: ${String(res?.error || 'healthcheck failed')}`, 'warning')
+      showMessage(`Proxy ${String(proxy.code || key)} fail: ${String(res?.error || 'healthcheck failed')}`, 'warning')
     }
   }, [])
 
@@ -1477,28 +1650,35 @@ export default function App() {
         <div className="flex-1 flex flex-col min-w-0 h-full overflow-hidden">
 
           {/* Header bar */}
-          <div className="flex items-center gap-3 px-4 h-[46px] border-b border-border bg-panel shrink-0">
-            <span className="text-muted/40 text-[11px]">IRS Auto</span>
-            <ChevronRight className="w-3 h-3 text-muted/30" />
-
-            {/* Flow pills */}
-            <div className="flex items-center gap-2 bg-surface border border-border rounded-lg px-2 py-1">
-              <span className="text-[10px] text-muted uppercase">Mode</span>
-              <select
-                value={activeFlow}
-                onChange={(e) => setActiveFlow(e.target.value as FlowMode)}
-                className="h-6 bg-panel border border-border rounded px-2 text-[11px] text-text"
-              >
-                {FLOWS.map(f => <option key={f.id} value={f.id}>{f.label}</option>)}
-              </select>
+          <div className="flex items-center gap-2 px-3 h-[46px] border-b border-border bg-panel shrink-0 min-w-0">
+            {/* Left section: Title & Flow Mode */}
+            <div className="flex items-center gap-1.5 shrink-0">
+              <span className="text-muted/40 text-[11px] hidden sm:inline">IRS Auto</span>
+              <ChevronRight className="w-3 h-3 text-muted/30 hidden sm:inline" />
+              <div className="flex items-center gap-1.5 bg-surface border border-border rounded-lg px-2 py-1">
+                <span className="text-[10px] text-muted uppercase font-medium">Mode</span>
+                <select
+                  value={activeFlow}
+                  onChange={(e) => setActiveFlow(e.target.value as FlowMode)}
+                  className="h-6 bg-panel border border-border rounded px-1.5 text-[11px] text-text font-medium cursor-pointer"
+                >
+                  {FLOWS.map(f => <option key={f.id} value={f.id}>{f.label}</option>)}
+                </select>
+              </div>
             </div>
 
-            <div className="ml-auto relative z-10 flex items-center gap-3 pointer-events-auto">
-              {!canRun && <div className="flex items-center gap-1.5 px-2 py-1 bg-warning/5 border border-warning/20 rounded-lg text-[10px] text-warning font-medium"><AlarmClock className="w-3.5 h-3.5" />Main starts at {runWindowLabel} ({queueTimezone})</div>}
+            {/* Middle section: Action tools (scrollable if screen is narrow, never overflows outside window) */}
+            <div className="flex-1 flex items-center justify-end gap-1.5 min-w-0 overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden py-0.5">
+              {!canRun && (
+                <div className="flex items-center gap-1 px-2 py-0.5 bg-warning/5 border border-warning/20 rounded-md text-[10px] text-warning font-medium shrink-0" title={`Main starts at ${runWindowLabel} (${queueTimezone})`}>
+                  <AlarmClock className="w-3 h-3 shrink-0" />
+                  <span className="hidden md:inline">Starts</span> {runWindowLabel}
+                </div>
+              )}
               <Button
                 variant={forceRunNow ? 'primary' : 'secondary'}
-                className="h-7 shrink-0 text-[11px] gap-1.5 px-3 pointer-events-auto"
-                title={forceRunNow ? 'Đang bỏ qua mốc 18h, có thể chạy ngay' : 'Bật để chạy ngay, không chờ mốc 18h'}
+                className="h-7 shrink-0 text-[11px] gap-1 px-2.5 pointer-events-auto"
+                title={forceRunNow ? `Đang bỏ qua mốc ${runWindowLabel}, có thể chạy ngay` : `Bật để chạy ngay, không chờ mốc ${runWindowLabel}`}
                 onClick={async () => {
                   const next = !forceRunNow
                   setForceRunNow(next)
@@ -1516,21 +1696,20 @@ export default function App() {
                       return
                     }
                   }
-                  showMessage(next ? 'Đã bật Run ngay: bỏ qua mốc 18h' : 'Đã bật lại chờ mốc 18h', 'info')
+                  showMessage(next ? `Đã bật Run ngay: bỏ qua mốc ${runWindowLabel}` : `Đã bật lại chờ mốc ${runWindowLabel}`, 'info')
                 }}
               >
                 {forceRunNow
-                  ? <><Zap className="w-3 h-3" />Run Ngay</>
-                  : <><AlarmClock className="w-3 h-3" />Chờ 18h</>}
+                  ? <><Zap className="w-3 h-3" /><span>Run Ngay</span></>
+                  : <><AlarmClock className="w-3 h-3" /><span>Chờ {runWindowLabel}</span></>}
               </Button>
-              <div className="flex items-center gap-1.5 px-2 py-1 border border-border rounded-lg bg-surface text-[10px]">
-                <Clock className="w-3.5 h-3.5 text-accent" />
+              <div className="flex items-center gap-1 px-2 py-1 border border-border rounded-lg bg-surface text-[10px] shrink-0" title={`Múi giờ: ${queueTimezone}`}>
+                <Clock className="w-3 h-3 text-accent shrink-0" />
                 <span className="font-semibold text-text tabular-nums">{clock.timeLabel}</span>
-                <span className="text-muted">{queueTimezone}</span>
               </div>
               <Button
                 variant={browserMode === 'browser' ? 'primary' : 'secondary'}
-                className="h-7 shrink-0 text-[11px] gap-1.5 px-3 pointer-events-auto"
+                className="h-7 shrink-0 text-[11px] gap-1 px-2 pointer-events-auto"
                 title={browserMode === 'browser' ? 'Đang hiện browser (headful)' : 'Đang chạy ẩn (headless)'}
                 onClick={async () => {
                   if (workerRunning) {
@@ -1548,18 +1727,19 @@ export default function App() {
                 }}
               >
                 {browserMode === 'browser'
-                  ? <><Monitor className="w-3 h-3" />Browser</>
-                  : <><Ghost className="w-3 h-3" />Silent</>}
+                  ? <><Monitor className="w-3 h-3" /><span>Browser</span></>
+                  : <><Ghost className="w-3 h-3" /><span>Silent</span></>}
               </Button>
-              <Button variant="secondary" className="h-7 shrink-0 text-[11px] gap-1.5 px-3 pointer-events-auto" onClick={() => setWorkspacePage('proxy_manager')}>
+              <Button variant="secondary" className="h-7 shrink-0 text-[11px] gap-1 px-2 pointer-events-auto" onClick={() => setWorkspacePage('proxy_manager')} title="Quản lý Proxy">
                 <Shield className="w-3 h-3" />Proxy
               </Button>
-              <Button variant="secondary" className="h-7 shrink-0 text-[11px] gap-1.5 px-3 pointer-events-auto" onClick={() => setShowCsvModal(true)}>
-                <Upload className="w-3 h-3" />Load CSV
+              <Button variant="secondary" className="h-7 shrink-0 text-[11px] gap-1 px-2 pointer-events-auto" onClick={() => setShowCsvModal(true)} title="Import danh sách CSV">
+                <Upload className="w-3 h-3" />CSV
               </Button>
               <Button
                 variant="secondary"
-                className="h-7 shrink-0 text-[11px] gap-1.5 px-3 pointer-events-auto"
+                className="h-7 shrink-0 text-[11px] gap-1 px-2 pointer-events-auto"
+                title="Export kết quả marked output ra Excel/CSV"
                 onClick={async () => {
                   const ipc = window.electron?.ipcRenderer
                   if (!ipc) return
@@ -1578,12 +1758,12 @@ export default function App() {
                   showMessage(`Đã export marked output batch ${batchId}: ${res.rows || 0} rows`)
                 }}
               >
-                <FileText className="w-3 h-3" />Export Marked
+                <FileText className="w-3 h-3" />Export
               </Button>
               <select
                 value={selectedExportBatch}
                 onChange={(e) => setSelectedExportBatch(e.target.value)}
-                className="h-7 min-w-[190px] max-w-[280px] shrink-0 bg-surface border border-border rounded px-2 text-[10px] text-muted pointer-events-auto"
+                className="h-7 w-28 lg:w-40 shrink-0 bg-surface border border-border rounded px-1.5 text-[10px] text-muted pointer-events-auto"
                 title="Batch dùng để export marked output"
               >
                 {!exportBatches.length ? (
@@ -1592,6 +1772,33 @@ export default function App() {
                   <option key={batchId} value={batchId}>{batchId}</option>
                 ))}
               </select>
+            </div>
+
+            {/* Pinned Right section: Always visible, never pushed out */}
+            <div className="flex items-center gap-1.5 shrink-0 pl-1.5 border-l border-border/80 z-20 pointer-events-auto">
+              <div className="flex items-center gap-1 px-1.5 py-0.5 border border-border rounded-lg bg-surface shrink-0" title="Số luồng worker (chạy song song)">
+                <Users className="w-3.5 h-3.5 text-accent" />
+                <select
+                  value={workerCount}
+                  onChange={(e) => {
+                    const v = Number(e.target.value)
+                    setWorkerCount(v)
+                    if (!workerRunning) {
+                      window.electron?.ipcRenderer?.invoke('irs:settings:set-runtime', {
+                        queueTimezone,
+                        queueCountry,
+                        queueStartHour,
+                        forceRunNow,
+                        workerCount: v,
+                      })
+                    }
+                  }}
+                  disabled={workerRunning}
+                  className="h-6 bg-panel border-0 rounded px-1 text-[11px] text-text font-semibold tabular-nums cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  {[1, 2, 3, 4, 5, 6, 7, 8].map(n => <option key={n} value={n}>{n}×</option>)}
+                </select>
+              </div>
               <Button variant={workerRunning ? 'danger' : (!canRun ? 'secondary' : 'primary')} disabled={workerStarting} className="relative z-20 h-7 shrink-0 text-[11px] gap-1.5 px-3 pointer-events-auto"
                 onClick={async () => {
                   const ipc = window.electron?.ipcRenderer
@@ -1612,6 +1819,13 @@ export default function App() {
                       })
                     } else {
                       setWorkerStarting(true)
+                      await ipc.invoke('irs:settings:set-runtime', {
+                        queueTimezone,
+                        queueCountry,
+                        queueStartHour,
+                        forceRunNow,
+                        workerCount,
+                      })
                       const applyRes = await applyRuntimeConfig()
                       if (!applyRes?.ok) {
                         setWorkerStarting(false)
@@ -1654,10 +1868,10 @@ export default function App() {
                 <div className="rounded-2xl border border-border bg-panel p-4">
                   <div className="flex items-center gap-2 mb-4">
                     <Shield className="w-4 h-4 text-accent" />
-                    <h2 className="text-sm font-semibold">Proxy Manager</h2>
+                    <h2 className="text-sm font-semibold">{uiLanguage === 'en' ? 'Proxy Manager' : 'Quản lý proxy'}</h2>
                     <div className="ml-auto flex items-center gap-2">
-                      <Button variant="secondary" size="xs" onClick={() => setShowProxyModal(true)}>Edit Pool</Button>
-                      <Button variant="secondary" size="xs" onClick={runAllProxyHealthChecks}>Check All Health</Button>
+                      <Button variant="secondary" size="xs" onClick={() => setShowProxyModal(true)}>{uiLanguage === 'en' ? 'Edit Pool' : 'Sửa pool'}</Button>
+                      <Button variant="secondary" size="xs" onClick={runAllProxyHealthChecks}>{uiLanguage === 'en' ? 'Check All Health' : 'Kiểm tra tất cả'}</Button>
                     </div>
                   </div>
                   <div className="overflow-auto rounded-xl border border-border">
@@ -1668,16 +1882,16 @@ export default function App() {
                           <th className="text-left px-3 py-2">Host</th>
                           <th className="text-left px-3 py-2">Port</th>
                           <th className="text-left px-3 py-2">User</th>
-                          <th className="text-left px-3 py-2">Status</th>
-                          <th className="text-left px-3 py-2">Latency</th>
-                          <th className="text-left px-3 py-2">Checked</th>
-                          <th className="text-left px-3 py-2">Action</th>
+                          <th className="text-left px-3 py-2">{uiLanguage === 'en' ? 'Status' : 'Trạng thái'}</th>
+                          <th className="text-left px-3 py-2">{uiLanguage === 'en' ? 'Latency' : 'Độ trễ'}</th>
+                          <th className="text-left px-3 py-2">{uiLanguage === 'en' ? 'Checked' : 'Đã check'}</th>
+                          <th className="text-left px-3 py-2">{uiLanguage === 'en' ? 'Action' : 'Thao tác'}</th>
                         </tr>
                       </thead>
                       <tbody>
                         {proxies.length === 0 ? (
                           <tr>
-                            <td colSpan={8} className="px-3 py-8 text-center text-muted">No proxy configured</td>
+                            <td colSpan={8} className="px-3 py-8 text-center text-muted">{uiLanguage === 'en' ? 'No proxy configured' : 'Chưa có proxy'}</td>
                           </tr>
                         ) : proxies.map((p: any) => {
                           const key = String(p.id || p.code || `${p.host}:${p.port}`)
@@ -1689,12 +1903,24 @@ export default function App() {
                               <td className="px-3 py-2 font-mono">{String(p.port || '')}</td>
                               <td className="px-3 py-2 font-mono">{String(p.username || '')}</td>
                               <td className="px-3 py-2">
-                                {!h ? <span className="text-muted">unknown</span> : h.ok ? <span className="text-success">healthy</span> : <span className="text-danger">down</span>}
+                                {!h ? (
+                                  <span className="text-muted">{uiLanguage === 'en' ? 'unknown' : 'chưa rõ'}</span>
+                                ) : h.ok ? (
+                                  <span className="text-success">{uiLanguage === 'en' ? 'Proxy OK' : 'Proxy OK'}</span>
+                                ) : h.resultKind === 'target_blocked_403' ? (
+                                  <span className="text-warning">{uiLanguage === 'en' ? 'Target blocked (403)' : 'Target chặn (403)'}</span>
+                                ) : h.resultKind === 'proxy_auth_error' ? (
+                                  <span className="text-danger">{uiLanguage === 'en' ? 'Proxy auth error' : 'Sai auth proxy'}</span>
+                                ) : h.resultKind === 'proxy_error' ? (
+                                  <span className="text-danger">{uiLanguage === 'en' ? 'Proxy error' : 'Lỗi proxy'}</span>
+                                ) : (
+                                  <span className="text-danger">{uiLanguage === 'en' ? 'Target error' : 'Lỗi target'}</span>
+                                )}
                               </td>
                               <td className="px-3 py-2 font-mono">{h?.latencyMs ? `${h.latencyMs}ms` : '—'}</td>
                               <td className="px-3 py-2 text-muted">{h?.checkedAt ? new Date(h.checkedAt).toLocaleTimeString('vi-VN', { hour12: false }) : '—'}</td>
                               <td className="px-3 py-2">
-                                <button className="text-accent hover:underline" onClick={() => runProxyHealthCheck(p)}>Check</button>
+                                <button className="text-accent hover:underline" onClick={() => runProxyHealthCheck(p)}>{uiLanguage === 'en' ? 'Check' : 'Kiểm tra'}</button>
                                 {h?.error && <span className="ml-2 text-danger text-[10px]">{h.error}</span>}
                               </td>
                             </tr>
@@ -1718,8 +1944,8 @@ export default function App() {
                         <Settings className="w-4 h-4 text-accent" />
                       </div>
                       <div>
-                        <h2 className="text-sm font-semibold tracking-tight">System Settings</h2>
-                        <div className={`text-[11px] mt-0.5 ${themeMode === 'light' ? 'text-[#4b5563]' : 'text-muted'}`}>Runtime, schedule, storage, locale and UI profile.</div>
+                        <h2 className="text-sm font-semibold tracking-tight">{uiLanguage === 'en' ? 'System Settings' : 'Thiết lập hệ thống'}</h2>
+                        <div className={`text-[11px] mt-0.5 ${themeMode === 'light' ? 'text-[#4b5563]' : 'text-muted'}`}>{uiLanguage === 'en' ? 'Runtime, schedules, storage, language, and interface preferences.' : 'Thiết lập runtime, lịch chạy, storage, ngôn ngữ và tuỳ chọn giao diện.'}</div>
                       </div>
                       <div className="ml-auto flex items-center gap-2">
                         <span className="px-2 py-0.5 rounded-md text-[9px] uppercase tracking-wider bg-success/15 text-success">Live</span>
@@ -1734,59 +1960,58 @@ export default function App() {
                         ? 'border border-[#bfdbfe] bg-gradient-to-b from-sky-50 to-white'
                         : 'border border-accent/30 bg-gradient-to-b from-accent/15 to-transparent'
                       }`}>
-                        <div className="text-[10px] uppercase text-accent/80 font-semibold tracking-wider mb-1">Runtime Clock</div>
+                        <div className="text-[10px] uppercase text-accent/80 font-semibold tracking-wider mb-1">{uiLanguage === 'en' ? 'Runtime Clock' : 'Đồng hồ runtime'}</div>
                         <div className="text-[34px] font-semibold tabular-nums leading-tight">{clock.timeLabel}</div>
                         <div className={`text-[11px] mt-2 ${themeMode === 'light' ? 'text-[#4b5563]' : 'text-muted'}`}>{queueTimezone} · {queueCountry}</div>
                         <div className="mt-3 grid grid-cols-2 gap-2">
-                          <button onClick={() => { setQueueTimezone('Asia/Ho_Chi_Minh'); setQueueCountry('VN') }} className={`text-[10px] px-2 py-1 rounded-md border transition-colors ${themeMode === 'light' ? 'border-[#d1d5db] bg-white text-[#111827] hover:border-[#60a5fa] hover:text-[#0369a1]' : 'border-border bg-surface hover:border-accent/40 hover:text-accent'}`}>Vietnam</button>
+                          <button onClick={() => { setQueueTimezone('Asia/Ho_Chi_Minh'); setQueueCountry('VN') }} className={`text-[10px] px-2 py-1 rounded-md border transition-colors ${themeMode === 'light' ? 'border-[#d1d5db] bg-white text-[#111827] hover:border-[#60a5fa] hover:text-[#0369a1]' : 'border-border bg-surface hover:border-accent/40 hover:text-accent'}`}>{uiLanguage === 'en' ? 'Vietnam' : 'Việt Nam'}</button>
                           <button onClick={() => { setQueueTimezone('America/New_York'); setQueueCountry('US') }} className={`text-[10px] px-2 py-1 rounded-md border transition-colors ${themeMode === 'light' ? 'border-[#d1d5db] bg-white text-[#111827] hover:border-[#60a5fa] hover:text-[#0369a1]' : 'border-border bg-surface hover:border-accent/40 hover:text-accent'}`}>US East</button>
                         </div>
                       </div>
 
                       <div className={`rounded-xl border p-3 ${themeMode === 'light' ? 'border-[#e5e7eb] bg-[#f9fafb]' : 'border-border/60 bg-surface/60'}`}>
-                        <div className={`text-[10px] uppercase font-semibold tracking-wider mb-2 ${themeMode === 'light' ? 'text-[#6b7280]' : 'text-muted'}`}>Queue Window</div>
+                        <div className={`text-[10px] uppercase font-semibold tracking-wider mb-2 ${themeMode === 'light' ? 'text-[#6b7280]' : 'text-muted'}`}>{uiLanguage === 'en' ? 'Queue Window' : 'Khung giờ queue'}</div>
                         <div className="flex items-center gap-2 mb-1">
-                          <span className={`text-[11px] ${themeMode === 'light' ? 'text-[#6b7280]' : 'text-muted'}`}>Start hour</span>
+                          <span className={`text-[11px] ${themeMode === 'light' ? 'text-[#6b7280]' : 'text-muted'}`}>{uiLanguage === 'en' ? 'Start time' : 'Giờ bắt đầu'}</span>
                           <input
-                            type="number"
-                            min={0}
-                            max={23}
-                            value={queueStartHour}
-                            onChange={(e) => setQueueStartHour(Math.max(0, Math.min(23, Number(e.target.value || 18))))}
-                            className={`w-16 border rounded-md px-2 py-1 text-[11px] ${themeMode === 'light' ? 'bg-white border-[#d1d5db]' : 'bg-panel border-border'}`}
+                            type="time"
+                            step={3600}
+                            value={formatHourForTimeInput(queueStartHour)}
+                            onChange={(e) => setQueueStartHour(parseHourFromTimeInput(e.target.value))}
+                            className={`w-[110px] border rounded-md px-2 py-1 text-[11px] ${themeMode === 'light' ? 'bg-white border-[#d1d5db]' : 'bg-panel border-border'}`}
                           />
                           <span className={`text-[11px] ${themeMode === 'light' ? 'text-[#6b7280]' : 'text-muted'}`}>VN</span>
                         </div>
-                        <div className={`text-[10px] mt-2 ${themeMode === 'light' ? 'text-[#6b7280]' : 'text-muted'}`}>Scheduler starts from {String(queueStartHour).padStart(2, '0')}:00 (Asia/Ho_Chi_Minh).</div>
+                        <div className={`text-[10px] mt-2 ${themeMode === 'light' ? 'text-[#6b7280]' : 'text-muted'}`}>{uiLanguage === 'en' ? `Scheduler starts from ${runWindowLabel} (${queueTimezone}).` : `Scheduler bắt đầu từ ${runWindowLabel} (${queueTimezone}).`}</div>
                         <label className="mt-3 flex items-center gap-2 text-[11px]">
                           <input
                             type="checkbox"
                             checked={forceRunNow}
                             onChange={(e) => setForceRunNow(e.target.checked)}
                           />
-                          <span>Bỏ qua mốc 18h, cho phép chạy ngay</span>
+                          <span>Bỏ qua mốc {runWindowLabel}, cho phép chạy ngay</span>
                         </label>
                       </div>
                     </div>
 
                     <div className="space-y-3">
                       <div className={`rounded-xl border p-3 ${themeMode === 'light' ? 'border-[#e5e7eb] bg-white' : 'border-border bg-surface/60'}`}>
-                        <div className={`text-[10px] uppercase font-semibold tracking-wider mb-2 ${themeMode === 'light' ? 'text-[#6b7280]' : 'text-muted'}`}>Storage Paths</div>
+                        <div className={`text-[10px] uppercase font-semibold tracking-wider mb-2 ${themeMode === 'light' ? 'text-[#6b7280]' : 'text-muted'}`}>{uiLanguage === 'en' ? 'Storage Paths' : 'Đường dẫn storage'}</div>
                         <div className="space-y-2 text-[11px]">
                           <div className="grid grid-cols-[150px_1fr] gap-2">
-                            <span className={themeMode === 'light' ? 'text-[#6b7280]' : 'text-muted'}>Default userData</span>
+                            <span className={themeMode === 'light' ? 'text-[#6b7280]' : 'text-muted'}>{uiLanguage === 'en' ? 'Default userData' : 'userData mặc định'}</span>
                             <span className="font-mono break-all">{derivedDefaultUserDataPath || '—'}</span>
                           </div>
                           <div className="grid grid-cols-[150px_1fr] gap-2">
-                            <span className={themeMode === 'light' ? 'text-[#6b7280]' : 'text-muted'}>Storage root</span>
+                            <span className={themeMode === 'light' ? 'text-[#6b7280]' : 'text-muted'}>{uiLanguage === 'en' ? 'Storage root' : 'Thư mục gốc storage'}</span>
                             <span className="font-mono break-all">{storageDir || derivedDefaultUserDataPath || '—'}</span>
                           </div>
                           <div className="grid grid-cols-[150px_1fr] gap-2">
-                            <span className={themeMode === 'light' ? 'text-[#6b7280]' : 'text-muted'}>Runtime config</span>
+                            <span className={themeMode === 'light' ? 'text-[#6b7280]' : 'text-muted'}>{uiLanguage === 'en' ? 'Runtime config' : 'Config runtime'}</span>
                             <span className="font-mono break-all">{runtimeConfigFilePath || '—'}</span>
                           </div>
                           <div className="grid grid-cols-[150px_1fr] gap-2">
-                            <span className={themeMode === 'light' ? 'text-[#6b7280]' : 'text-muted'}>UI settings</span>
+                            <span className={themeMode === 'light' ? 'text-[#6b7280]' : 'text-muted'}>{uiLanguage === 'en' ? 'UI settings' : 'Cài đặt UI'}</span>
                             <span className="font-mono break-all">{appSettingsFilePath || '—'}</span>
                           </div>
                         </div>
@@ -1849,20 +2074,48 @@ export default function App() {
                       </div>
 
                       <div className={`rounded-xl border p-3 ${themeMode === 'light' ? 'border-[#e5e7eb] bg-white' : 'border-border bg-surface/60'}`}>
-                        <div className={`text-[10px] uppercase font-semibold tracking-wider mb-2 ${themeMode === 'light' ? 'text-[#6b7280]' : 'text-muted'}`}>Locale & Appearance</div>
+                        <div className={`text-[10px] uppercase font-semibold tracking-wider mb-2 ${themeMode === 'light' ? 'text-[#6b7280]' : 'text-muted'}`}>{uiLanguage === 'en' ? 'Locale & Appearance' : 'Ngôn ngữ & giao diện'}</div>
                         <div className="grid grid-cols-1 lg:grid-cols-2 gap-3 mb-3">
                           <div className="space-y-1">
-                            <label className={`text-[11px] ${themeMode === 'light' ? 'text-[#6b7280]' : 'text-muted'}`}>Timezone (IANA)</label>
+                            <label className={`text-[11px] ${themeMode === 'light' ? 'text-[#6b7280]' : 'text-muted'}`}>{uiLanguage === 'en' ? 'Timezone (IANA)' : 'Múi giờ (IANA)'}</label>
                             <input value={queueTimezone} onChange={(e) => setQueueTimezone(e.target.value)} className={`w-full border rounded-lg px-2 py-1.5 text-[11px] ${themeMode === 'light' ? 'bg-white border-[#d1d5db]' : 'bg-panel border-border'}`} />
                           </div>
                           <div className="space-y-1">
-                            <label className={`text-[11px] ${themeMode === 'light' ? 'text-[#6b7280]' : 'text-muted'}`}>Country Code</label>
+                            <label className={`text-[11px] ${themeMode === 'light' ? 'text-[#6b7280]' : 'text-muted'}`}>{uiLanguage === 'en' ? 'Country Code' : 'Mã quốc gia'}</label>
                             <input value={queueCountry} onChange={(e) => setQueueCountry(e.target.value.toUpperCase())} className={`w-full border rounded-lg px-2 py-1.5 text-[11px] ${themeMode === 'light' ? 'bg-white border-[#d1d5db]' : 'bg-panel border-border'}`} />
                           </div>
                         </div>
+                        <div className="flex flex-wrap items-end gap-3 mb-3">
+                          <div>
+                            <label className={`text-[11px] ${themeMode === 'light' ? 'text-[#6b7280]' : 'text-muted'}`}>Ngôn ngữ / Language</label>
+                            <div className="mt-1 flex items-center gap-2">
+                              <Button
+                                variant={uiLanguage === 'vi' ? 'primary' : 'secondary'}
+                                size="xs"
+                                onClick={() => setUiLanguage('vi')}
+                              >
+                                Tiếng Việt
+                              </Button>
+                              <Button
+                                variant={uiLanguage === 'en' ? 'primary' : 'secondary'}
+                                size="xs"
+                                onClick={() => setUiLanguage('en')}
+                              >
+                                English
+                              </Button>
+                            </div>
+                          </div>
+                          <div>
+                            <label className={`text-[11px] ${themeMode === 'light' ? 'text-[#6b7280]' : 'text-muted'}`}>{uiLanguage === 'en' ? 'Theme' : 'Giao diện'}</label>
+                            <div className="mt-1">
+                              <Button variant="secondary" size="xs" onClick={() => setThemeMode(prev => prev === 'dark' ? 'light' : 'dark')}>
+                                {uiLanguage === 'en' ? `Theme: ${themeMode}` : `Giao diện: ${themeMode === 'dark' ? 'tối' : 'sáng'}`}
+                              </Button>
+                            </div>
+                          </div>
+                        </div>
                         <div className="flex flex-wrap items-center gap-2">
-                          <Button variant="secondary" size="xs" onClick={() => setThemeMode(prev => prev === 'dark' ? 'light' : 'dark')}>Theme: {themeMode}</Button>
-                          <Button size="xs" onClick={saveRuntimeSettings}>Save Settings</Button>
+                          <Button size="xs" onClick={saveRuntimeSettings}>{uiLanguage === 'en' ? 'Save Settings' : 'Lưu cài đặt'}</Button>
                         </div>
                       </div>
 
@@ -1997,9 +2250,19 @@ export default function App() {
           {/* Tab bar */}
           <div className="flex items-center px-4 border-b border-border bg-panel shrink-0">
             {(
-              [['results', 'Results', <BarChart2 className="w-3.5 h-3.5" />],
-              ['queue', 'Job Queue', <Inbox className="w-3.5 h-3.5" />],
-              ['logs', 'Live Logs', <TerminalSquare className="w-3.5 h-3.5" />]] as const
+              [[
+                'results',
+                uiLanguage === 'en' ? 'Results' : 'Kết quả',
+                <BarChart2 className="w-3.5 h-3.5" />,
+              ], [
+                'queue',
+                uiLanguage === 'en' ? 'Queue' : 'Hàng đợi',
+                <Inbox className="w-3.5 h-3.5" />,
+              ], [
+                'logs',
+                uiLanguage === 'en' ? 'Logs' : 'Nhật ký',
+                <TerminalSquare className="w-3.5 h-3.5" />,
+              ]] as const
             ).map(([id, label, icon]) => (
               <button key={id} onClick={() => setActiveTab(id as 'queue' | 'logs' | 'results')}
                 className={`flex items-center gap-1.5 px-4 py-2.5 text-[11px] font-medium border-b-2 -mb-px transition-colors ${activeTab === id ? 'border-accent text-text' : 'border-transparent text-muted hover:text-text'}`}
@@ -2019,11 +2282,21 @@ export default function App() {
                   {(['all', 'running', 'pending', 'done', 'failed'] as const).map(f => (
                     <button key={f} onClick={() => setJobFilter(f)}
                       className={`text-[10px] px-2 py-0.5 rounded transition-colors ${jobFilter === f ? 'bg-surface text-text border border-border' : 'text-muted hover:text-text'}`}
-                    >{f}</button>
+                    >{f === 'all' ? (uiLanguage === 'en' ? 'all' : 'tất cả') : f === 'running' ? (uiLanguage === 'en' ? 'running' : 'đang chạy') : f === 'pending' ? (uiLanguage === 'en' ? 'pending' : 'chờ') : f === 'done' ? (uiLanguage === 'en' ? 'completed' : 'hoàn tất') : (uiLanguage === 'en' ? 'failed' : 'thất bại')}</button>
                   ))}
+                  <select
+                    value={queueBatchFilter}
+                    onChange={(e) => setQueueBatchFilter(e.target.value)}
+                    className="text-[10px] px-2 py-1 rounded border border-border bg-surface text-text"
+                  >
+                    <option value="all">{uiLanguage === 'en' ? 'all batches' : 'tất cả batch'}</option>
+                    {queueBatchOptions.map((batchId) => (
+                      <option key={batchId} value={batchId}>{batchId}</option>
+                    ))}
+                  </select>
                   <div className="w-px h-4 bg-border mx-1" />
                   <button onClick={() => setShowCsvModal(true)} className="flex items-center gap-1 text-[10px] text-muted hover:text-text px-2 py-1 rounded hover:bg-surface transition-colors">
-                    <Upload className="w-3 h-3" />Load CSV
+                    <Upload className="w-3 h-3" />{uiLanguage === 'en' ? 'Import CSV' : 'Nhập CSV'}
                   </button>
                   <button onClick={async () => {
                     await refreshQueueFromDb()
@@ -2050,7 +2323,7 @@ export default function App() {
                         }}
                         className="text-[10px] px-2 py-1 rounded border border-danger/30 text-danger hover:bg-danger/10 transition-colors"
                       >
-                        Remove Selected ({selectedInView.length})
+                        {uiLanguage === 'en' ? 'Remove Selected' : 'Xóa mục chọn'} ({selectedInView.length})
                       </button>
                       <button
                         onClick={async () => {
@@ -2068,7 +2341,30 @@ export default function App() {
                         }}
                         className="text-[10px] px-2 py-1 rounded border border-accent/30 text-accent hover:bg-accent/10 transition-colors"
                       >
-                        Requeue Selected
+                        {uiLanguage === 'en' ? 'Requeue Selected' : 'Xếp lại hàng đợi'}
+                      </button>
+                    </>
+                  )}
+                  {queueBatchFilter !== 'all' && sortedJobs.length > 0 && (
+                    <>
+                      <div className="w-px h-4 bg-border mx-1" />
+                      <button
+                        onClick={async () => {
+                          const ipc = window.electron?.ipcRenderer
+                          if (!ipc) return
+                          const ids = sortedJobs.map((job) => job.job_id)
+                          const res = await ipc.invoke('irs:queue:remove', { ids })
+                          if (!res?.ok) {
+                            showMessage(`Remove batch lỗi: ${res?.error || 'unknown'}`, 'error')
+                            return
+                          }
+                          setSelectedJobIds(new Set())
+                          await refreshQueueFromDb()
+                          showMessage(`Đã xoá batch ${queueBatchFilter}: ${res.deleted || 0} job`)
+                        }}
+                        className="text-[10px] px-2 py-1 rounded border border-danger/30 text-danger hover:bg-danger/10 transition-colors"
+                      >
+                        {uiLanguage === 'en' ? 'Remove Batch' : 'Xóa batch'} ({sortedJobs.length})
                       </button>
                     </>
                   )}
@@ -2079,7 +2375,7 @@ export default function App() {
                   {(['all', 'error', 'warning', 'success'] as const).map(lv => (
                     <button key={lv} onClick={() => setLogFilter(lv)}
                       className={`text-[10px] px-2 py-0.5 rounded transition-colors ${logFilter === lv ? 'bg-surface text-text border border-border' : 'text-muted hover:text-text'}`}
-                    >{lv}</button>
+                    >{lv === 'all' ? (uiLanguage === 'en' ? 'all' : 'tất cả') : lv === 'error' ? (uiLanguage === 'en' ? 'error' : 'lỗi') : lv === 'warning' ? (uiLanguage === 'en' ? 'warning' : 'cảnh báo') : (uiLanguage === 'en' ? 'success' : 'thành công')}</button>
                   ))}
                   <button onClick={copyLogs} className="text-muted hover:text-text px-1.5 py-1 rounded hover:bg-surface transition-colors">
                     <Copy className="w-3 h-3" />
@@ -2089,7 +2385,7 @@ export default function App() {
                     setLogs([])
                     showMessage(`Đã clear ${count} logs`, 'info')
                   }} className="text-[10px] text-muted hover:text-danger px-2 py-1 rounded hover:bg-surface transition-colors">
-                    Clear
+                    {uiLanguage === 'en' ? 'Clear' : 'Xóa'}
                   </button>
                 </>
               )}
@@ -2102,8 +2398,8 @@ export default function App() {
               {sortedJobs.length === 0 ? (
                 <div className="flex flex-col items-center justify-center h-full text-muted gap-3">
                   <Inbox className="w-8 h-8 opacity-20" />
-                  <span className="text-sm">Queue trống</span>
-                  <span className="text-xs opacity-50">Load CSV để thêm records vào hàng đợi</span>
+                  <span className="text-sm">{uiLanguage === 'en' ? 'Queue is empty' : 'Hàng đợi đang trống'}</span>
+                  <span className="text-xs opacity-50">{uiLanguage === 'en' ? 'Import CSV to add records to the queue' : 'Nhập CSV để thêm hồ sơ vào hàng đợi'}</span>
                 </div>
               ) : (
                 <table className="w-full text-[11px]">
@@ -2119,10 +2415,10 @@ export default function App() {
                       </th>
                       <th className="w-6" />
                       <th className="text-left text-muted font-medium px-3 py-2.5">Record / EIN</th>
-                      <th className="text-left text-muted font-medium px-3 py-2.5">Status</th>
-                      <th className="text-left text-muted font-medium px-3 py-2.5">Steps</th>
-                      <th className="text-left text-muted font-medium px-3 py-2.5">Tries</th>
-                      <th className="text-left text-muted font-medium px-3 py-2.5">Time</th>
+                      <th className="text-left text-muted font-medium px-3 py-2.5">{uiLanguage === 'en' ? 'Status' : 'Trạng thái'}</th>
+                      <th className="text-left text-muted font-medium px-3 py-2.5">{uiLanguage === 'en' ? 'Steps' : 'Tiến trình'}</th>
+                      <th className="text-left text-muted font-medium px-3 py-2.5">{uiLanguage === 'en' ? 'Attempts' : 'Số lần'}</th>
+                      <th className="text-left text-muted font-medium px-3 py-2.5">{uiLanguage === 'en' ? 'Time' : 'Thời gian'}</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -2151,7 +2447,7 @@ export default function App() {
               }`}
             >
               {filteredLogs.length === 0
-                ? <div className={`${themeMode === 'light' ? 'text-[#6b7280]' : 'text-muted/25'} select-none pt-2 pl-1`}>Chờ logs từ Python worker... (sandbox: http://ein-sandbox.test/applyein/legalStructure)</div>
+                ? <div className={`${themeMode === 'light' ? 'text-[#6b7280]' : 'text-muted/25'} select-none pt-2 pl-1`}>{uiLanguage === 'en' ? 'Waiting for Python worker logs...' : 'Đang chờ log từ Python worker...'} (sandbox: http://ein-sandbox.test/applyein/legalStructure)</div>
                 : filteredLogs.map(l => (
                   <div key={l.id} className={`flex gap-2 items-start group rounded px-1 py-0.5 ${themeMode === 'light' ? 'hover:bg-black/[0.04]' : 'hover:bg-white/[0.02]'}`}>
                     <span className={`${themeMode === 'light' ? 'text-[#6b7280]' : 'text-muted/30'} shrink-0 tabular-nums select-none w-16`}>{l.ts}</span>
@@ -2187,15 +2483,118 @@ export default function App() {
               onQuickExportStyled={quickExportStyled}
               onQuickExportSelected={quickExportSelectedStyled}
               onQuickExportSelectedNext={quickExportSelectedStyledNext}
+              quickExportSelectedNextRunning={bundleUploadRunning}
+              quickExportSelectedNextLabel={bundleUploadLabel}
               onNotify={showMessage}
             />
+          )}
+
+          {(bundleUploadRunning || bundleUploadDetail || bundleUploadPercent > 0) && (
+            <div className="shrink-0 border-t border-border bg-panel/95 px-4 py-2">
+              <button
+                className="flex w-full items-center gap-3 rounded-xl border border-border/70 bg-surface/50 px-3 py-2 text-left hover:bg-surface/70 transition-colors"
+                onClick={() => setBundleUploadPanelOpen(v => !v)}
+              >
+                <div className="min-w-0 flex-1">
+                  <div className="flex items-center gap-2 text-[11px]">
+                    <span className="font-semibold text-text">{uiLanguage === 'en' ? 'Google Drive Sync' : 'Đồng bộ Google Drive'}</span>
+                    <span className={`rounded-full px-2 py-0.5 text-[10px] font-medium ${bundleUploadRunning ? 'bg-accent/10 text-accent' : 'bg-success/10 text-success'}`}>
+                      {bundleUploadRunning ? (uiLanguage === 'en' ? 'Running' : 'Đang chạy') : (uiLanguage === 'en' ? 'Ready' : 'Sẵn sàng')}
+                    </span>
+                    <span className="text-muted">{bundleUploadPercent}%</span>
+                    {bundleUploadTotal > 0 && (
+                      <span className="text-muted font-mono">{bundleUploadCurrent}/{bundleUploadTotal} PDF</span>
+                    )}
+                  </div>
+                  <div className="mt-1 h-1.5 overflow-hidden rounded-full bg-border/60">
+                    <div
+                      className="h-full rounded-full bg-accent transition-all duration-300"
+                      style={{ width: `${Math.max(0, Math.min(100, bundleUploadPercent))}%` }}
+                    />
+                  </div>
+                </div>
+                <span className="text-[10px] text-muted">{bundleUploadPanelOpen ? (uiLanguage === 'en' ? 'Hide' : 'Ẩn') : (uiLanguage === 'en' ? 'Show' : 'Xem')}</span>
+              </button>
+              {bundleUploadPanelOpen && (
+                <div className="mt-2 rounded-xl border border-border/70 bg-base/20 px-3 py-3 text-[11px]">
+                  <div className="grid gap-2 md:grid-cols-2">
+                    <div>
+                      <div className="text-[10px] uppercase tracking-wider text-muted">{uiLanguage === 'en' ? 'Folder Name' : 'Tên thư mục'}</div>
+                      <div className="mt-1 font-mono text-text break-all">{bundleUploadFolderName || (uiLanguage === 'en' ? 'Preparing...' : 'Đang chuẩn bị...')}</div>
+                    </div>
+                    <div>
+                      <div className="text-[10px] uppercase tracking-wider text-muted">{uiLanguage === 'en' ? 'Stage' : 'Giai đoạn'}</div>
+                      <div className="mt-1 text-text">{bundleUploadDetail || (uiLanguage === 'en' ? 'Waiting...' : 'Đang chờ...')}</div>
+                    </div>
+                    <div>
+                      <div className="text-[10px] uppercase tracking-wider text-muted">{uiLanguage === 'en' ? 'PDF Progress' : 'Tiến độ PDF'}</div>
+                      <div className="mt-1 text-text font-mono">
+                        {bundleUploadTotal > 0 ? `${bundleUploadCurrent}/${bundleUploadTotal}` : '0/0'}
+                      </div>
+                    </div>
+                    <div>
+                      <div className="text-[10px] uppercase tracking-wider text-muted">Report</div>
+                      <div className="mt-1 text-text">
+                        {bundleUploadPercent >= 92
+                          ? (uiLanguage === 'en' ? 'Building / uploading Google Sheet' : 'Đang tạo / upload Google Sheet')
+                          : (uiLanguage === 'en' ? 'Waiting for PDFs' : 'Đang chờ PDF hoàn tất')}
+                      </div>
+                    </div>
+                  </div>
+                  {(bundleUploadFolderUrl || bundleUploadReportUrl) && (
+                    <div className="mt-3 grid gap-2 md:grid-cols-2">
+                      {bundleUploadFolderUrl && (
+                        <div className="rounded-lg border border-border/60 bg-surface/40 p-2.5">
+                          <div className="text-[10px] uppercase tracking-wider text-muted">{uiLanguage === 'en' ? 'Drive Folder Link' : 'Link thư mục Drive'}</div>
+                          <div className="mt-1 font-mono text-[10px] text-text break-all">{bundleUploadFolderUrl}</div>
+                          <div className="mt-2 flex gap-2">
+                            <button
+                              className="rounded-md border border-border px-2 py-1 text-[10px] text-text hover:bg-surface"
+                              onClick={() => openExternalUrl(bundleUploadFolderUrl)}
+                            >
+                              {uiLanguage === 'en' ? 'Open link' : 'Mở link'}
+                            </button>
+                            <button
+                              className="rounded-md border border-border px-2 py-1 text-[10px] text-text hover:bg-surface"
+                              onClick={() => navigator.clipboard.writeText(bundleUploadFolderUrl)}
+                            >
+                              {uiLanguage === 'en' ? 'Copy link' : 'Copy link'}
+                            </button>
+                          </div>
+                        </div>
+                      )}
+                      {bundleUploadReportUrl && (
+                        <div className="rounded-lg border border-border/60 bg-surface/40 p-2.5">
+                          <div className="text-[10px] uppercase tracking-wider text-muted">{uiLanguage === 'en' ? 'Drive Report Link' : 'Link report Drive'}</div>
+                          <div className="mt-1 font-mono text-[10px] text-text break-all">{bundleUploadReportUrl}</div>
+                          <div className="mt-2 flex gap-2">
+                            <button
+                              className="rounded-md border border-border px-2 py-1 text-[10px] text-text hover:bg-surface"
+                              onClick={() => openExternalUrl(bundleUploadReportUrl)}
+                            >
+                              {uiLanguage === 'en' ? 'Open link' : 'Mở link'}
+                            </button>
+                            <button
+                              className="rounded-md border border-border px-2 py-1 text-[10px] text-text hover:bg-surface"
+                              onClick={() => navigator.clipboard.writeText(bundleUploadReportUrl)}
+                            >
+                              {uiLanguage === 'en' ? 'Copy link' : 'Copy link'}
+                            </button>
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
           )}
 
           {/* Status bar */}
           <div className="flex items-center gap-3 px-4 h-8 border-t border-border bg-panel text-[10px] text-muted shrink-0 overflow-x-auto whitespace-nowrap">
             <span className="flex items-center gap-1.5">
               <span className={`w-1.5 h-1.5 rounded-full ${workerRunning ? 'bg-success animate-pulse' : 'bg-muted/30'}`} />
-              {workerRunning ? `Worker ${flow.label}` : 'Worker idle'}
+              {workerRunning ? `Worker ${flow.label}` : (uiLanguage === 'en' ? 'Worker idle' : 'Worker đang nghỉ')}
             </span>
             <span className="text-border">·</span>
             <span className="font-mono">{flow.queue}</span>
@@ -2205,17 +2604,21 @@ export default function App() {
               <div className="h-full bg-success transition-all duration-300" style={{ width: `${progressPct}%` }} />
             </div>
             <span className="text-success tabular-nums">{stats.done} done</span>
-            <span className="text-accent tabular-nums">{stats.running} running</span>
-            <span className="text-muted tabular-nums">{stats.pending} pending</span>
-            <span className="text-danger tabular-nums">{stats.failed} failed</span>
-            {runningNow && (
+            <span className="text-accent tabular-nums">{stats.running} {uiLanguage === 'en' ? 'running' : 'đang chạy'}</span>
+            <span className="text-muted tabular-nums">{stats.pending} {uiLanguage === 'en' ? 'pending' : 'chờ'}</span>
+            <span className="text-danger tabular-nums">{stats.failed} fail</span>
+            {runningJobs.length > 0 && (
               <>
                 <span className="text-border">·</span>
-                <span className="truncate max-w-[240px]">Now: {runningNow.name} · {STEP_LABELS[runningNow.last_step]}</span>
+                <span className="truncate max-w-[340px] text-accent font-medium">
+                  {runningJobs.length === 1
+                    ? `${uiLanguage === 'en' ? 'Now' : 'Hiện tại'}: ${runningJobs[0].name || runningJobs[0].record_id} · ${STEP_LABELS[runningJobs[0].last_step] || runningJobs[0].last_step}`
+                    : `${uiLanguage === 'en' ? 'Running' : 'Đang chạy'} (${runningJobs.length}): ${runningJobs.map(j => `${j.name || j.record_id} [${STEP_LABELS[j.last_step] || j.last_step}]`).join('  ·  ')}`}
+                </span>
               </>
             )}
-            <span className="ml-auto opacity-60">Outputs: artifact folder (PDF + step6 + result)</span>
-            {!canRun && <span className="flex items-center gap-1.5 text-warning"><AlarmClock className="w-3 h-3" /> Opens {String(queueStartHour).padStart(2, '0')}:00</span>}
+            <span className="ml-auto opacity-60">{uiLanguage === 'en' ? 'Output: artifact folder (PDF + step6 + result)' : 'Output: thư mục artifact (PDF + step6 + result)'}</span>
+            {!canRun && <span className="flex items-center gap-1.5 text-warning"><AlarmClock className="w-3 h-3" /> {uiLanguage === 'en' ? 'Opens' : 'Mở lúc'} {String(queueStartHour).padStart(2, '0')}:00</span>}
           </div>
           </>
           )}
@@ -2333,61 +2736,124 @@ export default function App() {
       )}
       {!miniQueueEmpty && (
       <div className="fixed right-4 bottom-6 z-[90] pointer-events-none">
-        <div className="pointer-events-auto rounded-xl border border-border/80 bg-panel/95 backdrop-blur-md shadow-lg px-3 py-2 min-w-[220px]">
-          <div className="flex items-center gap-2 text-[11px]">
-            <RefreshCw className={`w-3 h-3 ${stats.running > 0 ? 'text-accent animate-spin-slow' : showingRecentNotice ? (recentRunNotice?.status === 'done' ? 'text-success' : 'text-danger') : 'text-muted/40'}`} />
-            <span className="font-semibold">{runningModeLabel}</span>
-            {!miniQueueEmpty && (
-              <button
-                className="ml-auto text-[10px] text-muted hover:text-text"
-                onClick={() => setMiniRunCollapsed((v) => !v)}
-              >
-                {miniRunCollapsed ? 'Expand' : 'Collapse'}
-              </button>
+        <div className="pointer-events-auto rounded-xl border border-border/80 bg-panel/95 backdrop-blur-md shadow-lg p-2.5 min-w-[250px] max-w-[320px]">
+          {/* Header */}
+          <div className="flex items-center gap-1.5 text-[11px] pb-1.5 border-b border-border/40">
+            <RefreshCw className={`w-3 h-3 ${runningJobs.length > 0 ? 'text-accent animate-spin-slow' : showingRecentNotice ? (recentRunNotice?.status === 'done' ? 'text-success' : 'text-danger') : 'text-muted/40'}`} />
+            <span className="font-semibold text-text">
+              {runningJobs.length > 1
+                ? (uiLanguage === 'en' ? `Running (${runningJobs.length} workers)` : `Đang chạy (${runningJobs.length} luồng)`)
+                : runningJobs.length === 1
+                ? (uiLanguage === 'en' ? 'Worker Running' : 'Đang xử lý')
+                : runningModeLabel}
+            </span>
+            {runningJobs.length > 0 && (
+              <span className="px-1.5 py-0.2 bg-accent/15 text-accent text-[9px] font-bold rounded-full">
+                {runningJobs.length}×
+              </span>
             )}
+            <button
+              className="ml-auto text-[10px] text-muted hover:text-text transition-colors px-1 py-0.5 rounded hover:bg-surface"
+              onClick={() => setMiniRunCollapsed((v) => !v)}
+              title={miniRunCollapsed ? 'Mở rộng' : 'Thu gọn'}
+            >
+              {miniRunCollapsed ? 'Expand' : 'Collapse'}
+            </button>
           </div>
-          {!miniRunCollapsed && !miniQueueEmpty && (
-            <>
-              <div className="mt-1 h-1.5 rounded-full bg-surface overflow-hidden relative">
-                <div className="h-full bg-accent/20" />
-                {(runningNow || showingRecentNotice || stats.pending > 0) && (
-                  <div
-                    className={`absolute inset-y-0 left-0 transition-all duration-300 ${runningNow ? 'bg-accent animate-pulse' : showingRecentNotice ? (recentRunNotice?.status === 'done' ? 'bg-success' : 'bg-danger') : 'bg-muted/40'}`}
-                    style={{ width: `${runningNow ? Math.max(10, runningStepPct) : showingRecentNotice ? 100 : 0}%` }}
-                  />
-                )}
-                {runningNow && (
-                  <div
-                    className={`absolute top-0 h-full w-1.5 rounded-full ${runningLooksStale ? 'bg-warning' : 'bg-accent'} animate-pulse`}
-                    style={{ left: `calc(${Math.max(10, runningStepPct) - 1}% - 2px)` }}
-                  />
-                )}
-              </div>
-              <div className="mt-1 text-[10px] text-muted tabular-nums">
-                {runningNow
-                  ? `${runningStepsDone}/${runningStepsTotal} steps · ${Math.max(10, runningStepPct)}% · ${runningHeartbeatSec}s ago`
-                  : showingRecentNotice
-                    ? `${recentRunNotice?.status === 'done' ? 'Done' : 'Failed'} · 100%`
-                    : stats.pending > 0
-                      ? `Next queued · 0%`
-                      : ''}
-              </div>
-            </>
+
+          {/* When Collapsed: Single ultra-compact summary line */}
+          {miniRunCollapsed && (
+            <div className="pt-1.5 flex items-center justify-between text-[10px] text-muted">
+              {runningJobs.length > 0 ? (
+                <>
+                  <span className="truncate max-w-[190px] font-medium text-text">
+                    {runningJobs.map(j => j.name || j.record_id).slice(0, 2).join(', ')}{runningJobs.length > 2 ? ` +${runningJobs.length - 2}` : ''}
+                  </span>
+                  <span className="text-accent font-mono text-[9px] shrink-0 font-semibold tabular-nums ml-2">
+                    {Math.round(runningJobs.reduce((acc, j) => acc + getJobProgress(j).pct, 0) / runningJobs.length)}%
+                  </span>
+                </>
+              ) : showingRecentNotice ? (
+                <span className={recentRunNotice?.status === 'done' ? 'text-success font-medium' : 'text-danger font-medium'}>
+                  {recentRunNotice?.name}: {recentRunNotice?.status === 'done' ? 'Hoàn tất' : 'Thất bại'}
+                </span>
+              ) : (
+                <span>{stats.pending > 0 ? `Đang chờ: ${stats.pending}` : 'Sẵn sàng'}</span>
+              )}
+            </div>
           )}
-          {!miniRunCollapsed && !miniQueueEmpty && (
-            <div className="mt-1 text-[10px] text-muted truncate">
-              {runningNow
-                ? (runningLooksStale
-                  ? `Now: ${runningNow.name} · ${STEP_LABELS[runningNow.last_step]} · still processing...`
-                  : `Now: ${runningNow.name} · ${STEP_LABELS[runningNow.last_step]}`)
-                : showingRecentNotice
-                  ? `${recentRunNotice?.status === 'done' ? 'Completed' : 'Failed'}: ${recentRunNotice?.name} · ${recentRunNotice?.lastStep ? STEP_LABELS[recentRunNotice.lastStep] : ''}`
-                  : (stats.pending > 0 ? `Waiting: ${stats.pending} pending` : otherQueuePending > 0 ? `Current queue empty · other queues pending: ${otherQueuePending}` : '')}
+
+          {/* When Expanded: Show each running job bar neatly */}
+          {!miniRunCollapsed && (
+            <div className="pt-1.5 space-y-2 max-h-[220px] overflow-y-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+              {runningJobs.length > 0 ? (
+                runningJobs.map((job, idx) => {
+                  const p = getJobProgress(job)
+                  return (
+                    <div key={job.job_id || idx} className="space-y-1 pb-1.5 border-b border-border/30 last:border-b-0 last:pb-0">
+                      <div className="flex items-center justify-between gap-1.5 text-[10px] leading-tight">
+                        <div className="flex items-center gap-1.5 min-w-0">
+                          <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${p.looksStale ? 'bg-warning animate-ping' : 'bg-accent animate-pulse'}`} />
+                          <span className="font-semibold text-text truncate max-w-[120px]" title={job.name || job.record_id}>
+                            {job.name || job.record_id}
+                          </span>
+                        </div>
+                        <span className="text-accent text-[9px] font-mono shrink-0 truncate max-w-[90px]" title={STEP_LABELS[job.last_step]}>
+                          {STEP_LABELS[job.last_step] || job.last_step}
+                        </span>
+                        <span className="text-muted text-[9px] font-mono tabular-nums shrink-0 font-medium">
+                          {p.pct}%
+                        </span>
+                      </div>
+                      <div className="h-1 rounded-full bg-surface overflow-hidden relative">
+                        <div
+                          className={`h-full rounded-full transition-all duration-300 ${p.looksStale ? 'bg-warning' : 'bg-accent'}`}
+                          style={{ width: `${Math.max(6, p.pct)}%` }}
+                        />
+                      </div>
+                    </div>
+                  )
+                })
+              ) : showingRecentNotice ? (
+                <div className="space-y-1">
+                  <div className="flex items-center justify-between text-[10px]">
+                    <span className="font-medium text-text truncate">{recentRunNotice?.name}</span>
+                    <span className={recentRunNotice?.status === 'done' ? 'text-success font-medium' : 'text-danger font-medium'}>
+                      {recentRunNotice?.status === 'done' ? 'Hoàn tất' : 'Thất bại'}
+                    </span>
+                  </div>
+                  <div className="h-1 rounded-full bg-surface overflow-hidden">
+                    <div className={`h-full ${recentRunNotice?.status === 'done' ? 'bg-success' : 'bg-danger'}`} style={{ width: '100%' }} />
+                  </div>
+                </div>
+              ) : stats.pending > 0 ? (
+                <div className="text-[10px] text-muted py-1 flex items-center gap-1.5">
+                  <Clock className="w-3 h-3 text-muted/60" />
+                  <span>{uiLanguage === 'en' ? `Waiting for worker: ${stats.pending} pending` : `Đang chờ luồng chạy: còn ${stats.pending} mục`}</span>
+                </div>
+              ) : null}
             </div>
           )}
         </div>
       </div>
       )}
     </>
+  )
+}
+
+export default function App() {
+  const [uiLanguage, setUiLanguage] = useState<UILanguage>(() => {
+    const saved = String(localStorage.getItem('fox_ui_language') || '').toLowerCase()
+    return saved === 'en' ? 'en' : 'vi'
+  })
+
+  useEffect(() => {
+    localStorage.setItem('fox_ui_language', uiLanguage)
+  }, [uiLanguage])
+
+  return (
+    <I18nProvider locale={uiLanguage}>
+      <AppContent uiLanguage={uiLanguage} setUiLanguage={setUiLanguage} />
+    </I18nProvider>
   )
 }

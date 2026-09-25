@@ -23,12 +23,11 @@ win:
   artifactName: "${productName}-${version}-${arch}.${ext}"
   target:
     - nsis
-    - portable
 
 publish:
   provider: github
-  owner: "${env.GH_OWNER}"
-  repo: "${env.GH_REPO}"
+  owner: XuanHongitHub
+  repo: camou-fox-irs-automation
   releaseType: release
 
 nsis:

@@ -2,11 +2,21 @@
 
 
 a = Analysis(
-    ['irs_bot\\cli.py'],
-    pathex=[],
+    ['entry_server.py'],
+    pathex=['.'],
     binaries=[],
     datas=[],
-    hiddenimports=['socks'],
+    hiddenimports=[
+        'socks',
+        'camoufox',
+        'camoufox.sync_api',
+        'geoip2',
+        'geoip2.database',
+        'maxminddb',
+        'aiohttp',
+        'charset_normalizer',
+        'chardet',
+    ],
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
