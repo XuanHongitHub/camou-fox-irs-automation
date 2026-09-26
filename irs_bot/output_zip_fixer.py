@@ -482,71 +482,87 @@ def scan_and_fix_outputs(
         # Resolve location: priority queue.db -> PDF parse -> CSV
         queue_info = queue_map.get(k1) or queue_map.get(k2) or queue_map.get(rid) or {}
         city = queue_info.get("city") or ""
-        state = queue_info.get("state") or ""
+        state = queue_info.get("state") or str(row.get("step6_state") or "").strip()
         current_zip = queue_info.get("zip") or ""
 
+        # Check candidate PDFs for actual text on disk (primary source for PDF notice)
         pdf_extracted = None
-        if not (city and state and current_zip):
-            for candidate in candidates:
-                pdf_extracted = parse_location_from_pdf(candidate)
-                if pdf_extracted:
-                    break
+        pdf_actual_zip = ""
+        for candidate in candidates:
+            pdf_extracted = parse_location_from_pdf(candidate)
             if pdf_extracted:
                 city = city or pdf_extracted[0]
                 state = state or pdf_extracted[1]
-                current_zip = current_zip or pdf_extracted[2]
+                pdf_actual_zip = pdf_extracted[2]
+                break
 
-        if not state:
-            state = str(row.get("step6_state") or "").strip()
+        # Fallback zip to evaluate
+        eval_zip = pdf_actual_zip or current_zip
+        if not eval_zip:
+            loc = str(row.get("step6_physical_location") or "")
+            m_zip = re.search(r"\b(\d{5})\b", loc)
+            if m_zip:
+                eval_zip = m_zip.group(1)
 
-        # Run auto_fix_record_postal logic
         test_rec = {
             "city": city,
             "state": state,
-            "zip": current_zip,
+            "zip": eval_zip,
             "county": str(row.get("step6_county") or ""),
         }
         was_fixed = auto_fix_record_postal(test_rec)
 
         pdf_modified = False
         drive_updated = False
-        old_zip = current_zip
+        old_zip = eval_zip
         new_zip = test_rec["zip"]
         new_county = test_rec.get("county") or row.get("step6_county")
 
-        if was_fixed and test_rec["zip"] != current_zip:
-            patched_bytes: Optional[bytes] = None
-            if fix_pdfs:
-                for candidate in candidates:
-                    res_bytes = fix_pdf_zip_in_file(candidate, old_zip, new_zip)
-                    if res_bytes:
-                        pdf_modified = True
-                        patched_bytes = res_bytes
+        # Determine if PDF needs fixing: either postal fixer changed it, or PDF's actual zip != new_zip
+        needs_pdf_fix = bool(fix_pdfs and (
+            (pdf_actual_zip and pdf_actual_zip != new_zip) or
+            (was_fixed and old_zip != new_zip)
+        ))
 
-            if pdf_modified:
-                fixed_pdfs += 1
+        patched_bytes: Optional[bytes] = None
+        if needs_pdf_fix:
+            replace_from = pdf_actual_zip or old_zip
+            for candidate in candidates:
+                res_bytes = fix_pdf_zip_in_file(candidate, replace_from, new_zip)
+                if res_bytes:
+                    pdf_modified = True
+                    patched_bytes = res_bytes
 
-            # Sync to Google Drive if applicable
-            if drive_session and patched_bytes:
-                drive_url = drive_map.get(k1) or drive_map.get(k2) or drive_map.get(rid) or ""
-                fid = None
-                m1 = re.search(r'/file/d/([a-zA-Z0-9_-]+)', drive_url)
-                if m1:
-                    fid = m1.group(1)
-                else:
-                    m2 = re.search(r'[?&]id=([a-zA-Z0-9_-]+)', drive_url)
-                    if m2:
-                        fid = m2.group(1)
+        if pdf_modified:
+            fixed_pdfs += 1
 
-                if fid:
-                    try:
-                        drive_session.upload_file_in_place(fid, patched_bytes)
-                        drive_updated = True
-                        synced_drive += 1
-                    except Exception as exc:
-                        logger.warning("Drive upload error for %s (file %s): %s", rid, fid, exc)
+        # Sync to Google Drive if applicable
+        if drive_session and patched_bytes:
+            drive_url = drive_map.get(k1) or drive_map.get(k2) or drive_map.get(rid) or ""
+            fid = None
+            m1 = re.search(r'/file/d/([a-zA-Z0-9_-]+)', drive_url)
+            if m1:
+                fid = m1.group(1)
+            else:
+                m2 = re.search(r'[?&]id=([a-zA-Z0-9_-]+)', drive_url)
+                if m2:
+                    fid = m2.group(1)
 
-            # Update row in results
+            if fid:
+                try:
+                    drive_session.upload_file_in_place(fid, patched_bytes)
+                    drive_updated = True
+                    synced_drive += 1
+                except Exception as exc:
+                    logger.warning("Drive upload error for %s (file %s): %s", rid, fid, exc)
+
+        record_changed = bool(
+            (was_fixed and new_zip != current_zip) or
+            pdf_modified or
+            (new_county and new_county != row.get("step6_county"))
+        )
+
+        if record_changed:
             fixed_records += 1
             if new_county:
                 row["step6_county"] = new_county
@@ -586,14 +602,14 @@ def scan_and_fix_outputs(
         # Emit per-item progress update so UI sees live activity
         if progress_cb:
             status_text = ""
-            if was_fixed and test_rec["zip"] != current_zip:
-                status_text = f"Sửa ZIP {old_zip} ➔ {new_zip}"
+            if record_changed or pdf_modified:
+                status_text = f"Sửa ZIP {old_zip or pdf_actual_zip} ➔ {new_zip}"
                 if pdf_modified:
                     status_text += " [PDF ✓]"
                 if drive_updated:
                     status_text += " [Drive ✓]"
             else:
-                status_text = f"ZIP {current_zip} chuẩn bưu điện"
+                status_text = f"ZIP {new_zip or eval_zip} chuẩn bưu điện"
 
             progress_cb({
                 "type": "progress",
@@ -605,7 +621,7 @@ def scan_and_fix_outputs(
                 "fixed_queue_jobs": queue_stats.get("fixed", 0),
                 "record_id": rid,
                 "name": rec_name,
-                "action": "fixed" if (was_fixed and test_rec["zip"] != current_zip) else "verified",
+                "action": "fixed" if (record_changed or pdf_modified) else "verified",
                 "message": f"[{count}/{total_matched}] {rid} ({rec_name[:20]}): {status_text}",
             })
 

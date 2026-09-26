@@ -146,6 +146,14 @@ function getDurationSeconds(row: ResultRow): number | undefined {
     return undefined
 }
 
+function openPath(path: string, reveal = false) {
+    const ipc = window.electron?.ipcRenderer
+    if (!ipc || !path) return
+    ipc.invoke('irs:open-path', { path, reveal }).catch(() => {
+        // no-op
+    })
+}
+
 // ─── Row detail expand ────────────────────────────────────────────────────────
 
 function ResultRowDetail({ row }: { row: ResultRow }) {
@@ -155,13 +163,6 @@ function ResultRowDetail({ row }: { row: ResultRow }) {
         step6Data = row.step6_data_json ? JSON.parse(String(row.step6_data_json)) : {}
     } catch {
         step6Data = {}
-    }
-    const openPath = (path: string, reveal = false) => {
-        const ipc = window.electron?.ipcRenderer
-        if (!ipc || !path) return
-        ipc.invoke('irs:open-path', { path, reveal }).catch(() => {
-            // no-op
-        })
     }
     return (
         <tr className="border-b border-border/10">
@@ -227,20 +228,30 @@ function ResultRowDetail({ row }: { row: ResultRow }) {
                     {(() => {
                         const effectivePdf = String(row.final_pdf_path || row.pdf_path || '').trim()
                         const effectiveArtifact = String(row.artifact_dir || '').trim()
-                        return (effectivePdf || effectiveArtifact) && (
+                        const effectiveDrive = String(row.drive_pdf_url || '').trim()
+                        return (effectivePdf || effectiveArtifact || effectiveDrive) && (
                             <div className="col-span-2 mt-1 flex items-center gap-3 text-[10px]">
                                 {effectivePdf && (
                                     <button
-                                        className="text-success hover:underline font-mono inline-flex items-center gap-1 font-semibold"
+                                        className="text-success hover:underline font-mono inline-flex items-center gap-1 font-semibold cursor-pointer"
                                         onClick={() => openPath(effectivePdf)}
                                         title="Mở file thông báo PDF"
                                     >
                                         <FileText className="w-3 h-3" /> Open PDF
                                     </button>
                                 )}
+                                {effectiveDrive && (
+                                    <button
+                                        className="text-sky-400 hover:underline font-mono inline-flex items-center gap-1 font-semibold cursor-pointer"
+                                        onClick={() => openPath(effectiveDrive)}
+                                        title={`Mở file trên Google Drive: ${effectiveDrive}`}
+                                    >
+                                        <Cloud className="w-3 h-3" /> Open Drive
+                                    </button>
+                                )}
                                 {effectiveArtifact && (
                                     <button
-                                        className="text-accent hover:underline font-mono inline-flex items-center gap-1"
+                                        className="text-accent hover:underline font-mono inline-flex items-center gap-1 cursor-pointer"
                                         onClick={() => openPath(effectiveArtifact, true)}
                                         title="Mở thư mục artifact chứa file kết quả"
                                     >
@@ -407,9 +418,22 @@ export function ResultsDashboard({
             setFixZipLog(prev => [...prev.slice(-200), msg])
             if (data?.type === 'done') {
                 setFixZipRunning(false)
-                setFixZipProgress(null)
+                setFixZipProgress((prev) => {
+                    const total = data.total || data.matched || data.scanned || prev?.total || 0
+                    return { current: total, total, percent: 100 }
+                })
+                setFixZipStats({
+                    fixed_records: Number(data.fixed_records || 0),
+                    fixed_pdfs: Number(data.fixed_pdfs || 0),
+                    synced_drive: Number(data.synced_drive || 0),
+                    fixed_queue_jobs: Number(data.fixed_queue_jobs || 0),
+                })
                 setFixZipResult({ message: data.message || '✅ Hoàn tất Auto Validate thành công!' })
                 onRefresh?.()
+            }
+            if (data?.type === 'error') {
+                setFixZipRunning(false)
+                setFixZipResult({ message: `❌ ${data.message || 'Có lỗi xảy ra khi Auto Validate'}` })
             }
         }
         ipc.on('irs:auto-validate:progress', handler)
@@ -680,6 +704,16 @@ export function ResultsDashboard({
                             {locale === 'en' ? 'Export Excel' : 'Xuất Excel'}
                         </Button>
                     )}
+                    <Button
+                        variant="ghost"
+                        size="xs"
+                        className="gap-1.5 text-sky-400 hover:text-sky-300 hover:bg-sky-500/10 border border-sky-500/20"
+                        title="Mở thư mục tổng Google Drive chứa toàn bộ PDF và báo cáo"
+                        onClick={() => openPath('https://drive.google.com/drive/folders/1T2dKn2ZKq77xsPBV-fI_Qo-DUyyZi5-d')}
+                    >
+                        <Cloud className="w-3.5 h-3.5" />
+                        {locale === 'en' ? 'Drive Folder' : 'Thư mục Drive'}
+                    </Button>
                     <Button variant="ghost" size="xs" className="gap-1.5 text-muted hover:text-text" onClick={() => download(filtered, (dateFrom || dateTo) ? 'custom' : 'all')}>
                         <Download className="w-3.5 h-3.5" />CSV
                     </Button>
@@ -1047,16 +1081,19 @@ export function ResultsDashboard({
                                         </td>
                                         <td className="px-3 py-3" onClick={(e) => e.stopPropagation()}>
                                             {row.uploaded_to_drive ? (
-                                                <a
-                                                    href={row.drive_pdf_url || '#'}
-                                                    target={row.drive_pdf_url ? '_blank' : undefined}
-                                                    rel="noreferrer"
-                                                    onClick={(e) => { if (!row.drive_pdf_url) e.preventDefault(); e.stopPropagation() }}
-                                                    className="inline-flex items-center gap-1 text-[10px] font-semibold text-sky-400 bg-sky-500/10 border border-sky-500/30 px-2 py-0.5 rounded-full hover:bg-sky-500/20 transition-colors"
-                                                    title={row.drive_pdf_url ? 'Mở PDF trên Google Drive' : 'Đã tải lên Google Drive'}
+                                                <button
+                                                    type="button"
+                                                    onClick={(e) => {
+                                                        e.stopPropagation()
+                                                        if (row.drive_pdf_url) {
+                                                            openPath(row.drive_pdf_url)
+                                                        }
+                                                    }}
+                                                    className="inline-flex items-center gap-1 text-[10px] font-semibold text-sky-400 bg-sky-500/10 border border-sky-500/30 px-2 py-0.5 rounded-full hover:bg-sky-500/20 transition-colors cursor-pointer"
+                                                    title={row.drive_pdf_url ? `Mở: ${row.drive_pdf_url}` : 'Đã tải lên Google Drive'}
                                                 >
                                                     <Cloud className="w-3 h-3" /> Drive
-                                                </a>
+                                                </button>
                                             ) : (
                                                 <span className="text-muted/30 text-[10px]">Chưa lên</span>
                                             )}
@@ -1149,13 +1186,25 @@ export function ResultsDashboard({
                                     <div className="px-5 pt-3 pb-1">
                                         <div className="flex items-center justify-between text-[11px] mb-1.5">
                                             <span className="text-text font-semibold flex items-center gap-1.5">
-                                                <RefreshCw className="w-3.5 h-3.5 text-indigo-400 animate-spin" />
-                                                {locale === 'en' ? 'Validating:' : 'Đang Auto Validate:'} {fixZipProgress.current} / {fixZipProgress.total}
+                                                {fixZipRunning ? (
+                                                    <RefreshCw className="w-3.5 h-3.5 text-indigo-400 animate-spin" />
+                                                ) : (
+                                                    <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" />
+                                                )}
+                                                {fixZipRunning
+                                                    ? (locale === 'en' ? 'Validating:' : 'Đang Auto Validate:')
+                                                    : (locale === 'en' ? 'Validated Complete:' : 'Đã hoàn tất:')}{' '}
+                                                <span className="font-mono">{fixZipProgress.current} / {fixZipProgress.total}</span> hồ sơ
                                             </span>
-                                            <span className="font-mono text-indigo-400 font-bold">{fixZipProgress.percent}%</span>
+                                            <span className={`font-mono font-bold ${fixZipRunning ? 'text-indigo-400' : 'text-emerald-400'}`}>
+                                                {fixZipProgress.percent}%
+                                            </span>
                                         </div>
-                                        <div className="w-full bg-border/60 rounded-full h-2 overflow-hidden">
-                                            <div className="bg-indigo-500 h-2 transition-all duration-150" style={{ width: `${fixZipProgress.percent}%` }} />
+                                        <div className="w-full bg-border/60 rounded-full h-2.5 overflow-hidden">
+                                            <div
+                                                className={`h-2.5 transition-all duration-150 ${fixZipRunning ? 'bg-indigo-500' : 'bg-emerald-500'}`}
+                                                style={{ width: `${Math.max(2, fixZipProgress.percent)}%` }}
+                                            />
                                         </div>
                                     </div>
                                 )}
@@ -1197,9 +1246,13 @@ export function ResultsDashboard({
 
                         {/* Result summary card */}
                         {fixZipResult && (
-                            <div className="px-5 py-3 bg-success/10 border-b border-success/30 flex items-center gap-3">
-                                <CheckCircle2 className="w-5 h-5 text-success shrink-0" />
-                                <div className="text-[11px] text-success font-medium">
+                            <div className={`px-5 py-3 border-b flex items-center gap-3 ${fixZipResult.message.startsWith('❌') ? 'bg-danger/10 border-danger/30 text-danger' : 'bg-success/10 border-success/30 text-success'}`}>
+                                {fixZipResult.message.startsWith('❌') ? (
+                                    <AlertCircle className="w-5 h-5 shrink-0" />
+                                ) : (
+                                    <CheckCircle2 className="w-5 h-5 shrink-0" />
+                                )}
+                                <div className="text-[11px] font-medium">
                                     {fixZipResult.message || '✅ Hoàn tất Auto Validate thành công!'}
                                 </div>
                             </div>

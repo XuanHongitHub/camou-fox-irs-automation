@@ -3965,12 +3965,18 @@ app.whenReady().then(async () => {
         : { cmd: cliBinaryPath(), args: ['--config', runtimeConfigPath(), ...args] }
       const proc = spawn(cmd.cmd, cmd.args, {
         cwd: root,
-        env: { ...process.env, PYTHONPATH: root, PYTHONUNBUFFERED: '1' },
+        env: {
+          ...process.env,
+          PYTHONPATH: root,
+          PYTHONUNBUFFERED: '1',
+          PYTHONIOENCODING: 'utf-8',
+          PYTHONUTF8: '1',
+        },
       })
       let stdoutBuf = ''
       let stderrBuf = ''
       proc.stdout?.on('data', (d: Buffer) => {
-        stdoutBuf += d.toString()
+        stdoutBuf += d.toString('utf-8')
         const lines = stdoutBuf.split('\n')
         stdoutBuf = lines.pop() ?? ''
         for (const line of lines) {
@@ -3984,8 +3990,17 @@ app.whenReady().then(async () => {
           }
         }
       })
-      proc.stderr?.on('data', (d: Buffer) => { stderrBuf += d.toString() })
-      await new Promise<void>((resolve) => { proc.on('close', () => resolve()) })
+      proc.stderr?.on('data', (d: Buffer) => {
+        stderrBuf += d.toString('utf-8')
+      })
+      const exitCode = await new Promise<number>((resolve) => {
+        proc.on('close', (code) => resolve(code ?? 0))
+      })
+      if (exitCode !== 0) {
+        const errMsg = stderrBuf.trim() || `Exit code ${exitCode}`
+        sendProgress({ type: 'error', message: `Quá trình kết thúc với lỗi (code ${exitCode}): ${errMsg}` })
+        return { ok: false, error: errMsg }
+      }
       return { ok: true }
     } catch (err) {
       sendProgress({ type: 'error', message: String(err) })
@@ -3998,6 +4013,11 @@ app.whenReady().then(async () => {
     try {
       const rawTarget = String(payload?.path || '').trim()
       if (!rawTarget) return { ok: false, error: 'Missing path' }
+
+      if (rawTarget.startsWith('http://') || rawTarget.startsWith('https://')) {
+        await shell.openExternal(rawTarget)
+        return { ok: true }
+      }
 
       let target = rawTarget
       if (!isAbsolute(target)) {

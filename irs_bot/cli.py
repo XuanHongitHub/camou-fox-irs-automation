@@ -866,6 +866,14 @@ def cmd_manual(args: argparse.Namespace) -> int:
 
 
 def cmd_fix_output_zips(args: argparse.Namespace) -> int:
+    try:
+        if hasattr(sys.stdout, 'reconfigure'):
+            sys.stdout.reconfigure(encoding='utf-8', errors='replace')
+        if hasattr(sys.stderr, 'reconfigure'):
+            sys.stderr.reconfigure(encoding='utf-8', errors='replace')
+    except Exception:
+        pass
+
     from .output_zip_fixer import scan_and_fix_outputs
     cfg = load_config(args.config)
     csv_path = Path(cfg.output.output_csv).resolve()
@@ -874,7 +882,17 @@ def cmd_fix_output_zips(args: argparse.Namespace) -> int:
     keys = [k.strip() for k in args.keys.split(",") if k.strip()] if getattr(args, "keys", "") else None
 
     def progress_cb(data: Dict[str, Any]) -> None:
-        print(json.dumps(data, ensure_ascii=False), flush=True)
+        try:
+            line = json.dumps(data, ensure_ascii=False)
+            sys.stdout.write(line + "\n")
+            sys.stdout.flush()
+        except Exception:
+            try:
+                line = json.dumps(data, ensure_ascii=True)
+                sys.stdout.write(line + "\n")
+                sys.stdout.flush()
+            except Exception:
+                pass
 
     result = scan_and_fix_outputs(
         storage_root=storage_root,
