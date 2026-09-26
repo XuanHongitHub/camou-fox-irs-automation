@@ -1,7 +1,8 @@
 """
 Output ZIP Code Fixer & Synchronizer
 Scans outputs/results.csv, queue.db, and corresponding PDF notices to detect and
-surgically fix incorrect/PO Box ZIP codes in-place, preserving IRS PDF417 barcodes 100%.
+surgically fix incorrect/PO Box ZIP codes in-place using US Census Bureau Geocoder
+and USPS postal rules, preserving IRS PDF417 barcodes 100%.
 """
 
 from __future__ import annotations
@@ -9,8 +10,10 @@ from __future__ import annotations
 import csv
 import json
 import logging
+import os
 import re
 import sqlite3
+import sys
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Set, Tuple
@@ -22,6 +25,8 @@ except ImportError:
         import fitz as pymupdf
     except ImportError:
         pymupdf = None
+
+import requests
 
 from .runner import (
     DISALLOWED_STREET_ZIPS,
@@ -39,14 +44,25 @@ from .storage import RESULT_HEADERS, _sync_styled_xlsx
 logger = logging.getLogger("irs_bot.zip_fixer")
 
 
-def fix_pdf_zip_in_file(pdf_path: Path, old_zip: str, new_zip: str) -> Optional[bytes]:
+def extract_file_id_from_url(url: str) -> str:
+    """Extracts the Google Drive file ID from a view or download URL."""
+    if not url:
+        return ""
+    m1 = re.search(r"/file/d/([a-zA-Z0-9_-]+)", url)
+    if m1:
+        return m1.group(1)
+    m2 = re.search(r"[?&]id=([a-zA-Z0-9_-]+)", url)
+    if m2:
+        return m2.group(1)
+    return ""
+
+
+def fix_pdf_zip_stream(pdf_bytes: bytes, old_zip: str, new_zip: str) -> Optional[bytes]:
     """
-    Surgically replaces old_zip with new_zip in the IRS CP 575 notice PDF address block (y: 140..220).
-    Keeps the PDF417 barcode at top right (y < 70) 100% untouched.
-    Returns bytes of the modified PDF, or None if unchanged/failed.
+    Surgically replaces old_zip with new_zip in the IRS notice PDF in-memory bytes.
+    Preserves PDF417 barcode (y < 70) 100%.
     """
-    if pymupdf is None:
-        logger.warning("pymupdf not installed; skipping PDF edit for %s", pdf_path)
+    if pymupdf is None or not pdf_bytes:
         return None
 
     raw_old = re.sub(r"\D", "", str(old_zip or "")).strip()
@@ -55,44 +71,34 @@ def fix_pdf_zip_in_file(pdf_path: Path, old_zip: str, new_zip: str) -> Optional[
     if not raw_old or not raw_new or raw_old == raw_new:
         return None
 
-    if not pdf_path.exists() or pdf_path.stat().st_size == 0:
-        return None
-
     try:
-        pdf_bytes = pdf_path.read_bytes()
         doc = pymupdf.open(stream=pdf_bytes, filetype="pdf")
         if len(doc) == 0:
             return None
         page = doc[0]
 
-        # Locate address spans (y: 140..220)
-        # Method 1 (Best & 100% Native): Direct in-place content stream replacement.
-        # Preserves 100% natural reading order, identical byte layout, and prevents text selection jump.
+        # Method 1 (100% Native Stream Patch): Replaces old ZIP directly in page content stream
         stream_changed = False
         for xref in page.get_contents():
             stream_bytes = doc.xref_stream(xref)
-            text = stream_bytes.decode('latin1', errors='ignore')
+            text = stream_bytes.decode("latin1", errors="ignore")
             if raw_old in text:
-                # Target '(CITY, ST OLD_ZIP) Tj' pattern in IRS notice stream
-                pattern = re.compile(r'(\([^\)]*?)' + re.escape(raw_old) + r'([^\)]*\)\s*Tj)')
-                new_text = pattern.sub(r'\g<1>' + raw_new + r'\g<2>', text)
+                pattern = re.compile(r"(\([^\)]*?)" + re.escape(raw_old) + r"([^\)]*\)\s*Tj)")
+                new_text = pattern.sub(r"\g<1>" + raw_new + r"\g<2>", text)
                 if new_text != text:
-                    doc.update_stream(xref, new_text.encode('latin1'))
+                    doc.update_stream(xref, new_text.encode("latin1"))
                     stream_changed = True
             else:
-                # Regex fallback for (CITY, ST 12345) Tj
-                m = re.search(r'(\([A-Za-z\s.-]+,\s*[A-Za-z]{2}\s+)\d{5}(\)\s*Tj)', text)
+                m = re.search(r"(\([A-Za-z\s.-]+,\s*[A-Za-z]{2}\s+)\d{5}(\)\s*Tj)", text)
                 if m:
-                    new_text = text[:m.start()] + m.group(1) + raw_new + m.group(2) + text[m.end():]
-                    doc.update_stream(xref, new_text.encode('latin1'))
+                    new_text = text[: m.start()] + m.group(1) + raw_new + m.group(2) + text[m.end() :]
+                    doc.update_stream(xref, new_text.encode("latin1"))
                     stream_changed = True
 
         if stream_changed:
-            res_bytes = doc.tobytes()
-            pdf_path.write_bytes(res_bytes)
-            return res_bytes
+            return doc.tobytes()
 
-        # Method 2: Fallback visual span replacement
+        # Method 2: Visual span replacement (redact + insert)
         dict_data = page.get_text("dict")
         spans = [
             s
@@ -121,12 +127,10 @@ def fix_pdf_zip_in_file(pdf_path: Path, old_zip: str, new_zip: str) -> Optional[
         baseline_y = target_span["origin"][1] if target_span else (rect.y1 - 2.5)
         font_size = target_span["size"] if target_span else 9.0
 
-        # Safe redact: +2.2pt to avoid touching line above
         safe_rect = pymupdf.Rect(rect.x0, rect.y0 + 2.2, rect.x1, rect.y1)
         page.add_redact_annot(safe_rect, fill=(1, 1, 1))
         page.apply_redactions()
 
-        # Insert new ZIP in native Helvetica 9pt
         page.insert_text(
             pymupdf.Point(rect.x0, baseline_y),
             raw_new,
@@ -135,17 +139,35 @@ def fix_pdf_zip_in_file(pdf_path: Path, old_zip: str, new_zip: str) -> Optional[
             color=(0, 0, 0),
         )
 
-        res_bytes = doc.tobytes()
-        pdf_path.write_bytes(res_bytes)
+        return doc.tobytes()
+    except Exception as exc:
+        logger.error("Error patching PDF bytes: %s", exc)
+        return None
+
+
+def fix_pdf_zip_in_file(pdf_path: Path, old_zip: str, new_zip: str) -> Optional[bytes]:
+    """
+    Surgically replaces old_zip with new_zip in the IRS CP 575 notice PDF file on disk.
+    Keeps the PDF417 barcode at top right (y < 70) 100% untouched.
+    Returns bytes of the modified PDF, or None if unchanged/failed.
+    """
+    if pymupdf is None or not pdf_path.exists() or pdf_path.stat().st_size == 0:
+        return None
+
+    try:
+        pdf_bytes = pdf_path.read_bytes()
+        res_bytes = fix_pdf_zip_stream(pdf_bytes, old_zip, new_zip)
+        if res_bytes:
+            pdf_path.write_bytes(res_bytes)
         return res_bytes
     except Exception as exc:
         logger.error("Error fixing PDF %s: %s", pdf_path, exc)
         return None
 
 
-def parse_location_from_pdf(pdf_path: Path) -> Optional[Tuple[str, str, str]]:
+def parse_location_from_pdf(pdf_path: Path) -> Optional[Tuple[str, str, str, str]]:
     """
-    Extracts (city, state, zip) from the address block of the IRS notice PDF
+    Extracts (street, city, state, zip) from the address block of the IRS notice PDF
     by reconstructing visual text lines from text spans.
     """
     if pymupdf is None or not pdf_path.exists() or pdf_path.stat().st_size == 0:
@@ -172,32 +194,93 @@ def parse_location_from_pdf(pdf_path: Path) -> Optional[Tuple[str, str, str]]:
             bucket = int(round(s["bbox"][1] / 4.0)) * 4
             lines_by_y.setdefault(bucket, []).append(s)
 
-        for bucket in sorted(lines_by_y.keys()):
+        sorted_buckets = sorted(lines_by_y.keys())
+        for idx_b, bucket in enumerate(sorted_buckets):
             line_spans = sorted(lines_by_y[bucket], key=lambda s: s["bbox"][0])
             line_text = " ".join(s.get("text", "").strip() for s in line_spans if s.get("text", "").strip())
             line_text = re.sub(r"\s+", " ", line_text).strip()
 
             # Look for CITY, STATE ZIP or CITY ST ZIP
             m = re.search(r"([A-Za-z\s.-]+),\s*([A-Za-z]{2})\s+(\d{5})", line_text)
+            if not m:
+                m = re.search(r"([A-Za-z\s.-]{2,})\s+([A-Za-z]{2})\s+(\d{5})", line_text)
             if m:
                 city = m.group(1).strip()
                 state = m.group(2).strip().upper()
                 zip_code = m.group(3).strip()
-                return city, state, zip_code
-            m2 = re.search(r"([A-Za-z\s.-]{2,})\s+([A-Za-z]{2})\s+(\d{5})", line_text)
-            if m2:
-                city = m2.group(1).strip()
-                state = m2.group(2).strip().upper()
-                zip_code = m2.group(3).strip()
-                return city, state, zip_code
+
+                # Find street address line (line right before city/state/zip)
+                street = ""
+                for prev_idx in range(idx_b - 1, -1, -1):
+                    p_spans = sorted(lines_by_y[sorted_buckets[prev_idx]], key=lambda s: s["bbox"][0])
+                    cand = " ".join(s.get("text", "").strip() for s in p_spans if s.get("text", "").strip())
+                    cand = re.sub(r"\s+", " ", cand).strip()
+                    if cand:
+                        street = cand
+                        break
+
+                return street, city, state, zip_code
     except Exception as exc:
         logger.debug("Could not parse location from PDF %s: %s", pdf_path, exc)
     return None
 
 
+def batch_census_geocode(
+    items: List[Dict[str, str]],
+    timeout: int = 30,
+) -> Dict[str, str]:
+    """
+    Sends batches of addresses to US Census Bureau Geocoding API:
+    https://geocoding.geo.census.gov/geocoder/locations/addressbatch
+    Each item: {'id': str, 'street': str, 'city': str, 'state': str, 'zip': str}
+    Returns mapping {id: 5-digit USPS delivery ZIP code} for matches.
+    """
+    if not items:
+        return {}
+
+    lines = []
+    for it in items:
+        rid = it["id"]
+        # Clean street: replace commas with space for CSV safety
+        street = it.get("street", "").replace(",", " ").strip()
+        city = it.get("city", "").replace(",", " ").strip()
+        state = it.get("state", "").replace(",", " ").strip()
+        z = it.get("zip", "").replace(",", " ").strip()
+        lines.append(f"{rid},{street},{city},{state},{z}")
+
+    csv_data = "\n".join(lines) + "\n"
+    files = {"addressFile": ("batch.csv", csv_data.encode("utf-8"), "text/csv")}
+    data = {"benchmark": "Public_AR_Current"}
+
+    results: Dict[str, str] = {}
+    try:
+        resp = requests.post(
+            "https://geocoding.geo.census.gov/geocoder/locations/addressbatch",
+            files=files,
+            data=data,
+            timeout=timeout,
+        )
+        if resp.status_code == 200:
+            for line in resp.text.splitlines():
+                line = line.strip()
+                if not line:
+                    continue
+                parts = [p.strip('"') for p in line.split('","')]
+                if len(parts) >= 5 and parts[2] == "Match":
+                    rec_id = parts[0].strip('"')
+                    matched_addr = parts[4]
+                    m = re.search(r',\s*([A-Z]{2}),\s*(\d{5})$', matched_addr)
+                    if m:
+                        results[rec_id] = m.group(2)
+    except Exception as exc:
+        logger.warning("Census batch geocoding error: %s", exc)
+
+    return results
+
+
 def load_queue_db_map(queue_db_path: Path) -> Dict[str, Dict[str, str]]:
     """
-    Reads queue.db to extract original input row data (city, state, zip) keyed by
+    Reads queue.db to extract original input row data (street, city, state, zip) keyed by
     both 'batch_id:record_id' and 'record_id'.
     """
     out: Dict[str, Dict[str, str]] = {}
@@ -214,11 +297,13 @@ def load_queue_db_map(queue_db_path: Path) -> Dict[str, Dict[str, str]]:
                 rec = p.get("record") or {}
                 batch_id = p.get("batch_id") or ""
                 rec_id = str(rec.get("record_id") or "").strip()
+                street = str(rec.get("ADDRESS") or rec.get("address") or "").strip()
                 city = str(rec.get("CITI") or rec.get("city") or "").strip()
                 state = str(rec.get("BANG") or rec.get("state") or "").strip()
                 zip_code = str(rec.get("ZIP") or rec.get("zip") or "").strip()
                 county = str(rec.get("county") or "").strip()
                 item = {
+                    "street": street,
                     "city": city,
                     "state": state,
                     "zip": zip_code,
@@ -250,83 +335,71 @@ def validate_and_fix_queue_jobs(
     """
     queue_db_path = storage_root / "state" / "queue.db"
     if not queue_db_path.exists():
-        return {"scanned": 0, "fixed": 0, "by_status": {}}
+        return {"scanned": 0, "fixed": 0}
+
+    scanned = 0
+    fixed = 0
+    updates: List[Tuple[str, str]] = []
 
     try:
-        from .runner import auto_fix_record_postal
-    except Exception:
-        return {"scanned": 0, "fixed": 0, "by_status": {}}
+        conn = sqlite3.connect(str(queue_db_path))
+        conn.row_factory = sqlite3.Row
+        cur = conn.cursor()
+        cur.execute("SELECT job_id, payload FROM jobs")
+        rows = cur.fetchall()
+        scanned = len(rows)
 
-    conn = sqlite3.connect(str(queue_db_path))
-    cur = conn.cursor()
-    cur.execute("SELECT job_id, status, payload FROM jobs")
-    rows = cur.fetchall()
+        for r in rows:
+            job_id = r["job_id"]
+            payload_str = r["payload"]
+            try:
+                payload = json.loads(payload_str)
+            except Exception:
+                continue
 
-    scanned = len(rows)
-    fixed = 0
-    by_status: Dict[str, int] = {}
-
-    if progress_cb and scanned > 0:
-        progress_cb({
-            "type": "progress",
-            "message": f"🔍 Đang Auto Validate {scanned} jobs trong hàng đợi (queue.db)...",
-        })
-
-    for job_id, status, payload_str in rows:
-        by_status.setdefault(status, 0)
-        try:
-            p = json.loads(payload_str)
-            rec = p.get("record")
+            rec = payload.get("record")
             if not isinstance(rec, dict):
                 continue
 
-            old_z = str(rec.get("ZIP") or rec.get("zip") or "").strip()
-            old_cnt = str(rec.get("county") or "").strip()
-
             changed = auto_fix_record_postal(rec)
-
-            new_z = str(rec.get("ZIP") or rec.get("zip") or "").strip()
-            new_cnt = str(rec.get("county") or "").strip()
-
-            if changed or (old_z != new_z) or (old_cnt != new_cnt):
+            if changed:
+                payload["record"] = rec
+                updates.append((json.dumps(payload, ensure_ascii=False), job_id))
                 fixed += 1
-                by_status[status] = by_status.get(status, 0) + 1
-                cur.execute(
-                    "UPDATE jobs SET payload = ?, updated_at = ? WHERE job_id = ?",
-                    (json.dumps(p, ensure_ascii=False), time.time(), job_id),
-                )
-        except Exception:
-            continue
 
-    if fixed > 0:
-        conn.commit()
-    conn.close()
+        if updates:
+            cur.executemany("UPDATE jobs SET payload = ? WHERE job_id = ?", updates)
+            conn.commit()
 
-    if progress_cb and scanned > 0:
+        conn.close()
+    except Exception as exc:
+        logger.error("Error validating queue jobs: %s", exc)
+
+    if progress_cb and fixed > 0:
         progress_cb({
-            "type": "progress",
-            "message": f"✅ Đã chuẩn hóa hàng đợi: {scanned} jobs (đã sửa {fixed} jobs: pending={by_status.get('pending', 0)}, failed={by_status.get('failed', 0)}, done={by_status.get('done', 0)}).",
+            "type": "log",
+            "message": f"⚡ Đã chuẩn hóa {fixed}/{scanned} jobs trong hàng đợi SQLite.",
         })
 
-    return {"scanned": scanned, "fixed": fixed, "by_status": by_status}
+    return {"scanned": scanned, "fixed": fixed}
 
 
 def scan_and_fix_outputs(
     storage_root: Path,
-    scope: str = "all",
-    target_keys: Optional[List[str]] = None,
-    fix_pdfs: bool = True,
+    scope: str = "all",  # "all", "today", "tonight"
+    target_keys: Optional[List[str]] = None,  # specific keys e.g. ["batch_id:record_id"]
     fix_csv: bool = True,
+    fix_pdfs: bool = True,
     sync_drive: bool = True,
     progress_cb: Optional[Callable[[Dict[str, Any]], None]] = None,
 ) -> Dict[str, Any]:
     """
-    Main background scanning and fixing function (Auto Validate).
-    Validates and corrects:
-    1. All jobs in queue.db (pending, running, failed, done).
-    2. Output results (results.csv & results.xlsx).
-    3. Notice PDFs in artifacts/.
-    4. Google Drive uploaded PDFs (via in-place update) if configured.
+    Scans outputs/results.csv, queue.db, and corresponding notice PDFs:
+    1. Validates & auto-fixes queue.db jobs across all statuses.
+    2. Validates addresses against US Census Bureau Geocoder for 100% verified USPS delivery ZIPs.
+    3. Replaces old ZIPs in notice PDFs via native stream patching + visual redact.
+    4. Downloads remote PDFs from Google Drive if missing on disk, patches them, and re-uploads in-place.
+    5. Updates outputs/results.csv, results.xlsx, and outputs/results.db in-place.
     """
     # 1. Validate & fix queue.db first
     queue_stats = validate_and_fix_queue_jobs(storage_root, progress_cb)
@@ -357,24 +430,43 @@ def scan_and_fix_outputs(
 
     # Load Google Drive auto-push state and session if available
     drive_map: Dict[str, str] = {}
-    drive_state_path = storage_root / "outputs" / "export_state" / "google-drive-auto-v1.json"
-    if drive_state_path.exists():
-        try:
-            d_state = json.loads(drive_state_path.read_text("utf-8"))
-            drive_map = d_state.get("pdf_url_by_batch_record", {})
-        except Exception as exc:
-            logger.warning("Could not read google-drive-auto-v1.json: %s", exc)
+    drive_state_candidates = [
+        storage_root / "outputs" / "export_state" / "google-drive-auto-v1.json",
+        storage_root / "export_state" / "google-drive-auto-v1.json",
+        storage_root / "google-drive-auto-v1.json",
+    ]
+    for d_path in drive_state_candidates:
+        if d_path.exists():
+            try:
+                d_state = json.loads(d_path.read_text("utf-8"))
+                mapping = d_state.get("pdf_url_by_batch_record", {})
+                if mapping:
+                    drive_map.update(mapping)
+            except Exception as exc:
+                logger.warning("Could not read drive state from %s: %s", d_path, exc)
+
+    # Also harvest drive URLs from CSV rows
+    for r in all_rows:
+        bid = str(r.get("batch_id") or "").strip()
+        rid = str(r.get("record_id") or "").strip()
+        d_url = str(r.get("drive_pdf_url") or r.get("PDF") or "").strip()
+        if d_url and extract_file_id_from_url(d_url):
+            if bid and rid:
+                drive_map[f"{bid}:{rid}"] = d_url
+                drive_map[f"{bid}::{rid}"] = d_url
+            if rid:
+                drive_map[rid] = d_url
 
     drive_session = None
     if sync_drive:
         drive_candidates = [
             (storage_root / "google-drive" / "oauth-web-client.json", storage_root / "google-drive" / "oauth-user.json"),
+            (Path(sys.executable).parent / "private" / "google-drive" / "oauth-web-client.json", Path(sys.executable).parent / "private" / "google-drive" / "oauth-user.json"),
             (Path(r"F:\Herd\fox-auto\private\google-drive\oauth-web-client.json"), Path(r"F:\Herd\fox-auto\private\google-drive\oauth-user.json")),
         ]
         for client_p, user_p in drive_candidates:
             if client_p.exists() and user_p.exists():
                 try:
-                    import sys
                     scripts_dir = str(Path(r"F:\Herd\fox-auto\scripts"))
                     if scripts_dir not in sys.path:
                         sys.path.insert(0, scripts_dir)
@@ -418,25 +510,22 @@ def scan_and_fix_outputs(
 
     matched_indices: List[int] = []
     for idx, r in enumerate(all_rows):
-        status = str(r.get("status") or "").strip().lower()
-        if status not in {"success", "done", "confirmed"}:
-            continue
         if row_matches_scope(r):
             matched_indices.append(idx)
 
     total_matched = len(matched_indices)
     if progress_cb:
         progress_cb({
-            "type": "start",
+            "type": "progress",
+            "percent": 0,
+            "current": 0,
             "total": total_matched,
-            "scanned": len(all_rows),
-            "message": f"Bắt đầu Auto Validate {total_matched} hồ sơ kết quả (phạm vi: '{scope}')...",
+            "fixed_records": 0,
+            "fixed_pdfs": 0,
+            "synced_drive": 0,
+            "fixed_queue_jobs": queue_stats.get("fixed", 0),
+            "message": f"Bắt đầu Auto Validate {total_matched} hồ sơ kết quả...",
         })
-
-    fixed_records = 0
-    fixed_pdfs = 0
-    synced_drive = 0
-    details: List[Dict[str, Any]] = []
 
     def resolve_path_candidate(p_str: str) -> Optional[Path]:
         if not p_str:
@@ -448,6 +537,60 @@ def scan_and_fix_outputs(
         if p_rel.exists():
             return p_rel
         return p_rel
+
+    # Pre-collect address items for US Census Bureau batch validation
+    census_candidates: List[Dict[str, str]] = []
+    for idx in matched_indices:
+        row = all_rows[idx]
+        bid = str(row.get("batch_id") or "").strip()
+        rid = str(row.get("record_id") or "").strip()
+        k1 = f"{bid}:{rid}"
+        k2 = f"{bid}::{rid}"
+        queue_info = queue_map.get(k1) or queue_map.get(k2) or queue_map.get(rid) or {}
+
+        street = queue_info.get("street") or str(row.get("step6_address") or "").strip()
+        city = queue_info.get("city") or str(row.get("step6_city") or "").strip()
+        state = queue_info.get("state") or str(row.get("step6_state") or "").strip()
+        z = queue_info.get("zip") or ""
+
+        if not z:
+            loc = str(row.get("step6_physical_location") or "")
+            m_zip = re.search(r"\b(\d{5})\b", loc)
+            if m_zip:
+                z = m_zip.group(1)
+
+        if street and city and state:
+            census_candidates.append({
+                "id": rid,
+                "street": street,
+                "city": city,
+                "state": state,
+                "zip": z,
+            })
+
+    census_zip_map: Dict[str, str] = {}
+    if census_candidates:
+        if progress_cb:
+            progress_cb({
+                "type": "log",
+                "message": f"🌐 Đang đối chiếu {len(census_candidates)} địa chỉ qua bưu điện US Census Bureau...",
+            })
+        chunk_size = 200
+        for c_start in range(0, len(census_candidates), chunk_size):
+            c_chunk = census_candidates[c_start : c_start + chunk_size]
+            c_res = batch_census_geocode(c_chunk, timeout=35)
+            census_zip_map.update(c_res)
+
+        if progress_cb and census_zip_map:
+            progress_cb({
+                "type": "log",
+                "message": f"✅ US Census Bureau đã khớp chính xác {len(census_zip_map)}/{len(census_candidates)} địa chỉ bưu điện.",
+            })
+
+    fixed_records = 0
+    fixed_pdfs = 0
+    synced_drive = 0
+    details: List[Dict[str, Any]] = []
 
     for count, idx in enumerate(matched_indices, 1):
         row = all_rows[idx]
@@ -462,7 +605,7 @@ def scan_and_fix_outputs(
         p_final = resolve_path_candidate(str(row.get("final_pdf_path") or "").strip())
         p_art = resolve_path_candidate(str(row.get("artifact_dir") or "").strip())
 
-        # Collect all candidate PDF files on disk
+        # Collect candidate PDF files on disk
         candidates: List[Path] = []
         for p_cand in (p_final, p_pdf):
             if p_cand and p_cand.exists() and p_cand.is_file() and p_cand not in candidates:
@@ -481,9 +624,10 @@ def scan_and_fix_outputs(
 
         # Resolve location: priority queue.db -> PDF parse -> CSV
         queue_info = queue_map.get(k1) or queue_map.get(k2) or queue_map.get(rid) or {}
-        city = queue_info.get("city") or ""
+        city = queue_info.get("city") or str(row.get("step6_city") or "").strip()
         state = queue_info.get("state") or str(row.get("step6_state") or "").strip()
         current_zip = queue_info.get("zip") or ""
+        street = queue_info.get("street") or str(row.get("step6_address") or "").strip()
 
         # Check candidate PDFs for actual text on disk (primary source for PDF notice)
         pdf_extracted = None
@@ -491,9 +635,10 @@ def scan_and_fix_outputs(
         for candidate in candidates:
             pdf_extracted = parse_location_from_pdf(candidate)
             if pdf_extracted:
-                city = city or pdf_extracted[0]
-                state = state or pdf_extracted[1]
-                pdf_actual_zip = pdf_extracted[2]
+                street = street or pdf_extracted[0]
+                city = city or pdf_extracted[1]
+                state = state or pdf_extracted[2]
+                pdf_actual_zip = pdf_extracted[3]
                 break
 
         # Fallback zip to evaluate
@@ -504,18 +649,35 @@ def scan_and_fix_outputs(
             if m_zip:
                 eval_zip = m_zip.group(1)
 
-        test_rec = {
-            "city": city,
-            "state": state,
-            "zip": eval_zip,
-            "county": str(row.get("step6_county") or ""),
-        }
-        was_fixed = auto_fix_record_postal(test_rec)
+        # Determine target zip: Census geocode match > Postal rule
+        status_reason = "Postal rule"
+        census_zip = census_zip_map.get(rid)
+        was_fixed = False
+
+        if census_zip and len(census_zip) == 5:
+            new_zip = census_zip
+            test_rec = {
+                "city": city,
+                "state": state,
+                "zip": new_zip,
+                "county": str(row.get("step6_county") or ""),
+            }
+            auto_fix_record_postal(test_rec)
+            was_fixed = (new_zip != eval_zip)
+            status_reason = "USPS/Census"
+        else:
+            test_rec = {
+                "city": city,
+                "state": state,
+                "zip": eval_zip,
+                "county": str(row.get("step6_county") or ""),
+            }
+            was_fixed = auto_fix_record_postal(test_rec)
+            new_zip = test_rec["zip"]
 
         pdf_modified = False
         drive_updated = False
-        old_zip = eval_zip
-        new_zip = test_rec["zip"]
+        old_zip = eval_zip or current_zip
         new_county = test_rec.get("county") or row.get("step6_county")
 
         # Determine if PDF needs fixing: either postal fixer changed it, or PDF's actual zip != new_zip
@@ -525,8 +687,23 @@ def scan_and_fix_outputs(
         ))
 
         patched_bytes: Optional[bytes] = None
+        drive_url = drive_map.get(k1) or drive_map.get(k2) or drive_map.get(rid) or str(row.get("drive_pdf_url") or "")
+        fid = extract_file_id_from_url(drive_url)
+
         if needs_pdf_fix:
             replace_from = pdf_actual_zip or old_zip
+
+            # If no local PDF file exists on disk, download remote PDF from Google Drive to local storage
+            if not candidates and drive_session and fid:
+                try:
+                    remote_bytes = drive_session.download_file(fid)
+                    target_p = p_final or p_pdf or (storage_root / "final_pdfs" / (bid or "default") / f"{rec_name} - {rid}.pdf")
+                    target_p.parent.mkdir(parents=True, exist_ok=True)
+                    target_p.write_bytes(remote_bytes)
+                    candidates.append(target_p)
+                except Exception as exc:
+                    logger.warning("Could not download remote PDF from Drive for %s (%s): %s", rid, fid, exc)
+
             for candidate in candidates:
                 res_bytes = fix_pdf_zip_in_file(candidate, replace_from, new_zip)
                 if res_bytes:
@@ -537,24 +714,13 @@ def scan_and_fix_outputs(
             fixed_pdfs += 1
 
         # Sync to Google Drive if applicable
-        if drive_session and patched_bytes:
-            drive_url = drive_map.get(k1) or drive_map.get(k2) or drive_map.get(rid) or ""
-            fid = None
-            m1 = re.search(r'/file/d/([a-zA-Z0-9_-]+)', drive_url)
-            if m1:
-                fid = m1.group(1)
-            else:
-                m2 = re.search(r'[?&]id=([a-zA-Z0-9_-]+)', drive_url)
-                if m2:
-                    fid = m2.group(1)
-
-            if fid:
-                try:
-                    drive_session.upload_file_in_place(fid, patched_bytes)
-                    drive_updated = True
-                    synced_drive += 1
-                except Exception as exc:
-                    logger.warning("Drive upload error for %s (file %s): %s", rid, fid, exc)
+        if drive_session and patched_bytes and fid:
+            try:
+                drive_session.upload_file_in_place(fid, patched_bytes)
+                drive_updated = True
+                synced_drive += 1
+            except Exception as exc:
+                logger.warning("Drive upload error for %s (file %s): %s", rid, fid, exc)
 
         record_changed = bool(
             (was_fixed and new_zip != current_zip) or
@@ -566,26 +732,13 @@ def scan_and_fix_outputs(
             fixed_records += 1
             if new_county:
                 row["step6_county"] = new_county
-
-            # Update physical location if it contains old_zip
-            loc = str(row.get("step6_physical_location") or "")
-            if old_zip and old_zip in loc:
-                row["step6_physical_location"] = loc.replace(old_zip, new_zip)
-
-            # Update step6_data_json
-            data_json_str = str(row.get("step6_data_json") or "").strip()
-            if data_json_str:
-                try:
-                    d = json.loads(data_json_str)
-                    if new_county:
-                        d["step6_county"] = new_county
-                    if "step6_physical_location" in d and old_zip in str(d["step6_physical_location"]):
-                        d["step6_physical_location"] = str(d["step6_physical_location"]).replace(old_zip, new_zip)
-                    row["step6_data_json"] = json.dumps(d, ensure_ascii=False)
-                except Exception:
-                    pass
-
-            detail_item = {
+            if new_zip and old_zip and row.get("step6_physical_location"):
+                row["step6_physical_location"] = re.sub(
+                    r"\b" + re.escape(old_zip) + r"\b",
+                    new_zip,
+                    row["step6_physical_location"],
+                )
+            details.append({
                 "record_id": rid,
                 "batch_id": bid,
                 "name": rec_name,
@@ -596,14 +749,39 @@ def scan_and_fix_outputs(
                 "county": new_county,
                 "pdf_modified": pdf_modified,
                 "drive_updated": drive_updated,
-            }
-            details.append(detail_item)
+                "source": status_reason,
+            })
+
+            # Also update SQLite results.db if present
+            results_db_path = storage_root / "outputs" / "results.db"
+            if results_db_path.exists():
+                try:
+                    conn_r = sqlite3.connect(str(results_db_path))
+                    cur_r = conn_r.cursor()
+                    cur_r.execute(
+                        """
+                        UPDATE results
+                        SET step6_county = ?, step6_physical_location = ?
+                        WHERE (batch_id = ? AND record_id = ?) OR record_id = ?
+                        """,
+                        (
+                            new_county,
+                            row.get("step6_physical_location", ""),
+                            bid,
+                            rid,
+                            rid,
+                        ),
+                    )
+                    conn_r.commit()
+                    conn_r.close()
+                except Exception as exc:
+                    logger.debug("Could not update results.db for %s: %s", rid, exc)
 
         # Emit per-item progress update so UI sees live activity
         if progress_cb:
             status_text = ""
             if record_changed or pdf_modified:
-                status_text = f"Sửa ZIP {old_zip or pdf_actual_zip} ➔ {new_zip}"
+                status_text = f"Sửa ZIP {old_zip or pdf_actual_zip} ➔ {new_zip} ({status_reason})"
                 if pdf_modified:
                     status_text += " [PDF ✓]"
                 if drive_updated:
@@ -613,6 +791,7 @@ def scan_and_fix_outputs(
 
             progress_cb({
                 "type": "progress",
+                "percent": int(round((count / total_matched) * 100)) if total_matched > 0 else 100,
                 "current": count,
                 "total": total_matched,
                 "fixed_records": fixed_records,

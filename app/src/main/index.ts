@@ -4011,7 +4011,7 @@ app.whenReady().then(async () => {
   ipcMain.handle('irs:fix-output-zips', handleAutoValidate)
   ipcMain.handle('irs:open-path', async (_event, payload) => {
     try {
-      const rawTarget = String(payload?.path || '').trim()
+      const rawTarget = (typeof payload === 'string' ? payload : String(payload?.path || '')).trim()
       if (!rawTarget) return { ok: false, error: 'Missing path' }
 
       if (rawTarget.startsWith('http://') || rawTarget.startsWith('https://')) {
