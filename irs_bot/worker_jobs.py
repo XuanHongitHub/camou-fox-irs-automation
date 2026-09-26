@@ -19,6 +19,7 @@ from .proxyxoay_client import ProxyXoayClient
 from .queueing import update_job_status
 from .queueing import update_job_status_and_queue
 from .runner import (
+    auto_fix_record_postal,
     pick_proxy_vm,
     resolve_proxy_endpoint,
     rotate_proxy_ip,
@@ -682,6 +683,7 @@ def process_record_job(payload: Dict[str, Any]) -> Dict[str, Any]:
     batch_id = str(core_payload["batch_id"])
     source_file = str(core_payload["source_file"])
     record = dict(core_payload["record"])
+    auto_fix_record_postal(record)
     record_id = str(record.get("record_id", "")).strip()
     if not record_id:
         raise ValueError("record_id is required")

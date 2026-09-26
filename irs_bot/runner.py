@@ -153,6 +153,114 @@ def _seed_month(record_id: str) -> str:
     return MONTH_VALUES[idx]
 
 
+_POSTAL_DB_CACHE: Optional[Dict[Tuple[str, str], Dict[str, Any]]] = None
+
+USPS_EXPANSIONS = {
+    "CORP CHRISTI": "CORPUS CHRISTI",
+    "N LAS VEGAS": "NORTH LAS VEGAS",
+    "FT WORTH": "FORT WORTH",
+    "ST LOUIS": "SAINT LOUIS",
+    "MT PROSPECT": "MOUNT PROSPECT",
+    "E PEORIA": "EAST PEORIA",
+    "W VALLEY CITY": "WEST VALLEY CITY",
+    "N MIAMI": "NORTH MIAMI",
+    "S SAN FRANCISCO": "SOUTH SAN FRANCISCO",
+    "W CHESTER": "WEST CHESTER",
+    "N CHARLESTON": "NORTH CHARLESTON",
+    "ST PETERSBURG": "SAINT PETERSBURG",
+    "VALLEY VLG": "VALLEY VILLAGE",
+    "GROSSE PT PK": "GROSSE POINTE PARK",
+    "POWDER SPGS": "POWDER SPRINGS",
+    "WEST PALM BCH": "WEST PALM BEACH",
+}
+
+
+def _load_postal_database() -> Dict[Tuple[str, str], Dict[str, Any]]:
+    global _POSTAL_DB_CACHE
+    if _POSTAL_DB_CACHE is not None:
+        return _POSTAL_DB_CACHE
+
+    db: Dict[Tuple[str, str], Dict[str, Any]] = {}
+    base_dir = Path(__file__).resolve().parent / "data"
+    possible_paths = [
+        base_dir / "us_city_zip_county.csv",
+    ]
+    if hasattr(sys, "_MEIPASS"):
+        possible_paths.insert(0, Path(sys._MEIPASS) / "irs_bot" / "data" / "us_city_zip_county.csv")
+
+    data_path = None
+    for p in possible_paths:
+        if p and p.exists():
+            data_path = p
+            break
+
+    if data_path and data_path.exists():
+        try:
+            with data_path.open("r", encoding="utf-8", newline="") as f:
+                reader = csv.DictReader(f)
+                for row in reader:
+                    c = str(row.get("city", "")).strip().upper()
+                    s = str(row.get("state", "")).strip().upper()
+                    pz = str(row.get("primary_zip", "")).strip().zfill(5)
+                    cnt = str(row.get("county", "")).strip()
+                    valid_zips = set(str(row.get("valid_zips", "")).split(";"))
+                    db[(c, s)] = {
+                        "primary_zip": pz,
+                        "county": cnt,
+                        "valid_zips": valid_zips,
+                    }
+        except Exception as exc:
+            logger.warning("Failed to load postal dataset from %s: %s", data_path, exc)
+
+    _POSTAL_DB_CACHE = db
+    return db
+
+
+def auto_fix_record_postal(record: Dict[str, Any]) -> bool:
+    """Auto-corrects mismatched, truncated, or fallback ZIP codes and County in-place."""
+    db = _load_postal_database()
+    c = _sanitize_city(_get(record, "CITI", "city")).upper()
+    s = _collapse_spaces(_get(record, "BANG", "state")).upper()
+    z = _digits(_get(record, "ZIP", "zip"))
+
+    if not c or not s:
+        return False
+
+    info = db.get((c, s))
+    if not info and c in USPS_EXPANSIONS:
+        info = db.get((USPS_EXPANSIONS[c], s))
+
+    fixed = False
+    if info:
+        current_valid = len(z) == 5 and z in info["valid_zips"]
+        if not current_valid:
+            new_zip = info["primary_zip"]
+            record["ZIP"] = new_zip
+            if "zip" in record:
+                record["zip"] = new_zip
+            record["county"] = info["county"]
+            logger.info("Auto-corrected ZIP & County for [%s, %s]: '%s' -> '%s', county -> '%s'", c, s, z, new_zip, info["county"])
+            fixed = True
+        else:
+            # ZIP is already valid for this city; ensure county is set if empty or generic fallback
+            current_county = str(record.get("county", "")).strip().upper()
+            if not current_county or current_county in {"UNKNOWN", "DALLAS", "LOS ANGELES", "MIAMI-DADE"}:
+                if info["county"] and current_county != info["county"].upper():
+                    record["county"] = info["county"]
+                    fixed = True
+    else:
+        # Fallback: if 4 digits (lost leading zero in Excel), pad with zero
+        if 0 < len(z) < 5:
+            padded = z.zfill(5)
+            record["ZIP"] = padded
+            if "zip" in record:
+                record["zip"] = padded
+            logger.info("Auto-padded 4-digit ZIP with leading zero for [%s, %s]: '%s' -> '%s'", c, s, z, padded)
+            fixed = True
+
+    return fixed
+
+
 def _load_zip_county_map() -> Dict[str, str]:
     global _ZIP_COUNTY_CACHE
     if _ZIP_COUNTY_CACHE is not None:
@@ -176,11 +284,20 @@ def _load_zip_county_map() -> Dict[str, str]:
 
 
 def _resolve_county(zip_code: str, city: str, state: str) -> str:
+    db = _load_postal_database()
+    c = city.strip().upper()
+    s = state.strip().upper()
+    info = db.get((c, s))
+    if not info and c in USPS_EXPANSIONS:
+        info = db.get((USPS_EXPANSIONS[c], s))
+    if info and info.get("county"):
+        return info["county"]
+
     z = _digits(zip_code)[:5]
     zip_map = _load_zip_county_map()
     if z in zip_map:
         return zip_map[z]
-    key = (city.strip().upper(), state.strip().upper())
+    key = (c, s)
     if key in CITY_STATE_COUNTY_MAP:
         return CITY_STATE_COUNTY_MAP[key]
     if city.strip():
@@ -614,6 +731,7 @@ def _looks_like_irs_validation_error(message: str) -> bool:
 
 
 def _validate_record_fast(record: Dict[str, Any]) -> str:
+    auto_fix_record_postal(record)
     full_name = _collapse_spaces(_get(record, "NAME", "name"))
     ssn = _digits(_get(record, "SSN", "ssn"))
     address = _sanitize_address(_get(record, "ADDRESS", "address"))

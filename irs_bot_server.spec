@@ -21,7 +21,7 @@ packages_to_collect = [
     'lxml',
 ]
 
-datas = []
+datas = [('irs_bot/data/us_city_zip_county.csv', 'irs_bot/data')]
 for pkg in packages_to_collect:
     try:
         datas += collect_data_files(pkg)
