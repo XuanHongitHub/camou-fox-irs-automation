@@ -174,6 +174,34 @@ USPS_EXPANSIONS = {
     "WEST PALM BCH": "WEST PALM BEACH",
 }
 
+USPS_REGEX_REPLACEMENTS = [
+    (r"\bVLG\b", "VILLAGE"),
+    (r"\bHLS\b", "HILLS"),
+    (r"\bHTS\b", "HEIGHTS"),
+    (r"\bBCH\b", "BEACH"),
+    (r"\bIS\b", "ISLAND"),
+    (r"\bPK\b", "PARK"),
+    (r"\bSPGS\b", "SPRINGS"),
+    (r"\bMT\b", "MOUNT"),
+    (r"\bN\b", "NORTH"),
+    (r"\bS\b", "SOUTH"),
+    (r"\bE\b", "EAST"),
+    (r"\bW\b", "WEST"),
+    (r"\bFT\b", "FORT"),
+    (r"\bST\b", "SAINT"),
+    (r"\bRNCHO\b", "RANCHO"),
+    (r"\bCNTRY\b", "COUNTRY"),
+    (r"\bRNH\b", "RANCH"),
+    (r"\bJAX\b", "JACKSONVILLE"),
+    (r"\bCORP\b", "CORPUS"),
+    (r"\bPROVIDNCE\b", "PROVIDENCE"),
+    (r"\bSN\b", "SAN"),
+    (r"\bBERNRDNO\b", "BERNARDINO"),
+    (r"\bCAPO\b", "CAPISTRANO"),
+    (r"\bSAC\b", "SACRAMENTO"),
+    (r"\bHL\b", "HILL"),
+]
+
 
 def _load_postal_database() -> Dict[Tuple[str, str], Dict[str, Any]]:
     global _POSTAL_DB_CACHE
@@ -230,10 +258,33 @@ def auto_fix_record_postal(record: Dict[str, Any]) -> bool:
     if not info and c in USPS_EXPANSIONS:
         info = db.get((USPS_EXPANSIONS[c], s))
 
+    if not info:
+        expanded = c
+        for pattern, repl in USPS_REGEX_REPLACEMENTS:
+            expanded = re.sub(pattern, repl, expanded)
+        expanded = re.sub(r"\s+", " ", expanded).strip()
+        info = db.get((expanded, s))
+
     fixed = False
     if info:
-        current_valid = len(z) == 5 and z in info["valid_zips"]
-        if not current_valid:
+        # Check if 4 digits (lost leading zero in Excel, e.g. 7039 -> 07039)
+        padded_z = z.zfill(5) if (0 < len(z) <= 5) else ""
+        current_valid = len(padded_z) == 5 and padded_z in info["valid_zips"]
+        
+        if current_valid:
+            if len(z) == 4:
+                record["ZIP"] = padded_z
+                if "zip" in record:
+                    record["zip"] = padded_z
+                logger.info("Auto-padded 4-digit ZIP with leading zero for [%s, %s]: '%s' -> '%s'", c, s, z, padded_z)
+                fixed = True
+            # ZIP is already valid for this city; ensure county is set if empty or generic fallback
+            current_county = str(record.get("county", "")).strip().upper()
+            if not current_county or current_county in {"UNKNOWN", "DALLAS", "LOS ANGELES", "MIAMI-DADE", "COOK"}:
+                if info["county"] and current_county != info["county"].upper():
+                    record["county"] = info["county"]
+                    fixed = True
+        else:
             new_zip = info["primary_zip"]
             record["ZIP"] = new_zip
             if "zip" in record:
@@ -241,13 +292,6 @@ def auto_fix_record_postal(record: Dict[str, Any]) -> bool:
             record["county"] = info["county"]
             logger.info("Auto-corrected ZIP & County for [%s, %s]: '%s' -> '%s', county -> '%s'", c, s, z, new_zip, info["county"])
             fixed = True
-        else:
-            # ZIP is already valid for this city; ensure county is set if empty or generic fallback
-            current_county = str(record.get("county", "")).strip().upper()
-            if not current_county or current_county in {"UNKNOWN", "DALLAS", "LOS ANGELES", "MIAMI-DADE"}:
-                if info["county"] and current_county != info["county"].upper():
-                    record["county"] = info["county"]
-                    fixed = True
     else:
         # Fallback: if 4 digits (lost leading zero in Excel), pad with zero
         if 0 < len(z) < 5:
