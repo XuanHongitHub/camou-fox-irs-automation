@@ -481,6 +481,12 @@ def _parser() -> argparse.ArgumentParser:
     fix_zip.add_argument("--skip-pdfs", action="store_true", help="Skip modifying PDF files")
     fix_zip.add_argument("--skip-csv", action="store_true", help="Skip modifying results.csv/xlsx")
 
+    auto_val = sp.add_parser("auto-validate", help="Auto Validate & correct postal data in Queue, Outputs & PDFs")
+    auto_val.add_argument("--scope", default="tonight", choices=["tonight", "today", "all", "selected", "filtered"], help="Scope of outputs to fix")
+    auto_val.add_argument("--keys", default="", help="Comma-separated batch_id:record_id keys for selected/filtered scope")
+    auto_val.add_argument("--skip-pdfs", action="store_true", help="Skip modifying PDF files")
+    auto_val.add_argument("--skip-csv", action="store_true", help="Skip modifying results.csv/xlsx")
+
     return p
 
 
@@ -905,7 +911,7 @@ def main() -> int:
             return cmd_manual(args)
         if args.command == "queue":
             return cmd_queue(args)
-        if args.command == "fix-output-zips":
+        if args.command in ("fix-output-zips", "auto-validate"):
             return cmd_fix_output_zips(args)
         parser.error("Unknown command")
         return 2

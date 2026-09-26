@@ -4,7 +4,7 @@ import {
     FileText, RefreshCw, Copy,
     ChevronDown, ChevronUp, X, Check, BarChart3, Clock, Calendar,
     Globe, Hash, ChevronRight, FolderOpen,
-    Cloud, EyeOff, Eye, RotateCcw, Wrench
+    Cloud, EyeOff, Eye, RotateCcw, ShieldCheck
 } from 'lucide-react'
 import { Button } from '../base/Button'
 import { useI18n } from '../../i18n/useI18n'
@@ -815,12 +815,12 @@ export function ResultsDashboard({
                     <Button
                         variant="secondary"
                         size="xs"
-                        className={`h-8 gap-1.5 rounded-xl px-3 border ${fixZipRunning ? 'border-orange-400/60 bg-orange-500/10 text-orange-300 animate-pulse' : 'border-orange-500/30 bg-orange-500/10 text-orange-300 hover:bg-orange-500/20'}`}
+                        className={`h-8 gap-1.5 rounded-xl px-3 border ${fixZipRunning ? 'border-indigo-400/60 bg-indigo-500/10 text-indigo-300 animate-pulse' : 'border-indigo-500/30 bg-indigo-500/10 text-indigo-300 hover:bg-indigo-500/20'}`}
                         onClick={() => setFixZipOpen(true)}
-                        title="Quét và sửa tự động mã ZIP sai trong output + PDF notice"
+                        title="Tự động rà soát & chuẩn hóa mã ZIP cho toàn bộ Kết quả, Hàng đợi (Queue) và File nhập"
                     >
-                        <Wrench className="w-3.5 h-3.5" />
-                        {fixZipRunning ? (locale === 'en' ? 'Fixing ZIPs...' : 'Đang sửa ZIP...') : (locale === 'en' ? 'Fix ZIPs' : 'Sửa ZIP')}
+                        <ShieldCheck className="w-3.5 h-3.5 text-indigo-400" />
+                        {fixZipRunning ? (locale === 'en' ? 'Validating...' : 'Đang Auto Validate...') : (locale === 'en' ? 'Auto Validate' : 'Auto Validate')}
                     </Button>
 
                     <Button
@@ -994,12 +994,12 @@ export function ResultsDashboard({
                     <div className="relative w-[520px] max-h-[88vh] flex flex-col bg-panel border border-border rounded-2xl shadow-2xl overflow-hidden" onClick={e => e.stopPropagation()}>
                         {/* Header */}
                         <div className="flex items-center gap-3 px-5 pt-5 pb-3 border-b border-border">
-                            <div className="w-8 h-8 rounded-xl bg-orange-500/15 border border-orange-500/30 flex items-center justify-center shrink-0">
-                                <Wrench className="w-4 h-4 text-orange-400" />
+                            <div className="w-8 h-8 rounded-xl bg-indigo-500/15 border border-indigo-500/30 flex items-center justify-center shrink-0">
+                                <ShieldCheck className="w-4 h-4 text-indigo-400" />
                             </div>
                             <div>
-                                <div className="text-sm font-semibold text-text">{locale === 'en' ? 'Auto-Fix Output ZIP Codes' : 'Tự động sửa ZIP code trong output'}</div>
-                                <div className="text-[11px] text-muted mt-0.5">{locale === 'en' ? 'Scans done records and surgically corrects ZIP in results + notice PDFs. Barcodes are preserved.' : 'Quét hồ sơ hoàn tất, sửa ZIP trong kết quả + PDF notice. Barcode PDF417 được bảo toàn 100%.'}</div>
+                                <div className="text-sm font-semibold text-text">{locale === 'en' ? 'Auto Validate Postal Data' : 'Auto Validate Dữ liệu & Mã ZIP'}</div>
+                                <div className="text-[11px] text-muted mt-0.5">{locale === 'en' ? 'Validates all queue jobs (all statuses), done results & notice PDFs. Enforces physical street delivery ZIPs.' : 'Rà soát chuẩn hóa: (1) Toàn bộ Hàng đợi Queue (all status), (2) Kết quả đã chạy & PDF notice, (3) Tự động kích hoạt cho các file nạp tương lai.'}</div>
                             </div>
                             {!fixZipRunning && (
                                 <button onClick={() => setFixZipOpen(false)} className="ml-auto p-1.5 text-muted hover:text-text hover:bg-surface rounded-lg transition-colors">
@@ -1010,7 +1010,7 @@ export function ResultsDashboard({
 
                         {/* Scope selector */}
                         <div className="px-5 py-4 border-b border-border">
-                            <div className="text-[11px] font-medium text-muted mb-2">{locale === 'en' ? 'Scope to scan:' : 'Phạm vi quét:'}</div>
+                            <div className="text-[11px] font-medium text-muted mb-2">{locale === 'en' ? 'Scope for results scan:' : 'Phạm vi quét kết quả:'}</div>
                             <div className="flex gap-2 flex-wrap">
                                 {([
                                     ['tonight', '🌙 Tối nay (≥ 18:00)', '🌙 Tonight (≥ 18:00)'],
@@ -1022,16 +1022,16 @@ export function ResultsDashboard({
                                         key={val}
                                         onClick={() => setFixZipScope(val)}
                                         disabled={val === 'selected' && selectedRows.length === 0}
-                                        className={`h-8 px-3 text-[11px] font-semibold rounded-xl border transition-all disabled:opacity-40 disabled:cursor-not-allowed ${fixZipScope === val ? 'bg-orange-500/20 border-orange-500/50 text-orange-300' : 'bg-surface border-border text-muted hover:text-text'}`}
+                                        className={`h-8 px-3 text-[11px] font-semibold rounded-xl border transition-all disabled:opacity-40 disabled:cursor-not-allowed ${fixZipScope === val ? 'bg-indigo-500/20 border-indigo-500/50 text-indigo-300' : 'bg-surface border-border text-muted hover:text-text'}`}
                                     >
                                         {locale === 'en' ? labelEn : labelVi}
                                     </button>
                                 ))}
                             </div>
-                            <div className="mt-3 text-[10px] text-muted/70 leading-relaxed">
-                                {locale === 'en'
-                                    ? '⚡ Looks up city+state from queue DB → resolves correct ZIP via postal database → patches PDF address block (y 140-220) in-place. The PDF417 barcode at top-right is untouched.'
-                                    : '⚡ Tra city+state từ queue DB → tra mã ZIP chuẩn qua database bưu chính → chỉnh vùng địa chỉ trong PDF (y 140-220) tại chỗ. Mã vạch PDF417 góc trên phải không bị đụng.'}
+                            <div className="mt-3 text-[10px] text-muted/70 leading-relaxed space-y-1">
+                                <div>{locale === 'en' ? '⚡ 1. Queue DB: Checks every job (pending, running, failed, done) and patches invalid/PO Box ZIPs in-place.' : '⚡ 1. Hàng đợi Queue: Tự quét mọi job (pending, running, failed, done) và chuẩn hóa mã ZIP trực tiếp trong database.'}</div>
+                                <div>{locale === 'en' ? '⚡ 2. Results & PDFs: Surgically corrects ZIP in notice PDFs (y 140-220) while preserving PDF417 barcode.' : '⚡ 2. Kết quả & PDF: Chỉnh sửa mã ZIP trong PDF notice (y 140-220), bảo toàn 100% mã vạch PDF417.'}</div>
+                                <div>{locale === 'en' ? '⚡ 3. Future Imports: Auto-validates all incoming CSV/XLSX imports automatically upon enqueue.' : '⚡ 3. File tương lai: Mọi file CSV/XLSX nạp vào hàng đợi về sau sẽ tự động được chuẩn hóa ngay lập tức.'}</div>
                             </div>
                         </div>
 
@@ -1039,10 +1039,10 @@ export function ResultsDashboard({
                         {(fixZipLog.length > 0 || fixZipRunning) && (
                             <div ref={fixZipLogRef} className="flex-1 min-h-0 overflow-y-auto px-4 py-3 font-mono text-[10px] text-text/80 bg-black/20 border-b border-border max-h-52">
                                 {fixZipLog.length === 0 && fixZipRunning && (
-                                    <div className="text-muted flex items-center gap-2"><RefreshCw className="w-3 h-3 animate-spin" /> Đang khởi động...</div>
+                                    <div className="text-muted flex items-center gap-2"><RefreshCw className="w-3 h-3 animate-spin" /> Đang khởi động Auto Validate...</div>
                                 )}
                                 {fixZipLog.map((line, i) => (
-                                    <div key={i} className={`leading-5 ${line.includes('Hoàn tất') || line.includes('Completed') || line.includes('done') ? 'text-success font-semibold' : line.includes('lỗi') || line.includes('error') || line.includes('Error') ? 'text-danger' : ''}`}>
+                                    <div key={i} className={`leading-5 ${line.includes('Hoàn tất') || line.includes('Completed') || line.includes('done') || line.includes('chuẩn hóa') ? 'text-success font-semibold' : line.includes('lỗi') || line.includes('error') || line.includes('Error') ? 'text-danger' : ''}`}>
                                         {line}
                                     </div>
                                 ))}
@@ -1054,9 +1054,7 @@ export function ResultsDashboard({
                             <div className="px-5 py-3 bg-success/5 border-b border-success/20 flex items-center gap-3">
                                 <CheckCircle2 className="w-4 h-4 text-success shrink-0" />
                                 <div className="text-[11px] text-success font-medium">
-                                    {fixZipResult.fixed_records > 0
-                                        ? `✅ Đã sửa ${fixZipResult.fixed_records} ZIP trong kết quả và ${fixZipResult.fixed_pdfs} file PDF`
-                                        : '✅ Không tìm thấy mã ZIP sai cần sửa trong phạm vi đã chọn'}
+                                    {fixZipResult.message || '✅ Hoàn tất Auto Validate thành công!'}
                                 </div>
                             </div>
                         )}
@@ -1076,18 +1074,18 @@ export function ResultsDashboard({
                                     <Button
                                         variant="primary"
                                         size="xs"
-                                        className="gap-1.5 bg-orange-500 hover:bg-orange-600 text-white border-transparent ml-auto"
+                                        className="gap-1.5 bg-indigo-600 hover:bg-indigo-700 text-white border-transparent ml-auto"
                                         onClick={runFixZip}
                                     >
-                                        <Wrench className="w-3.5 h-3.5" />
-                                        {locale === 'en' ? 'Start Auto-Fix' : 'Bắt đầu sửa ngầm'}
+                                        <ShieldCheck className="w-3.5 h-3.5" />
+                                        {locale === 'en' ? 'Start Auto Validate' : 'Bắt đầu Auto Validate'}
                                     </Button>
                                 </>
                             )}
                             {fixZipRunning && (
-                                <div className="flex items-center gap-2 text-[11px] text-orange-300 ml-auto">
+                                <div className="flex items-center gap-2 text-[11px] text-indigo-300 ml-auto">
                                     <RefreshCw className="w-3.5 h-3.5 animate-spin" />
-                                    {locale === 'en' ? 'Running in background...' : 'Đang chạy ngầm...'}
+                                    {locale === 'en' ? 'Running Auto Validate in background...' : 'Đang Auto Validate ngầm...'}
                                 </div>
                             )}
                             {!fixZipRunning && fixZipResult && (

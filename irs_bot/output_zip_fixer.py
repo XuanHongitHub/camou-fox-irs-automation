@@ -212,6 +212,77 @@ def load_queue_db_map(queue_db_path: Path) -> Dict[str, Dict[str, str]]:
     return out
 
 
+def validate_and_fix_queue_jobs(
+    storage_root: Path,
+    progress_cb: Optional[Callable[[Dict[str, Any]], None]] = None,
+) -> Dict[str, Any]:
+    """
+    Auto-validates and corrects postal ZIP and county for ALL jobs in queue.db
+    across all statuses (pending, running, failed, done, manual_required).
+    """
+    queue_db_path = storage_root / "state" / "queue.db"
+    if not queue_db_path.exists():
+        return {"scanned": 0, "fixed": 0, "by_status": {}}
+
+    try:
+        from .runner import auto_fix_record_postal
+    except Exception:
+        return {"scanned": 0, "fixed": 0, "by_status": {}}
+
+    conn = sqlite3.connect(str(queue_db_path))
+    cur = conn.cursor()
+    cur.execute("SELECT job_id, status, payload FROM jobs")
+    rows = cur.fetchall()
+
+    scanned = len(rows)
+    fixed = 0
+    by_status: Dict[str, int] = {}
+
+    if progress_cb and scanned > 0:
+        progress_cb({
+            "type": "progress",
+            "message": f"🔍 Đang Auto Validate {scanned} jobs trong hàng đợi (queue.db)...",
+        })
+
+    for job_id, status, payload_str in rows:
+        by_status.setdefault(status, 0)
+        try:
+            p = json.loads(payload_str)
+            rec = p.get("record")
+            if not isinstance(rec, dict):
+                continue
+
+            old_z = str(rec.get("ZIP") or rec.get("zip") or "").strip()
+            old_cnt = str(rec.get("county") or "").strip()
+
+            changed = auto_fix_record_postal(rec)
+
+            new_z = str(rec.get("ZIP") or rec.get("zip") or "").strip()
+            new_cnt = str(rec.get("county") or "").strip()
+
+            if changed or (old_z != new_z) or (old_cnt != new_cnt):
+                fixed += 1
+                by_status[status] = by_status.get(status, 0) + 1
+                cur.execute(
+                    "UPDATE jobs SET payload = ?, updated_at = ? WHERE job_id = ?",
+                    (json.dumps(p, ensure_ascii=False), time.time(), job_id),
+                )
+        except Exception:
+            continue
+
+    if fixed > 0:
+        conn.commit()
+    conn.close()
+
+    if progress_cb and scanned > 0:
+        progress_cb({
+            "type": "progress",
+            "message": f"✅ Đã chuẩn hóa hàng đợi: {scanned} jobs (đã sửa {fixed} jobs: pending={by_status.get('pending', 0)}, failed={by_status.get('failed', 0)}, done={by_status.get('done', 0)}).",
+        })
+
+    return {"scanned": scanned, "fixed": fixed, "by_status": by_status}
+
+
 def scan_and_fix_outputs(
     storage_root: Path,
     scope: str = "tonight",
@@ -221,8 +292,15 @@ def scan_and_fix_outputs(
     progress_cb: Optional[Callable[[Dict[str, Any]], None]] = None,
 ) -> Dict[str, Any]:
     """
-    Main background scanning and fixing function.
+    Main background scanning and fixing function (Auto Validate).
+    Validates and corrects:
+    1. All jobs in queue.db (pending, running, failed, done).
+    2. Output results (results.csv & results.xlsx).
+    3. Notice PDFs in artifacts/.
     """
+    # 1. Validate & fix queue.db first
+    queue_stats = validate_and_fix_queue_jobs(storage_root, progress_cb)
+
     csv_path = storage_root / "outputs" / "results.csv"
     if not csv_path.exists():
         return {
@@ -231,8 +309,10 @@ def scan_and_fix_outputs(
             "matched": 0,
             "fixed_records": 0,
             "fixed_pdfs": 0,
+            "fixed_queue_jobs": queue_stats.get("fixed", 0),
+            "scanned_queue_jobs": queue_stats.get("scanned", 0),
             "details": [],
-            "message": "Không tìm thấy file outputs/results.csv",
+            "message": f"Hoàn tất Auto Validate hàng đợi ({queue_stats.get('fixed', 0)}/{queue_stats.get('scanned', 0)} jobs đã sửa). Không tìm thấy file outputs/results.csv.",
         }
 
     # Load queue lookup map if available
@@ -422,14 +502,18 @@ def scan_and_fix_outputs(
         except Exception as exc:
             logger.warning("Could not sync XLSX: %s", exc)
 
+    q_fixed = queue_stats.get("fixed", 0)
+    q_scanned = queue_stats.get("scanned", 0)
     final_res = {
         "ok": True,
         "scanned": len(all_rows),
         "matched": total_matched,
         "fixed_records": fixed_records,
         "fixed_pdfs": fixed_pdfs,
+        "fixed_queue_jobs": q_fixed,
+        "scanned_queue_jobs": q_scanned,
         "details": details,
-        "message": f"Hoàn tất! Đã quét {total_matched} hồ sơ, sửa {fixed_records} mã ZIP và cập nhật {fixed_pdfs} file PDF.",
+        "message": f"Hoàn tất Auto Validate! Chuẩn hóa {q_fixed}/{q_scanned} jobs trong hàng đợi, sửa {fixed_records} kết quả và cập nhật {fixed_pdfs} file PDF.",
     }
 
     if progress_cb:

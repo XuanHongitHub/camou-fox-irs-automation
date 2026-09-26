@@ -73,7 +73,13 @@ def enqueue_records(
         if not record_id:
             record_id = _auto_record_id(record, idx)
             record["record_id"] = record_id
-            
+
+        # Auto-validate and correct postal ZIP and county on import
+        try:
+            from .runner import auto_fix_record_postal
+            auto_fix_record_postal(record)
+        except Exception:
+            pass
         payload = {
             "batch_id": batch_id,
             "source_file": source_file,

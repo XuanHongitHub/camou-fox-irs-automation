@@ -1,5 +1,5 @@
 import { app, shell, BrowserWindow, ipcMain, dialog } from 'electron'
-import { join, extname, basename, dirname } from 'path'
+import { join, extname, basename, dirname, isAbsolute, resolve } from 'path'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
 import { autoUpdater } from 'electron-updater'
 import icon from '../renderer/src/assets/app-logo.png?asset'
@@ -3939,18 +3939,19 @@ app.whenReady().then(async () => {
       return { ok: false, error: String(err) }
     }
   })
-  ipcMain.handle('irs:fix-output-zips', async (event, payload) => {
+  const handleAutoValidate = async (event: any, payload: any) => {
     const scope = String(payload?.scope || 'tonight').trim()
     const keys = Array.isArray(payload?.keys) ? payload.keys.join(',') : String(payload?.keys || '')
     const skipPdfs = Boolean(payload?.skipPdfs)
     const skipCsv = Boolean(payload?.skipCsv)
-    const args: string[] = ['fix-output-zips', '--scope', scope]
+    const args: string[] = ['auto-validate', '--scope', scope]
     if (keys) { args.push('--keys', keys) }
     if (skipPdfs) args.push('--skip-pdfs')
     if (skipCsv) args.push('--skip-csv')
     const senderWindow = BrowserWindow.fromWebContents(event.sender)
     const sendProgress = (data: unknown) => {
       try {
+        senderWindow?.webContents?.send('irs:auto-validate:progress', data)
         senderWindow?.webContents?.send('irs:fix-output-zips:progress', data)
       } catch { /* ignore */ }
     }
@@ -3988,11 +3989,28 @@ app.whenReady().then(async () => {
       sendProgress({ type: 'error', message: String(err) })
       return { ok: false, error: String(err) }
     }
-  })
+  }
+  ipcMain.handle('irs:auto-validate', handleAutoValidate)
+  ipcMain.handle('irs:fix-output-zips', handleAutoValidate)
   ipcMain.handle('irs:open-path', async (_event, payload) => {
     try {
-      const target = String(payload?.path || '').trim()
-      if (!target) return { ok: false, error: 'Missing path' }
+      const rawTarget = String(payload?.path || '').trim()
+      if (!rawTarget) return { ok: false, error: 'Missing path' }
+      let target = isAbsolute(rawTarget) ? rawTarget : resolve(storageRootDir(), rawTarget)
+      if (!existsSync(target)) {
+        // Fallback: try checking if it's relative to app root or check parent directory
+        const alt = resolve(foxAutoRootPath(), rawTarget)
+        if (existsSync(alt)) {
+          target = alt
+        } else {
+          // If file doesn't exist, try opening its directory
+          const parentDir = dirname(target)
+          if (existsSync(parentDir)) {
+            shell.openPath(parentDir)
+            return { ok: true, fallback: 'opened_parent' }
+          }
+        }
+      }
       const reveal = Boolean(payload?.reveal)
       if (reveal) {
         shell.showItemInFolder(target)
