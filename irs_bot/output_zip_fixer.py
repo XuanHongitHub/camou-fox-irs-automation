@@ -149,6 +149,7 @@ def fix_pdf_zip_in_file(pdf_path: Path, old_zip: str, new_zip: str) -> Optional[
     """
     Surgically replaces old_zip with new_zip in the IRS CP 575 notice PDF file on disk.
     Keeps the PDF417 barcode at top right (y < 70) 100% untouched.
+    Guarantees modification by re-reading the PDF from disk and checking text.
     Returns bytes of the modified PDF, or None if unchanged/failed.
     """
     if pymupdf is None or not pdf_path.exists() or pdf_path.stat().st_size == 0:
@@ -159,7 +160,16 @@ def fix_pdf_zip_in_file(pdf_path: Path, old_zip: str, new_zip: str) -> Optional[
         res_bytes = fix_pdf_zip_stream(pdf_bytes, old_zip, new_zip)
         if res_bytes:
             pdf_path.write_bytes(res_bytes)
-        return res_bytes
+            # Strict verification: re-read directly from disk to guarantee file on disk is modified
+            disk_doc = pymupdf.open(str(pdf_path))
+            disk_text = disk_doc[0].get_text()
+            disk_doc.close()
+            raw_new = re.sub(r"\D", "", str(new_zip or "")).strip().zfill(5)
+            if raw_new not in disk_text:
+                logger.error("Disk verification failed for %s: %s not in file text", pdf_path, raw_new)
+                return None
+            return res_bytes
+        return None
     except Exception as exc:
         logger.error("Error fixing PDF %s: %s", pdf_path, exc)
         return None
@@ -331,15 +341,17 @@ def validate_and_fix_queue_jobs(
 ) -> Dict[str, Any]:
     """
     Auto-validates and corrects postal ZIP and county for ALL jobs in queue.db
-    across all statuses (pending, running, failed, done, manual_required).
+    across all statuses (pending, running, failed, done, manual_required) using
+    both US Census Bureau Geocoder and USPS postal rules.
+    Verifies every SQLite update by re-reading the committed payload.
     """
     queue_db_path = storage_root / "state" / "queue.db"
     if not queue_db_path.exists():
-        return {"scanned": 0, "fixed": 0}
+        return {"scanned": 0, "fixed": 0, "verified": 0}
 
     scanned = 0
     fixed = 0
-    updates: List[Tuple[str, str]] = []
+    verified = 0
 
     try:
         conn = sqlite3.connect(str(queue_db_path))
@@ -348,6 +360,10 @@ def validate_and_fix_queue_jobs(
         cur.execute("SELECT job_id, payload FROM jobs")
         rows = cur.fetchall()
         scanned = len(rows)
+
+        # 1. First pass: offline postal check + collect candidates for Census geocode
+        job_records: Dict[str, Dict[str, Any]] = {}
+        census_queue_candidates: List[Dict[str, str]] = []
 
         for r in rows:
             job_id = r["job_id"]
@@ -361,15 +377,85 @@ def validate_and_fix_queue_jobs(
             if not isinstance(rec, dict):
                 continue
 
-            changed = auto_fix_record_postal(rec)
-            if changed:
-                payload["record"] = rec
+            # Run offline postal validator first (pad 4 digits, fix disallowed PO box zips, fallback county)
+            offline_changed = auto_fix_record_postal(rec)
+
+            street = str(rec.get("ADDRESS") or rec.get("address") or "").strip()
+            city = str(rec.get("CITI") or rec.get("city") or "").strip()
+            state = str(rec.get("BANG") or rec.get("state") or "").strip()
+            z = str(rec.get("ZIP") or rec.get("zip") or "").strip()
+
+            job_records[job_id] = {
+                "payload": payload,
+                "rec": rec,
+                "changed": offline_changed,
+                "old_zip": z,
+            }
+
+            if street and city and state:
+                census_queue_candidates.append({
+                    "id": job_id,
+                    "street": street,
+                    "city": city,
+                    "state": state,
+                    "zip": z,
+                })
+
+        # 2. Second pass: US Census Bureau batch geocoding for queue jobs
+        census_queue_matches: Dict[str, str] = {}
+        if census_queue_candidates:
+            if progress_cb:
+                progress_cb({
+                    "type": "log",
+                    "message": f"🌐 Đang đối chiếu {len(census_queue_candidates)} jobs hàng đợi qua US Census Bureau...",
+                })
+            chunk_size = 200
+            for c_start in range(0, len(census_queue_candidates), chunk_size):
+                c_chunk = census_queue_candidates[c_start : c_start + chunk_size]
+                c_res = batch_census_geocode(c_chunk, timeout=35)
+                census_queue_matches.update(c_res)
+
+        # 3. Third pass: apply Census matches
+        for job_id, c_zip in census_queue_matches.items():
+            if job_id not in job_records:
+                continue
+            entry = job_records[job_id]
+            rec = entry["rec"]
+            cur_zip = str(rec.get("ZIP") or rec.get("zip") or "").strip()
+            if c_zip and len(c_zip) == 5 and c_zip != cur_zip:
+                rec["ZIP"] = c_zip
+                if "zip" in rec:
+                    rec["zip"] = c_zip
+                auto_fix_record_postal(rec)  # updates county
+                entry["changed"] = True
+
+        # 4. Write updates back to queue.db
+        updates: List[Tuple[str, str]] = []
+        for job_id, entry in job_records.items():
+            if entry["changed"]:
+                payload = entry["payload"]
+                payload["record"] = entry["rec"]
                 updates.append((json.dumps(payload, ensure_ascii=False), job_id))
-                fixed += 1
 
         if updates:
             cur.executemany("UPDATE jobs SET payload = ? WHERE job_id = ?", updates)
             conn.commit()
+
+            # 5. Strict verification: Re-read updated jobs to guarantee SQLite saved them
+            verify_ids = [u[1] for u in updates]
+            cur.execute(f"SELECT job_id, payload FROM jobs WHERE job_id IN ({','.join('?' for _ in verify_ids)})", verify_ids)
+            for v_row in cur.fetchall():
+                v_jid = v_row["job_id"]
+                try:
+                    v_p = json.loads(v_row["payload"])
+                    expected_zip = job_records[v_jid]["rec"].get("ZIP")
+                    actual_zip = v_p.get("record", {}).get("ZIP")
+                    if expected_zip == actual_zip:
+                        verified += 1
+                except Exception:
+                    pass
+
+            fixed = len(updates)
 
         conn.close()
     except Exception as exc:
@@ -378,10 +464,10 @@ def validate_and_fix_queue_jobs(
     if progress_cb and fixed > 0:
         progress_cb({
             "type": "log",
-            "message": f"⚡ Đã chuẩn hóa {fixed}/{scanned} jobs trong hàng đợi SQLite.",
+            "message": f"⚡ Đã chuẩn hóa & xác thực {verified}/{fixed} jobs trong hàng đợi SQLite (tổng {scanned} jobs).",
         })
 
-    return {"scanned": scanned, "fixed": fixed}
+    return {"scanned": scanned, "fixed": fixed, "verified": verified}
 
 
 def scan_and_fix_outputs(

@@ -66,6 +66,11 @@ def import_file_to_queue(
             _safe_move(src, error / src.name)
             return batch_id, []
 
+        # Clean & validate postal data (ZIP, County) before enqueueing
+        from .runner import auto_fix_record_postal
+        for r_item in rows:
+            auto_fix_record_postal(r_item)
+
         batch = build_batch(rows, source_file=str(src), batch_id=batch_id)
         job_ids = enqueue_records(config, batch.batch_id, batch.source_file, batch.rows, queue_name)
         write_json(
