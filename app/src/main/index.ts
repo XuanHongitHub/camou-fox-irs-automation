@@ -7,7 +7,7 @@ import { spawn, ChildProcess } from 'child_process'
 import net from 'net'
 import tls from 'tls'
 import { createSign } from 'crypto'
-import { mkdirSync, existsSync, readFileSync, writeFileSync, unlinkSync } from 'fs'
+import { mkdirSync, existsSync, readFileSync, writeFileSync, unlinkSync, readdirSync } from 'fs'
 import { promises as fs } from 'fs'
 import * as XLSX from 'xlsx-js-style'
 
@@ -3940,14 +3940,16 @@ app.whenReady().then(async () => {
     }
   })
   const handleAutoValidate = async (event: any, payload: any) => {
-    const scope = String(payload?.scope || 'tonight').trim()
+    const scope = String(payload?.scope || 'all').trim()
     const keys = Array.isArray(payload?.keys) ? payload.keys.join(',') : String(payload?.keys || '')
     const skipPdfs = Boolean(payload?.skipPdfs)
     const skipCsv = Boolean(payload?.skipCsv)
+    const syncDrive = Boolean(payload?.syncDrive !== false)
     const args: string[] = ['auto-validate', '--scope', scope]
     if (keys) { args.push('--keys', keys) }
     if (skipPdfs) args.push('--skip-pdfs')
     if (skipCsv) args.push('--skip-csv')
+    if (syncDrive) args.push('--sync-drive')
     const senderWindow = BrowserWindow.fromWebContents(event.sender)
     const sendProgress = (data: unknown) => {
       try {
@@ -3996,28 +3998,64 @@ app.whenReady().then(async () => {
     try {
       const rawTarget = String(payload?.path || '').trim()
       if (!rawTarget) return { ok: false, error: 'Missing path' }
-      let target = isAbsolute(rawTarget) ? rawTarget : resolve(storageRootDir(), rawTarget)
-      if (!existsSync(target)) {
-        // Fallback: try checking if it's relative to app root or check parent directory
-        const alt = resolve(foxAutoRootPath(), rawTarget)
-        if (existsSync(alt)) {
-          target = alt
-        } else {
-          // If file doesn't exist, try opening its directory
-          const parentDir = dirname(target)
-          if (existsSync(parentDir)) {
-            shell.openPath(parentDir)
-            return { ok: true, fallback: 'opened_parent' }
+
+      let target = rawTarget
+      if (!isAbsolute(target)) {
+        const candidates = [
+          resolve(storageRootDir(), rawTarget),
+          resolve(foxAutoRootPath(), rawTarget),
+          resolve(userDataDir(), rawTarget),
+        ]
+        let found = ''
+        for (const c of candidates) {
+          if (existsSync(c)) { found = c; break }
+        }
+        target = found || resolve(storageRootDir(), rawTarget)
+      }
+
+      // If target exists directly
+      if (existsSync(target)) {
+        const reveal = Boolean(payload?.reveal)
+        if (reveal) {
+          shell.showItemInFolder(target)
+          return { ok: true }
+        }
+        const err = await shell.openPath(target)
+        return err ? { ok: false, error: err } : { ok: true }
+      }
+
+      // Target doesn't exist directly on disk: search for PDF or nearest directory
+      const isPdfRequest = rawTarget.toLowerCase().endsWith('.pdf')
+      const p1 = dirname(target)
+      const p2 = dirname(p1)
+
+      const dirCandidates = [p1, p2, dirname(p2)]
+      for (const d of dirCandidates) {
+        if (existsSync(d)) {
+          if (isPdfRequest) {
+            try {
+              const entries = readdirSync(d, { withFileTypes: true })
+              const pdfFile = entries.find((e) => e.isFile() && e.name.toLowerCase().endsWith('.pdf'))
+              if (pdfFile) {
+                const foundPdf = join(d, pdfFile.name)
+                if (payload?.reveal) {
+                  shell.showItemInFolder(foundPdf)
+                } else {
+                  await shell.openPath(foundPdf)
+                }
+                return { ok: true, fallback: foundPdf }
+              }
+            } catch {
+              // ignore readdir error
+            }
           }
+          // If no PDF found or not a PDF request, open existing ancestor folder
+          await shell.openPath(d)
+          return { ok: true, fallbackDir: d }
         }
       }
-      const reveal = Boolean(payload?.reveal)
-      if (reveal) {
-        shell.showItemInFolder(target)
-        return { ok: true }
-      }
-      const err = await shell.openPath(target)
-      return err ? { ok: false, error: err } : { ok: true }
+
+      return { ok: false, error: `File not found: ${rawTarget}` }
     } catch (err) {
       return { ok: false, error: String(err) }
     }

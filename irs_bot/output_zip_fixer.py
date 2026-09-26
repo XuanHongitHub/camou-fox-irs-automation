@@ -39,29 +39,30 @@ from .storage import RESULT_HEADERS, _sync_styled_xlsx
 logger = logging.getLogger("irs_bot.zip_fixer")
 
 
-def fix_pdf_zip_in_file(pdf_path: Path, old_zip: str, new_zip: str) -> bool:
+def fix_pdf_zip_in_file(pdf_path: Path, old_zip: str, new_zip: str) -> Optional[bytes]:
     """
     Surgically replaces old_zip with new_zip in the IRS CP 575 notice PDF address block (y: 140..220).
     Keeps the PDF417 barcode at top right (y < 70) 100% untouched.
+    Returns bytes of the modified PDF, or None if unchanged/failed.
     """
     if pymupdf is None:
         logger.warning("pymupdf not installed; skipping PDF edit for %s", pdf_path)
-        return False
+        return None
 
     raw_old = re.sub(r"\D", "", str(old_zip or "")).strip()
     raw_new = re.sub(r"\D", "", str(new_zip or "")).strip().zfill(5)
 
     if not raw_old or not raw_new or raw_old == raw_new:
-        return False
+        return None
 
     if not pdf_path.exists() or pdf_path.stat().st_size == 0:
-        return False
+        return None
 
     try:
         pdf_bytes = pdf_path.read_bytes()
         doc = pymupdf.open(stream=pdf_bytes, filetype="pdf")
         if len(doc) == 0:
-            return False
+            return None
         page = doc[0]
 
         # Locate address spans (y: 140..220)
@@ -78,10 +79,18 @@ def fix_pdf_zip_in_file(pdf_path: Path, old_zip: str, new_zip: str) -> bool:
                 if new_text != text:
                     doc.update_stream(xref, new_text.encode('latin1'))
                     stream_changed = True
+            else:
+                # Regex fallback for (CITY, ST 12345) Tj
+                m = re.search(r'(\([A-Za-z\s.-]+,\s*[A-Za-z]{2}\s+)\d{5}(\)\s*Tj)', text)
+                if m:
+                    new_text = text[:m.start()] + m.group(1) + raw_new + m.group(2) + text[m.end():]
+                    doc.update_stream(xref, new_text.encode('latin1'))
+                    stream_changed = True
 
         if stream_changed:
-            pdf_path.write_bytes(doc.tobytes())
-            return True
+            res_bytes = doc.tobytes()
+            pdf_path.write_bytes(res_bytes)
+            return res_bytes
 
         # Method 2: Fallback visual span replacement
         dict_data = page.get_text("dict")
@@ -101,13 +110,12 @@ def fix_pdf_zip_in_file(pdf_path: Path, old_zip: str, new_zip: str) -> bool:
         rects = page.search_for(raw_old)
         matching_rects = [r for r in rects if 140 < r.y0 < 220]
         if not matching_rects and len(raw_old) == 5 and raw_old.startswith("0"):
-            # Try 4-digit search if leading zero was missing
             short_old = raw_old[1:]
             rects = page.search_for(short_old)
             matching_rects = [r for r in rects if 140 < r.y0 < 220]
 
         if not matching_rects:
-            return False
+            return None
 
         rect = matching_rects[0]
         baseline_y = target_span["origin"][1] if target_span else (rect.y1 - 2.5)
@@ -127,11 +135,12 @@ def fix_pdf_zip_in_file(pdf_path: Path, old_zip: str, new_zip: str) -> bool:
             color=(0, 0, 0),
         )
 
-        pdf_path.write_bytes(doc.tobytes())
-        return True
+        res_bytes = doc.tobytes()
+        pdf_path.write_bytes(res_bytes)
+        return res_bytes
     except Exception as exc:
         logger.error("Error fixing PDF %s: %s", pdf_path, exc)
-        return False
+        return None
 
 
 def parse_location_from_pdf(pdf_path: Path) -> Optional[Tuple[str, str, str]]:
@@ -304,10 +313,11 @@ def validate_and_fix_queue_jobs(
 
 def scan_and_fix_outputs(
     storage_root: Path,
-    scope: str = "tonight",
+    scope: str = "all",
     target_keys: Optional[List[str]] = None,
     fix_pdfs: bool = True,
     fix_csv: bool = True,
+    sync_drive: bool = True,
     progress_cb: Optional[Callable[[Dict[str, Any]], None]] = None,
 ) -> Dict[str, Any]:
     """
@@ -316,6 +326,7 @@ def scan_and_fix_outputs(
     1. All jobs in queue.db (pending, running, failed, done).
     2. Output results (results.csv & results.xlsx).
     3. Notice PDFs in artifacts/.
+    4. Google Drive uploaded PDFs (via in-place update) if configured.
     """
     # 1. Validate & fix queue.db first
     queue_stats = validate_and_fix_queue_jobs(storage_root, progress_cb)
@@ -328,6 +339,7 @@ def scan_and_fix_outputs(
             "matched": 0,
             "fixed_records": 0,
             "fixed_pdfs": 0,
+            "synced_drive": 0,
             "fixed_queue_jobs": queue_stats.get("fixed", 0),
             "scanned_queue_jobs": queue_stats.get("scanned", 0),
             "details": [],
@@ -343,10 +355,39 @@ def scan_and_fix_outputs(
         reader = csv.DictReader(f)
         all_rows = list(reader)
 
-    now = datetime.now()
-    tonight_dt = now.replace(hour=18, minute=0, second=0, microsecond=0)
-    today_dt = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    # Load Google Drive auto-push state and session if available
+    drive_map: Dict[str, str] = {}
+    drive_state_path = storage_root / "outputs" / "export_state" / "google-drive-auto-v1.json"
+    if drive_state_path.exists():
+        try:
+            d_state = json.loads(drive_state_path.read_text("utf-8"))
+            drive_map = d_state.get("pdf_url_by_batch_record", {})
+        except Exception as exc:
+            logger.warning("Could not read google-drive-auto-v1.json: %s", exc)
 
+    drive_session = None
+    if sync_drive:
+        drive_candidates = [
+            (storage_root / "google-drive" / "oauth-web-client.json", storage_root / "google-drive" / "oauth-user.json"),
+            (Path(r"F:\Herd\fox-auto\private\google-drive\oauth-web-client.json"), Path(r"F:\Herd\fox-auto\private\google-drive\oauth-user.json")),
+        ]
+        for client_p, user_p in drive_candidates:
+            if client_p.exists() and user_p.exists():
+                try:
+                    import sys
+                    scripts_dir = str(Path(r"F:\Herd\fox-auto\scripts"))
+                    if scripts_dir not in sys.path:
+                        sys.path.insert(0, scripts_dir)
+                    from drive_pdf_zip_updater import GoogleDriveSession
+                    drive_session = GoogleDriveSession(str(client_p), str(user_p))
+                    if progress_cb:
+                        progress_cb({"type": "log", "message": "🔗 Đã kết nối Google Drive Session để đồng bộ file trực tiếp."})
+                    break
+                except Exception as exc:
+                    logger.warning("GoogleDriveSession initialization failed: %s", exc)
+
+    now = datetime.now()
+    today_dt = now.replace(hour=0, minute=0, second=0, microsecond=0)
     target_key_set = set(target_keys or [])
 
     def row_matches_scope(r: Dict[str, Any]) -> bool:
@@ -366,13 +407,9 @@ def scan_and_fix_outputs(
             return False
 
         try:
-            # ISO timestamp parsing
             c_dt = datetime.fromisoformat(completed_at_str.replace("Z", "+00:00")).astimezone()
-            # Convert to local timezone naive for comparison
             c_local = c_dt.replace(tzinfo=None)
-            if scope == "tonight":
-                return c_local >= tonight_dt
-            if scope == "today":
+            if scope in ("today", "tonight"):
                 return c_local >= today_dt
         except Exception:
             return False
@@ -393,26 +430,54 @@ def scan_and_fix_outputs(
             "type": "start",
             "total": total_matched,
             "scanned": len(all_rows),
-            "message": f"Bắt đầu quét {total_matched} hồ sơ theo bộ lọc '{scope}'...",
+            "message": f"Bắt đầu Auto Validate {total_matched} hồ sơ kết quả (phạm vi: '{scope}')...",
         })
 
     fixed_records = 0
     fixed_pdfs = 0
+    synced_drive = 0
     details: List[Dict[str, Any]] = []
+
+    def resolve_path_candidate(p_str: str) -> Optional[Path]:
+        if not p_str:
+            return None
+        p = Path(p_str)
+        if p.is_absolute() and p.exists():
+            return p
+        p_rel = storage_root / p
+        if p_rel.exists():
+            return p_rel
+        return p_rel
 
     for count, idx in enumerate(matched_indices, 1):
         row = all_rows[idx]
         bid = str(row.get("batch_id") or "").strip()
         rid = str(row.get("record_id") or "").strip()
+        rec_name = str(row.get("record_name") or row.get("step6_legal_name") or "")
         k1 = f"{bid}:{rid}"
         k2 = f"{bid}::{rid}"
 
         # Resolve paths
-        pdf_path_str = str(row.get("pdf_path") or "").strip()
-        final_pdf_path_str = str(row.get("final_pdf_path") or "").strip()
+        p_pdf = resolve_path_candidate(str(row.get("pdf_path") or "").strip())
+        p_final = resolve_path_candidate(str(row.get("final_pdf_path") or "").strip())
+        p_art = resolve_path_candidate(str(row.get("artifact_dir") or "").strip())
 
-        p_pdf = Path(pdf_path_str) if pdf_path_str else None
-        p_final = Path(final_pdf_path_str) if final_pdf_path_str else None
+        # Collect all candidate PDF files on disk
+        candidates: List[Path] = []
+        for p_cand in (p_final, p_pdf):
+            if p_cand and p_cand.exists() and p_cand.is_file() and p_cand not in candidates:
+                candidates.append(p_cand)
+
+        if p_art and p_art.exists() and p_art.is_dir():
+            for f in p_art.rglob("*.pdf"):
+                if f not in candidates:
+                    candidates.append(f)
+
+        for p_cand in (p_final, p_pdf):
+            if p_cand and p_cand.parent.exists():
+                for f in p_cand.parent.glob("*.pdf"):
+                    if f not in candidates:
+                        candidates.append(f)
 
         # Resolve location: priority queue.db -> PDF parse -> CSV
         queue_info = queue_map.get(k1) or queue_map.get(k2) or queue_map.get(rid) or {}
@@ -422,11 +487,10 @@ def scan_and_fix_outputs(
 
         pdf_extracted = None
         if not (city and state and current_zip):
-            for candidate in (p_final, p_pdf):
-                if candidate and candidate.exists():
-                    pdf_extracted = parse_location_from_pdf(candidate)
-                    if pdf_extracted:
-                        break
+            for candidate in candidates:
+                pdf_extracted = parse_location_from_pdf(candidate)
+                if pdf_extracted:
+                    break
             if pdf_extracted:
                 city = city or pdf_extracted[0]
                 state = state or pdf_extracted[1]
@@ -444,20 +508,43 @@ def scan_and_fix_outputs(
         }
         was_fixed = auto_fix_record_postal(test_rec)
 
-        if was_fixed and test_rec["zip"] != current_zip:
-            old_zip = current_zip
-            new_zip = test_rec["zip"]
-            new_county = test_rec.get("county") or row.get("step6_county")
+        pdf_modified = False
+        drive_updated = False
+        old_zip = current_zip
+        new_zip = test_rec["zip"]
+        new_county = test_rec.get("county") or row.get("step6_county")
 
-            pdf_modified = False
+        if was_fixed and test_rec["zip"] != current_zip:
+            patched_bytes: Optional[bytes] = None
             if fix_pdfs:
-                for candidate in (p_final, p_pdf):
-                    if candidate and candidate.exists():
-                        if fix_pdf_zip_in_file(candidate, old_zip, new_zip):
-                            pdf_modified = True
+                for candidate in candidates:
+                    res_bytes = fix_pdf_zip_in_file(candidate, old_zip, new_zip)
+                    if res_bytes:
+                        pdf_modified = True
+                        patched_bytes = res_bytes
 
             if pdf_modified:
                 fixed_pdfs += 1
+
+            # Sync to Google Drive if applicable
+            if drive_session and patched_bytes:
+                drive_url = drive_map.get(k1) or drive_map.get(k2) or drive_map.get(rid) or ""
+                fid = None
+                m1 = re.search(r'/file/d/([a-zA-Z0-9_-]+)', drive_url)
+                if m1:
+                    fid = m1.group(1)
+                else:
+                    m2 = re.search(r'[?&]id=([a-zA-Z0-9_-]+)', drive_url)
+                    if m2:
+                        fid = m2.group(1)
+
+                if fid:
+                    try:
+                        drive_session.upload_file_in_place(fid, patched_bytes)
+                        drive_updated = True
+                        synced_drive += 1
+                    except Exception as exc:
+                        logger.warning("Drive upload error for %s (file %s): %s", rid, fid, exc)
 
             # Update row in results
             fixed_records += 1
@@ -485,24 +572,41 @@ def scan_and_fix_outputs(
             detail_item = {
                 "record_id": rid,
                 "batch_id": bid,
-                "name": str(row.get("record_name") or row.get("step6_legal_name") or ""),
+                "name": rec_name,
                 "city": city,
                 "state": state,
                 "old_zip": old_zip,
                 "new_zip": new_zip,
                 "county": new_county,
                 "pdf_modified": pdf_modified,
+                "drive_updated": drive_updated,
             }
             details.append(detail_item)
 
-        if progress_cb and (count % 10 == 0 or count == total_matched):
+        # Emit per-item progress update so UI sees live activity
+        if progress_cb:
+            status_text = ""
+            if was_fixed and test_rec["zip"] != current_zip:
+                status_text = f"Sửa ZIP {old_zip} ➔ {new_zip}"
+                if pdf_modified:
+                    status_text += " [PDF ✓]"
+                if drive_updated:
+                    status_text += " [Drive ✓]"
+            else:
+                status_text = f"ZIP {current_zip} chuẩn bưu điện"
+
             progress_cb({
                 "type": "progress",
                 "current": count,
                 "total": total_matched,
                 "fixed_records": fixed_records,
                 "fixed_pdfs": fixed_pdfs,
-                "message": f"Đã quét {count}/{total_matched} hồ sơ (Sửa {fixed_records} zip, {fixed_pdfs} PDF)...",
+                "synced_drive": synced_drive,
+                "fixed_queue_jobs": queue_stats.get("fixed", 0),
+                "record_id": rid,
+                "name": rec_name,
+                "action": "fixed" if (was_fixed and test_rec["zip"] != current_zip) else "verified",
+                "message": f"[{count}/{total_matched}] {rid} ({rec_name[:20]}): {status_text}",
             })
 
     # Save results.csv & results.xlsx
@@ -529,10 +633,11 @@ def scan_and_fix_outputs(
         "matched": total_matched,
         "fixed_records": fixed_records,
         "fixed_pdfs": fixed_pdfs,
+        "synced_drive": synced_drive,
         "fixed_queue_jobs": q_fixed,
         "scanned_queue_jobs": q_scanned,
         "details": details,
-        "message": f"Hoàn tất Auto Validate! Chuẩn hóa {q_fixed}/{q_scanned} jobs trong hàng đợi, sửa {fixed_records} kết quả và cập nhật {fixed_pdfs} file PDF.",
+        "message": f"Hoàn tất Auto Validate! Chuẩn hóa {q_fixed}/{q_scanned} jobs hàng đợi, sửa {fixed_records} kết quả, patch {fixed_pdfs} PDF notice và đồng bộ {synced_drive} file Google Drive.",
     }
 
     if progress_cb:

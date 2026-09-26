@@ -4,7 +4,7 @@ import {
     FileText, RefreshCw, Copy,
     ChevronDown, ChevronUp, X, Check, BarChart3, Clock, Calendar,
     Globe, Hash, ChevronRight, FolderOpen,
-    Cloud, EyeOff, Eye, RotateCcw, ShieldCheck
+    Cloud, EyeOff, Eye, RotateCcw, ShieldCheck, SlidersHorizontal
 } from 'lucide-react'
 import { Button } from '../base/Button'
 import { useI18n } from '../../i18n/useI18n'
@@ -224,20 +224,32 @@ function ResultRowDetail({ row }: { row: ResultRow }) {
                             <span className="font-mono text-text/90 truncate">{String(item.val ?? '—')}</span>
                         </div>
                     ))}
-                    {(row.pdf_path || row.artifact_dir) && (
-                        <div className="col-span-2 mt-1 flex items-center gap-3 text-[10px]">
-                            {row.pdf_path && (
-                                <button className="text-success hover:underline font-mono" onClick={() => openPath(String(row.pdf_path))}>
-                                    Open PDF
-                                </button>
-                            )}
-                            {row.artifact_dir && (
-                                <button className="text-accent hover:underline font-mono" onClick={() => openPath(String(row.artifact_dir), true)}>
-                                    Open Artifact Folder
-                                </button>
-                            )}
-                        </div>
-                    )}
+                    {(() => {
+                        const effectivePdf = String(row.final_pdf_path || row.pdf_path || '').trim()
+                        const effectiveArtifact = String(row.artifact_dir || '').trim()
+                        return (effectivePdf || effectiveArtifact) && (
+                            <div className="col-span-2 mt-1 flex items-center gap-3 text-[10px]">
+                                {effectivePdf && (
+                                    <button
+                                        className="text-success hover:underline font-mono inline-flex items-center gap-1 font-semibold"
+                                        onClick={() => openPath(effectivePdf)}
+                                        title="Mở file thông báo PDF"
+                                    >
+                                        <FileText className="w-3 h-3" /> Open PDF
+                                    </button>
+                                )}
+                                {effectiveArtifact && (
+                                    <button
+                                        className="text-accent hover:underline font-mono inline-flex items-center gap-1"
+                                        onClick={() => openPath(effectiveArtifact, true)}
+                                        title="Mở thư mục artifact chứa file kết quả"
+                                    >
+                                        <FolderOpen className="w-3 h-3" /> Open Artifact Folder
+                                    </button>
+                                )}
+                            </div>
+                        )
+                    })()}
                     {Object.keys(step6Data).length > 0 && (
                         <div className="col-span-2 mt-2 rounded-lg border border-border/40 bg-surface/50 p-2.5">
                             <div className="text-[10px] text-muted mb-1">Step 6 Parsed Data</div>
@@ -284,109 +296,155 @@ export function ResultsDashboard({
     const { locale } = useI18n()
     void onQuickExportStyled
     const [search, setSearch] = useState('')
-    const [viewTab, setViewTab] = useState<'all' | 'unuploaded' | 'uploaded' | 'hidden'>('all')
+
+    // Display filter options in 1 dropdown checkbox
+    const [displayFilterOpen, setDisplayFilterOpen] = useState(false)
     const [hideDriveUploaded, setHideDriveUploaded] = useState(() => {
-        try {
-            return localStorage.getItem('fox_hide_drive_uploaded') === 'true'
-        } catch {
-            return false
-        }
+        try { return localStorage.getItem('fox_hide_drive_uploaded') === 'true' } catch { return false }
     })
+    const [onlyUnuploaded, setOnlyUnuploaded] = useState(() => {
+        try { return localStorage.getItem('fox_only_unuploaded') === 'true' } catch { return false }
+    })
+    const [onlyUploaded, setOnlyUploaded] = useState(() => {
+        try { return localStorage.getItem('fox_only_uploaded') === 'true' } catch { return false }
+    })
+    const [showHidden, setShowHidden] = useState(() => {
+        try { return localStorage.getItem('fox_show_hidden') === 'true' } catch { return false }
+    })
+
     const toggleHideDriveUploaded = (val: boolean) => {
         setHideDriveUploaded(val)
         try { localStorage.setItem('fox_hide_drive_uploaded', String(val)) } catch {}
     }
-    const [timePreset, setTimePreset] = useState<'tonight' | 'today' | 'all'>('tonight')
-    const tonightStartMs = useMemo(() => {
-        const d = new Date()
-        d.setHours(18, 0, 0, 0)
-        return d.getTime()
-    }, [])
-    const todayStartMs = useMemo(() => {
+    const toggleOnlyUnuploaded = (val: boolean) => {
+        setOnlyUnuploaded(val)
+        if (val) setOnlyUploaded(false)
+        try {
+            localStorage.setItem('fox_only_unuploaded', String(val))
+            if (val) localStorage.setItem('fox_only_uploaded', 'false')
+        } catch {}
+    }
+    const toggleOnlyUploaded = (val: boolean) => {
+        setOnlyUploaded(val)
+        if (val) setOnlyUnuploaded(false)
+        try {
+            localStorage.setItem('fox_only_uploaded', String(val))
+            if (val) localStorage.setItem('fox_only_unuploaded', 'false')
+        } catch {}
+    }
+    const toggleShowHidden = (val: boolean) => {
+        setShowHidden(val)
+        try { localStorage.setItem('fox_show_hidden', String(val)) } catch {}
+    }
+
+    // Persisted date filters
+    const [dateFrom, setDateFromState] = useState(() => {
+        try { return localStorage.getItem('fox_results_date_from') || '' } catch { return '' }
+    })
+    const [dateTo, setDateToState] = useState(() => {
+        try { return localStorage.getItem('fox_results_date_to') || '' } catch { return '' }
+    })
+
+    const setDateFrom = (val: string) => {
+        setDateFromState(val)
+        try { localStorage.setItem('fox_results_date_from', val) } catch {}
+    }
+    const setDateTo = (val: string) => {
+        setDateToState(val)
+        try { localStorage.setItem('fox_results_date_to', val) } catch {}
+    }
+
+    const setTodayFilter = () => {
         const d = new Date()
         d.setHours(0, 0, 0, 0)
-        return d.getTime()
-    }, [])
+        const pad = (n: number) => String(n).padStart(2, '0')
+        const iso = `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T00:00`
+        setDateFrom(iso)
+        setDateTo('')
+    }
+
+    const setAllTimeFilter = () => {
+        setDateFrom('')
+        setDateTo('')
+    }
+
     const [statusFilter, setStatusFilter] = useState<'all' | 'done' | 'failed'>('all')
     const [batchFilter, setBatchFilter] = useState<string>('all')
     const [errorFilter, setErrorFilter] = useState<string>('all')
-    const [dateFrom, setDateFrom] = useState<string>('')
-    const [dateTo, setDateTo] = useState<string>('')
     const [sortField, setSortField] = useState<SortField>('completed_at')
     const [sortDir, setSortDir] = useState<SortDir>('desc')
     const [expandedId, setExpandedId] = useState<string | null>(null)
     const [selected, setSelected] = useState<Set<string>>(new Set())
 
-    // ─── Fix Output ZIPs ──────────────────────────────────────────────────────
+    // ─── Auto Validate & Fix Postal Data ─────────────────────────────────────
     const [fixZipOpen, setFixZipOpen] = useState(false)
-    const [fixZipScope, setFixZipScope] = useState<'tonight' | 'today' | 'all' | 'selected'>('tonight')
+    const [fixZipScope, setFixZipScope] = useState<'all' | 'filtered' | 'selected'>('all')
+    const [fixZipSyncDrive, setFixZipSyncDrive] = useState(true)
     const [fixZipRunning, setFixZipRunning] = useState(false)
+    const [fixZipProgress, setFixZipProgress] = useState<{ current: number; total: number; percent: number } | null>(null)
+    const [fixZipStats, setFixZipStats] = useState({ fixed_records: 0, fixed_pdfs: 0, synced_drive: 0, fixed_queue_jobs: 0 })
     const [fixZipLog, setFixZipLog] = useState<string[]>([])
-    const [fixZipResult, setFixZipResult] = useState<{ fixed_records: number; fixed_pdfs: number; message: string } | null>(null)
+    const [fixZipResult, setFixZipResult] = useState<{ message: string } | null>(null)
     const fixZipLogRef = useRef<HTMLDivElement>(null)
 
     useEffect(() => {
         const ipc = window.electron?.ipcRenderer
         if (!ipc) return
         const handler = (_: unknown, data: any) => {
+            if (data?.type === 'progress') {
+                const cur = Number(data.current || 0)
+                const tot = Number(data.total || 0)
+                const pct = tot > 0 ? Math.min(100, Math.round((cur / tot) * 100)) : 0
+                setFixZipProgress({ current: cur, total: tot, percent: pct })
+                setFixZipStats({
+                    fixed_records: Number(data.fixed_records || 0),
+                    fixed_pdfs: Number(data.fixed_pdfs || 0),
+                    synced_drive: Number(data.synced_drive || 0),
+                    fixed_queue_jobs: Number(data.fixed_queue_jobs || 0),
+                })
+            }
             const msg = typeof data?.message === 'string' ? data.message : JSON.stringify(data)
-            setFixZipLog(prev => [...prev.slice(-80), msg])
+            setFixZipLog(prev => [...prev.slice(-200), msg])
             if (data?.type === 'done') {
                 setFixZipRunning(false)
-                setFixZipResult({ fixed_records: Number(data.fixed_records || 0), fixed_pdfs: Number(data.fixed_pdfs || 0), message: msg })
+                setFixZipProgress(null)
+                setFixZipResult({ message: data.message || '✅ Hoàn tất Auto Validate thành công!' })
                 onRefresh?.()
             }
         }
+        ipc.on('irs:auto-validate:progress', handler)
         ipc.on('irs:fix-output-zips:progress', handler)
-        return () => { ipc.removeListener?.('irs:fix-output-zips:progress', handler) }
+        return () => {
+            ipc.removeListener?.('irs:auto-validate:progress', handler)
+            ipc.removeListener?.('irs:fix-output-zips:progress', handler)
+        }
     }, [onRefresh])
 
     useEffect(() => {
         if (fixZipLogRef.current) fixZipLogRef.current.scrollTop = fixZipLogRef.current.scrollHeight
     }, [fixZipLog])
 
-    // ─── runFixZip is declared after selectedRows below ───────────────────────
-
     const batches = useMemo(() => ['all', ...new Set(results.map(r => r.batch_id ?? '').filter(Boolean))], [results])
 
     const viewCounts = useMemo(() => {
-        const checkTime = (r: ResultRow) => {
-            if (timePreset === 'all') return true
-            if (!r.completed_at) return false
-            const t = new Date(r.completed_at).getTime()
-            if (!Number.isFinite(t)) return false
-            if (timePreset === 'tonight') return t >= tonightStartMs
-            if (timePreset === 'today') return t >= todayStartMs
-            return true
-        }
-        const scopedResults = results.filter(checkTime)
-        const notHidden = scopedResults.filter(r => !r.is_hidden)
+        const notHidden = results.filter(r => !r.is_hidden)
         return {
             all: notHidden.length,
             unuploaded: notHidden.filter(r => !r.uploaded_to_drive).length,
             uploaded: notHidden.filter(r => r.uploaded_to_drive).length,
-            hidden: scopedResults.filter(r => r.is_hidden).length,
+            hidden: results.filter(r => r.is_hidden).length,
         }
-    }, [results, timePreset, tonightStartMs, todayStartMs])
+    }, [results])
 
     const filtered = useMemo(() => {
         const q = search.toLowerCase()
         return results.filter(r => {
-            if (timePreset === 'tonight') {
-                if (!r.completed_at) return false
-                const t = new Date(r.completed_at).getTime()
-                if (!Number.isFinite(t) || t < tonightStartMs) return false
-            } else if (timePreset === 'today') {
-                if (!r.completed_at) return false
-                const t = new Date(r.completed_at).getTime()
-                if (!Number.isFinite(t) || t < todayStartMs) return false
-            }
-            if (viewTab === 'hidden') {
+            if (showHidden) {
                 if (!r.is_hidden) return false
             } else {
                 if (r.is_hidden) return false
-                if (viewTab === 'unuploaded' && r.uploaded_to_drive) return false
-                if (viewTab === 'uploaded' && !r.uploaded_to_drive) return false
+                if (onlyUnuploaded && r.uploaded_to_drive) return false
+                if (onlyUploaded && !r.uploaded_to_drive) return false
                 if (hideDriveUploaded && r.uploaded_to_drive) return false
             }
             if (statusFilter !== 'all' && r.status !== statusFilter) return false
@@ -417,7 +475,7 @@ export function ResultsDashboard({
             const cmp = av < bv ? -1 : av > bv ? 1 : 0
             return sortDir === 'asc' ? cmp : -cmp
         })
-    }, [results, viewTab, hideDriveUploaded, search, statusFilter, batchFilter, errorFilter, dateFrom, dateTo, sortField, sortDir])
+    }, [results, showHidden, onlyUnuploaded, onlyUploaded, hideDriveUploaded, search, statusFilter, batchFilter, errorFilter, dateFrom, dateTo, sortField, sortDir])
 
     const stats = useMemo(() => ({
         total: filtered.length,
@@ -444,11 +502,19 @@ export function ResultsDashboard({
     }, [])
 
     const resetFilters = () => {
-        setSearch(''); setStatusFilter('all')
-        setBatchFilter('all'); setErrorFilter('all'); setDateFrom(''); setDateTo('')
+        setSearch('')
+        setStatusFilter('all')
+        setBatchFilter('all')
+        setErrorFilter('all')
+        setDateFrom('')
+        setDateTo('')
+        setOnlyUnuploaded(false)
+        setOnlyUploaded(false)
+        setShowHidden(false)
+        setHideDriveUploaded(false)
     }
 
-    const hasFilter = search || statusFilter !== 'all' || batchFilter !== 'all' || errorFilter !== 'all' || dateFrom || dateTo
+    const hasFilter = search || statusFilter !== 'all' || batchFilter !== 'all' || errorFilter !== 'all' || dateFrom || dateTo || onlyUnuploaded || onlyUploaded || showHidden || hideDriveUploaded
     const allSelected = filtered.length > 0 && filtered.every(r => selected.has(`${r.batch_id}:${r.record_id}`))
 
     const toggleSelectRow = (row: ResultRow, checked: boolean) => {
@@ -481,15 +547,32 @@ export function ResultsDashboard({
         setFixZipRunning(true)
         setFixZipLog([])
         setFixZipResult(null)
-        const scope = fixZipScope === 'selected' ? 'all' : fixZipScope
-        const keys = fixZipScope === 'selected' ? selectedRows.map(r => `${r.batch_id}:${r.record_id}`) : []
+        setFixZipProgress(null)
+        setFixZipStats({ fixed_records: 0, fixed_pdfs: 0, synced_drive: 0, fixed_queue_jobs: 0 })
+
+        let scope = 'all'
+        let keys: string[] = []
+        if (fixZipScope === 'selected') {
+            scope = 'all'
+            keys = selectedRows.map(r => `${r.batch_id}:${r.record_id}`)
+        } else if (fixZipScope === 'filtered') {
+            scope = 'all'
+            keys = filtered.map(r => `${r.batch_id}:${r.record_id}`)
+        } else {
+            scope = 'all'
+        }
+
         try {
-            await ipc.invoke('irs:fix-output-zips', { scope, keys })
+            await ipc.invoke('irs:auto-validate', {
+                scope,
+                keys,
+                syncDrive: fixZipSyncDrive,
+            })
         } catch (err) {
             setFixZipRunning(false)
-            onNotify?.(`Fix ZIP lỗi: ${String(err)}`, 'error')
+            onNotify?.(`Auto Validate lỗi: ${String(err)}`, 'error')
         }
-    }, [fixZipScope, selectedRows, onNotify])
+    }, [fixZipScope, fixZipSyncDrive, selectedRows, filtered, onNotify])
 
     const collectPdfs = useCallback(async (rows: ResultRow[], scope: 'selected' | 'batch', batchId?: string, nextOnly = false) => {
         if (!rows.length) {
@@ -542,7 +625,7 @@ export function ResultsDashboard({
                     <div className="flex items-center gap-2">
                         <span className="text-[10px] text-muted uppercase tracking-widest font-medium">{locale === 'en' ? 'Outcomes' : 'Kết quả'}</span>
                         <span className="px-1.5 py-0.5 rounded text-[10px] font-bold bg-indigo-500/20 text-indigo-300 border border-indigo-500/30">
-                            {timePreset === 'tonight' ? (locale === 'en' ? 'Tonight (≥ 18:00)' : 'Tối nay (≥ 18:00)') : timePreset === 'today' ? (locale === 'en' ? 'Today' : 'Hôm nay') : (locale === 'en' ? 'All Time' : 'Toàn thời gian')}
+                            {dateFrom || dateTo ? (locale === 'en' ? 'Custom Range' : 'Theo khoảng ngày') : (locale === 'en' ? 'All Time' : 'Toàn thời gian')}
                         </span>
                     </div>
                     <div className="flex items-center gap-4 mt-0.5">
@@ -594,10 +677,10 @@ export function ResultsDashboard({
                             onClick={() => onQuickExportSelected(filtered, 'report')}
                         >
                             <Download className="w-3.5 h-3.5" />
-                            {timePreset === 'tonight' ? (locale === 'en' ? 'Export Tonight (Excel)' : 'Xuất Excel tối nay') : (locale === 'en' ? 'Export Excel' : 'Xuất Excel')}
+                            {locale === 'en' ? 'Export Excel' : 'Xuất Excel'}
                         </Button>
                     )}
-                    <Button variant="ghost" size="xs" className="gap-1.5 text-muted hover:text-text" onClick={() => download(filtered, timePreset === 'tonight' ? 'tonight' : 'filtered')}>
+                    <Button variant="ghost" size="xs" className="gap-1.5 text-muted hover:text-text" onClick={() => download(filtered, (dateFrom || dateTo) ? 'custom' : 'all')}>
                         <Download className="w-3.5 h-3.5" />CSV
                     </Button>
                     {selectedRows.length > 0 && (
@@ -605,7 +688,7 @@ export function ResultsDashboard({
                             <Button variant="ghost" size="xs" className="gap-1.5 text-accent" onClick={() => download(selectedRows, 'selected')}>
                         <Download className="w-3.5 h-3.5" />{locale === 'en' ? 'Selected' : 'Đã chọn'} ({selectedRows.length})
                             </Button>
-                            {viewTab === 'hidden' ? (
+                            {showHidden ? (
                                 <>
                                     <Button
                                         variant="ghost"
@@ -666,111 +749,130 @@ export function ResultsDashboard({
                     />
                 </div>
                 <div className="w-px h-5 bg-border mx-1" />
-                <div className="flex items-center gap-1 bg-surface border border-border rounded-xl p-0.5 shrink-0">
-                    <button
-                        onClick={() => setViewTab('all')}
-                        className={`h-7 px-2.5 text-[10px] font-semibold rounded-lg transition-all ${viewTab === 'all' ? 'bg-accent text-white shadow-xs' : 'text-muted hover:text-text'}`}
-                    >
-                        {locale === 'en' ? 'All' : 'Tất cả'} ({viewCounts.all})
-                    </button>
-                    <button
-                        onClick={() => setViewTab('unuploaded')}
-                        className={`h-7 px-2.5 text-[10px] font-semibold rounded-lg transition-all flex items-center gap-1.5 ${viewTab === 'unuploaded' ? 'bg-amber-600 text-white shadow-xs' : 'text-muted hover:text-text'}`}
-                        title={locale === 'en' ? 'Show records not yet pushed to Drive' : 'Chỉ xem hồ sơ chưa đẩy lên Google Drive'}
-                    >
-                        <Cloud className="w-3 h-3" />
-                        {locale === 'en' ? 'Not on Drive' : 'Chưa lên Drive'} ({viewCounts.unuploaded})
-                    </button>
-                    <button
-                        onClick={() => setViewTab('uploaded')}
-                        className={`h-7 px-2.5 text-[10px] font-semibold rounded-lg transition-all flex items-center gap-1.5 ${viewTab === 'uploaded' ? 'bg-sky-600 text-white shadow-xs' : 'text-muted hover:text-text'}`}
-                        title={locale === 'en' ? 'Show records already pushed to Drive' : 'Xem các hồ sơ đã đẩy lên Google Drive'}
-                    >
-                        <CheckCircle2 className="w-3 h-3" />
-                        {locale === 'en' ? 'On Drive' : 'Đã lên Drive'} ({viewCounts.uploaded})
-                    </button>
-                    {viewCounts.hidden > 0 && (
-                        <button
-                            onClick={() => setViewTab('hidden')}
-                            className={`h-7 px-2.5 text-[10px] font-semibold rounded-lg transition-all flex items-center gap-1.5 ${viewTab === 'hidden' ? 'bg-purple-600 text-white shadow-xs' : 'text-purple-400 hover:text-purple-300'}`}
-                            title={locale === 'en' ? 'View hidden records (data is preserved safely in CSV/DB)' : 'Xem các dòng đã ẩn (dữ liệu gốc vẫn an toàn trong file)'}
-                        >
-                            <EyeOff className="w-3 h-3" />
-                            {locale === 'en' ? 'Hidden' : 'Đã ẩn'} ({viewCounts.hidden})
-                        </button>
-                    )}
-                </div>
-                {viewTab !== 'hidden' && (
-                    <button
-                        onClick={() => toggleHideDriveUploaded(!hideDriveUploaded)}
-                        className={`h-7 px-2.5 text-[10px] font-medium rounded-xl border transition-all flex items-center gap-1.5 ${hideDriveUploaded ? 'bg-sky-500/20 text-sky-300 border-sky-500/40 shadow-xs' : 'bg-surface border-border text-muted hover:text-text'}`}
-                        title={locale === 'en' ? 'Hide results already uploaded to Google Drive' : 'Lọc bỏ các kết quả đã được upload lên Google Drive để tránh nhiễu'}
-                    >
-                        <Cloud className="w-3 h-3" />
-                        {hideDriveUploaded ? (locale === 'en' ? 'Hiding Drive' : 'Đang ẩn đã lên Drive') : (locale === 'en' ? 'Hide Drive' : 'Ẩn đã lên Drive')}
-                    </button>
-                )}
-                <div className="w-px h-5 bg-border mx-1" />
-                <div className="flex items-center gap-1 bg-surface border border-border rounded-xl p-0.5 shrink-0">
-                    {(['all', 'done', 'failed'] as const).map(s => (
-                        <button key={s} onClick={() => setStatusFilter(s)}
-                            className={`h-7 px-3 text-[10px] font-semibold rounded-lg transition-all ${statusFilter === s ? (s === 'done' ? 'bg-success text-white' : s === 'failed' ? 'bg-danger text-white' : 'bg-accent text-white') : 'text-muted hover:text-text'}`}
-                        >
-                            {s === 'all' ? (locale === 'en' ? 'All' : 'Tất cả') : s === 'done' ? (locale === 'en' ? 'Completed' : 'Hoàn tất') : (locale === 'en' ? 'Failed' : 'Thất bại')}
-                        </button>
-                    ))}
-                </div>
-                <div className="w-px h-5 bg-border mx-1" />
-                <div className="flex items-center gap-1 bg-surface border border-border rounded-xl p-0.5 shrink-0">
-                    <button
-                        onClick={() => { setTimePreset('tonight'); setDateFrom(''); setDateTo('') }}
-                        className={`h-7 px-2.5 text-[10px] font-semibold rounded-lg transition-all ${timePreset === 'tonight' ? 'bg-indigo-600 text-white shadow-xs' : 'text-muted hover:text-text'}`}
-                        title="Chỉ hiển thị các lượt chạy tối nay (từ 18:00)"
-                    >
-                        🌙 {locale === 'en' ? 'Tonight' : 'Tối nay'}
-                    </button>
-                    <button
-                        onClick={() => { setTimePreset('today'); setDateFrom(''); setDateTo('') }}
-                        className={`h-7 px-2.5 text-[10px] font-semibold rounded-lg transition-all ${timePreset === 'today' ? 'bg-indigo-600 text-white shadow-xs' : 'text-muted hover:text-text'}`}
-                        title="Chỉ hiển thị các lượt chạy trong ngày hôm nay"
-                    >
-                        📅 {locale === 'en' ? 'Today' : 'Hôm nay'}
-                    </button>
-                    <button
-                        onClick={() => setTimePreset('all')}
-                        className={`h-7 px-2.5 text-[10px] font-semibold rounded-lg transition-all ${timePreset === 'all' ? 'bg-accent text-white shadow-xs' : 'text-muted hover:text-text'}`}
-                        title="Hiển thị toàn bộ lịch sử"
-                    >
-                        {locale === 'en' ? 'All Time' : 'Tất cả'}
-                    </button>
-                </div>
-                <div className="w-px h-5 bg-border mx-1" />
-                <div className="flex items-center gap-2 shrink-0">
-                    <div className="flex items-center gap-1.5 text-[10px] font-medium text-muted mr-1">
-                        <Calendar className="w-3 h-3" /> {locale === 'en' ? 'Time:' : 'Tùy chỉnh:'}
+                <div className="flex items-center gap-1.5 shrink-0 bg-surface border border-border rounded-xl px-2 py-0.5">
+                    <div className="flex items-center gap-1 text-[10px] font-medium text-muted">
+                        <Calendar className="w-3 h-3 text-accent" />
                     </div>
                     <input
                         type="datetime-local"
                         value={dateFrom}
                         onChange={e => setDateFrom(e.target.value)}
-                        className="h-8 px-2 text-[11px] bg-surface border border-border rounded-xl text-text focus:outline-none focus:border-accent/40 w-[182px]"
-                        title="From date/time"
+                        className="h-7 px-1.5 text-[10px] bg-transparent border-0 text-text focus:outline-none w-[165px]"
+                        title="Từ ngày/giờ (From)"
                     />
-                    <span className="text-[10px] text-muted">to</span>
+                    <span className="text-[10px] text-muted">➔</span>
                     <input
                         type="datetime-local"
                         value={dateTo}
                         onChange={e => setDateTo(e.target.value)}
-                        className="h-8 px-2 text-[11px] bg-surface border border-border rounded-xl text-text focus:outline-none focus:border-accent/40 w-[182px]"
-                        title="To date/time"
+                        className="h-7 px-1.5 text-[10px] bg-transparent border-0 text-text focus:outline-none w-[165px]"
+                        title="Đến ngày/giờ (To)"
                     />
+                    <button
+                        onClick={setTodayFilter}
+                        className={`h-6 px-1.5 text-[10px] font-medium rounded transition-colors ${dateFrom && !dateTo ? 'bg-accent/20 text-accent font-semibold' : 'text-muted hover:text-text'}`}
+                        title="Lọc nhanh từ 00:00 hôm nay"
+                    >
+                        {locale === 'en' ? 'Today' : 'Hôm nay'}
+                    </button>
+                    {(dateFrom || dateTo) && (
+                        <button
+                            onClick={setAllTimeFilter}
+                            className="h-6 px-1 text-[10px] text-muted hover:text-danger transition-colors"
+                            title="Bỏ lọc thời gian (Tất cả)"
+                        >
+                            <X className="w-3 h-3" />
+                        </button>
+                    )}
                 </div>
-                <select value={batchFilter} onChange={e => setBatchFilter(e.target.value)}
-                    className="h-8 px-2 text-[11px] bg-surface border border-border rounded-xl text-muted focus:outline-none focus:border-accent/40 w-[180px]">
+
+                <div className="w-px h-5 bg-border mx-1" />
+                <select
+                    value={batchFilter}
+                    onChange={e => setBatchFilter(e.target.value)}
+                    className="h-8 px-2 text-[11px] bg-surface border border-border rounded-xl text-muted focus:outline-none focus:border-accent/40 w-[140px]"
+                >
                     {batches.map(b => <option key={b} value={b}>{b === 'all' ? (locale === 'en' ? 'All batches' : 'Tất cả batch') : b}</option>)}
                 </select>
+
+                {/* Display filter options in 1 clean dropdown */}
+                <div className="relative">
+                    <button
+                        onClick={() => setDisplayFilterOpen(v => !v)}
+                        className={`h-8 px-2.5 text-[11px] font-medium rounded-xl border flex items-center gap-1.5 transition-all ${
+                            (hideDriveUploaded || onlyUnuploaded || onlyUploaded || showHidden)
+                                ? 'bg-sky-500/15 border-sky-500/40 text-sky-300 font-semibold'
+                                : 'bg-surface border-border text-muted hover:text-text'
+                        }`}
+                        title="Tùy chọn lọc hiển thị Google Drive và mục ẩn"
+                    >
+                        <SlidersHorizontal className="w-3.5 h-3.5" />
+                        {locale === 'en' ? 'Display Filters' : 'Lọc hiển thị'}
+                        {(hideDriveUploaded || onlyUnuploaded || onlyUploaded || showHidden) && (
+                            <span className="w-1.5 h-1.5 rounded-full bg-sky-400" />
+                        )}
+                        <ChevronDown className="w-3 h-3 opacity-60" />
+                    </button>
+
+                    {displayFilterOpen && (
+                        <>
+                            <div className="fixed inset-0 z-40" onClick={() => setDisplayFilterOpen(false)} />
+                            <div className="absolute left-0 mt-1.5 w-64 bg-panel border border-border rounded-2xl shadow-2xl p-3 z-50 flex flex-col gap-2.5 text-[11px]">
+                                <div className="font-semibold text-text text-[10px] uppercase tracking-wider text-muted mb-0.5">
+                                    {locale === 'en' ? 'Display Options' : 'Tùy chọn hiển thị'}
+                                </div>
+                                <label className="flex items-center gap-2 cursor-pointer hover:text-text text-muted transition-colors">
+                                    <input
+                                        type="checkbox"
+                                        checked={hideDriveUploaded}
+                                        onChange={e => toggleHideDriveUploaded(e.target.checked)}
+                                        className="rounded border-border text-accent focus:ring-0"
+                                    />
+                                    <span>{locale === 'en' ? 'Hide already on Drive' : 'Ẩn hồ sơ đã lên Google Drive'}</span>
+                                </label>
+                                <label className="flex items-center gap-2 cursor-pointer hover:text-text text-muted transition-colors">
+                                    <input
+                                        type="checkbox"
+                                        checked={onlyUnuploaded}
+                                        onChange={e => toggleOnlyUnuploaded(e.target.checked)}
+                                        className="rounded border-border text-accent focus:ring-0"
+                                    />
+                                    <span>{locale === 'en' ? 'Only not yet on Drive' : 'Chỉ hiện hồ sơ CHƯA lên Drive'} ({viewCounts.unuploaded})</span>
+                                </label>
+                                <label className="flex items-center gap-2 cursor-pointer hover:text-text text-muted transition-colors">
+                                    <input
+                                        type="checkbox"
+                                        checked={onlyUploaded}
+                                        onChange={e => toggleOnlyUploaded(e.target.checked)}
+                                        className="rounded border-border text-accent focus:ring-0"
+                                    />
+                                    <span>{locale === 'en' ? 'Only already on Drive' : 'Chỉ hiện hồ sơ ĐÃ lên Drive'} ({viewCounts.uploaded})</span>
+                                </label>
+                                <div className="h-px bg-border/40 my-0.5" />
+                                <label className="flex items-center gap-2 cursor-pointer hover:text-purple-300 text-muted transition-colors">
+                                    <input
+                                        type="checkbox"
+                                        checked={showHidden}
+                                        onChange={e => toggleShowHidden(e.target.checked)}
+                                        className="rounded border-border text-purple-500 focus:ring-0"
+                                    />
+                                    <span>{locale === 'en' ? 'Show hidden records' : 'Xem các dòng đã ẩn (Hidden)'} ({viewCounts.hidden})</span>
+                                </label>
+                                {viewCounts.hidden > 0 && showHidden && onUnhideRows && (
+                                    <button
+                                        onClick={() => { onUnhideRows(undefined, true); setShowHidden(false) }}
+                                        className="text-[10px] text-purple-400 hover:underline text-left mt-1"
+                                    >
+                                        {locale === 'en' ? 'Restore all hidden records' : 'Khôi phục toàn bộ các dòng đã ẩn'}
+                                    </button>
+                                )}
+                            </div>
+                        </>
+                    )}
+                </div>
+
                 {hasFilter && (
-                    <button onClick={resetFilters} className="h-8 px-2 rounded-xl border border-border bg-danger/5 text-[10px] text-danger hover:bg-danger/10 transition-colors flex items-center gap-1.5">
+                    <button onClick={resetFilters} className="h-8 px-2 rounded-xl border border-border bg-danger/5 text-[10px] text-danger hover:bg-danger/10 transition-colors flex items-center gap-1.5" title="Xóa toàn bộ các bộ lọc đang chọn">
                         <X className="w-3 h-3" />Clear
                     </button>
                 )}
@@ -1008,51 +1110,95 @@ export function ResultsDashboard({
                             )}
                         </div>
 
-                        {/* Scope selector */}
+                        {/* Scope & Options */}
                         <div className="px-5 py-4 border-b border-border">
-                            <div className="text-[11px] font-medium text-muted mb-2">{locale === 'en' ? 'Scope for results scan:' : 'Phạm vi quét kết quả:'}</div>
-                            <div className="flex gap-2 flex-wrap">
+                            <div className="text-[11px] font-medium text-muted mb-2">{locale === 'en' ? 'Scope for results scan:' : 'Phạm vi quét & chuẩn hóa:'}</div>
+                            <div className="flex gap-2 flex-wrap mb-3">
                                 {([
-                                    ['tonight', '🌙 Tối nay (≥ 18:00)', '🌙 Tonight (≥ 18:00)'],
-                                    ['today', '📅 Hôm nay', '📅 Today'],
-                                    ['all', '📋 Tất cả', '📋 All Records'],
-                                    ['selected', `☑️ Đã chọn (${selectedRows.length})`, `☑️ Selected (${selectedRows.length})`],
+                                    ['all', `📋 Toàn bộ (${results.length} dòng + Queue)`, `📋 All (${results.length} rows + Queue)`],
+                                    ['filtered', `🔍 Đang lọc (${filtered.length} dòng)`, `🔍 Filtered (${filtered.length} rows)`],
+                                    ['selected', `☑️ Đã chọn (${selectedRows.length} dòng)`, `☑️ Selected (${selectedRows.length} rows)`],
                                 ] as const).map(([val, labelVi, labelEn]) => (
                                     <button
                                         key={val}
-                                        onClick={() => setFixZipScope(val)}
-                                        disabled={val === 'selected' && selectedRows.length === 0}
+                                        onClick={() => setFixZipScope(val as any)}
+                                        disabled={fixZipRunning || (val === 'selected' && selectedRows.length === 0)}
                                         className={`h-8 px-3 text-[11px] font-semibold rounded-xl border transition-all disabled:opacity-40 disabled:cursor-not-allowed ${fixZipScope === val ? 'bg-indigo-500/20 border-indigo-500/50 text-indigo-300' : 'bg-surface border-border text-muted hover:text-text'}`}
                                     >
                                         {locale === 'en' ? labelEn : labelVi}
                                     </button>
                                 ))}
                             </div>
-                            <div className="mt-3 text-[10px] text-muted/70 leading-relaxed space-y-1">
-                                <div>{locale === 'en' ? '⚡ 1. Queue DB: Checks every job (pending, running, failed, done) and patches invalid/PO Box ZIPs in-place.' : '⚡ 1. Hàng đợi Queue: Tự quét mọi job (pending, running, failed, done) và chuẩn hóa mã ZIP trực tiếp trong database.'}</div>
-                                <div>{locale === 'en' ? '⚡ 2. Results & PDFs: Surgically corrects ZIP in notice PDFs (y 140-220) while preserving PDF417 barcode.' : '⚡ 2. Kết quả & PDF: Chỉnh sửa mã ZIP trong PDF notice (y 140-220), bảo toàn 100% mã vạch PDF417.'}</div>
-                                <div>{locale === 'en' ? '⚡ 3. Future Imports: Auto-validates all incoming CSV/XLSX imports automatically upon enqueue.' : '⚡ 3. File tương lai: Mọi file CSV/XLSX nạp vào hàng đợi về sau sẽ tự động được chuẩn hóa ngay lập tức.'}</div>
-                            </div>
+
+                            <label className="flex items-center gap-2 cursor-pointer text-[11px] text-text/80 hover:text-text select-none">
+                                <input
+                                    type="checkbox"
+                                    checked={fixZipSyncDrive}
+                                    onChange={e => setFixZipSyncDrive(e.target.checked)}
+                                    disabled={fixZipRunning}
+                                    className="rounded border-border text-indigo-600 focus:ring-0"
+                                />
+                                <span>{locale === 'en' ? 'Sync updated PDFs to Google Drive in-place' : 'Tự động đồng bộ cập nhật file PDF lên Google Drive nếu đã tải lên'}</span>
+                            </label>
                         </div>
 
-                        {/* Log area */}
+                        {/* Live Progress Bar & Stats */}
+                        {(fixZipRunning || fixZipResult) && (
+                            <>
+                                {fixZipProgress && (
+                                    <div className="px-5 pt-3 pb-1">
+                                        <div className="flex items-center justify-between text-[11px] mb-1.5">
+                                            <span className="text-text font-semibold flex items-center gap-1.5">
+                                                <RefreshCw className="w-3.5 h-3.5 text-indigo-400 animate-spin" />
+                                                {locale === 'en' ? 'Validating:' : 'Đang Auto Validate:'} {fixZipProgress.current} / {fixZipProgress.total}
+                                            </span>
+                                            <span className="font-mono text-indigo-400 font-bold">{fixZipProgress.percent}%</span>
+                                        </div>
+                                        <div className="w-full bg-border/60 rounded-full h-2 overflow-hidden">
+                                            <div className="bg-indigo-500 h-2 transition-all duration-150" style={{ width: `${fixZipProgress.percent}%` }} />
+                                        </div>
+                                    </div>
+                                )}
+
+                                <div className="grid grid-cols-4 gap-2 px-5 py-2.5 bg-surface/30 border-b border-border/50 text-[10px]">
+                                    <div className="flex flex-col">
+                                        <span className="text-muted uppercase text-[9px]">Hàng đợi Queue</span>
+                                        <span className="font-bold text-text tabular-nums mt-0.5">{fixZipStats.fixed_queue_jobs} đã sửa</span>
+                                    </div>
+                                    <div className="flex flex-col">
+                                        <span className="text-muted uppercase text-[9px]">Kết quả</span>
+                                        <span className="font-bold text-emerald-400 tabular-nums mt-0.5">{fixZipStats.fixed_records} đã sửa</span>
+                                    </div>
+                                    <div className="flex flex-col">
+                                        <span className="text-muted uppercase text-[9px]">PDF Notice</span>
+                                        <span className="font-bold text-sky-400 tabular-nums mt-0.5">{fixZipStats.fixed_pdfs} đã patch</span>
+                                    </div>
+                                    <div className="flex flex-col">
+                                        <span className="text-muted uppercase text-[9px]">Google Drive</span>
+                                        <span className="font-bold text-indigo-400 tabular-nums mt-0.5">{fixZipStats.synced_drive} đã sync</span>
+                                    </div>
+                                </div>
+                            </>
+                        )}
+
+                        {/* Real-time Log stream */}
                         {(fixZipLog.length > 0 || fixZipRunning) && (
-                            <div ref={fixZipLogRef} className="flex-1 min-h-0 overflow-y-auto px-4 py-3 font-mono text-[10px] text-text/80 bg-black/20 border-b border-border max-h-52">
+                            <div ref={fixZipLogRef} className="flex-1 min-h-0 overflow-y-auto px-4 py-3 font-mono text-[10px] text-text/80 bg-black/30 border-b border-border max-h-56">
                                 {fixZipLog.length === 0 && fixZipRunning && (
                                     <div className="text-muted flex items-center gap-2"><RefreshCw className="w-3 h-3 animate-spin" /> Đang khởi động Auto Validate...</div>
                                 )}
                                 {fixZipLog.map((line, i) => (
-                                    <div key={i} className={`leading-5 ${line.includes('Hoàn tất') || line.includes('Completed') || line.includes('done') || line.includes('chuẩn hóa') ? 'text-success font-semibold' : line.includes('lỗi') || line.includes('error') || line.includes('Error') ? 'text-danger' : ''}`}>
+                                    <div key={i} className={`leading-5 ${line.includes('Hoàn tất') || line.includes('Completed') || line.includes('done') || line.includes('✓') ? 'text-success font-semibold' : line.includes('lỗi') || line.includes('error') || line.includes('Error') ? 'text-danger' : line.includes('Sửa') ? 'text-amber-300' : 'text-text/75'}`}>
                                         {line}
                                     </div>
                                 ))}
                             </div>
                         )}
 
-                        {/* Result summary */}
+                        {/* Result summary card */}
                         {fixZipResult && (
-                            <div className="px-5 py-3 bg-success/5 border-b border-success/20 flex items-center gap-3">
-                                <CheckCircle2 className="w-4 h-4 text-success shrink-0" />
+                            <div className="px-5 py-3 bg-success/10 border-b border-success/30 flex items-center gap-3">
+                                <CheckCircle2 className="w-5 h-5 text-success shrink-0" />
                                 <div className="text-[11px] text-success font-medium">
                                     {fixZipResult.message || '✅ Hoàn tất Auto Validate thành công!'}
                                 </div>
@@ -1085,7 +1231,7 @@ export function ResultsDashboard({
                             {fixZipRunning && (
                                 <div className="flex items-center gap-2 text-[11px] text-indigo-300 ml-auto">
                                     <RefreshCw className="w-3.5 h-3.5 animate-spin" />
-                                    {locale === 'en' ? 'Running Auto Validate in background...' : 'Đang Auto Validate ngầm...'}
+                                    {locale === 'en' ? 'Validating in real-time...' : 'Đang Auto Validate trực tiếp...'}
                                 </div>
                             )}
                             {!fixZipRunning && fixZipResult && (
@@ -1094,7 +1240,7 @@ export function ResultsDashboard({
                                         variant="ghost"
                                         size="xs"
                                         className="text-muted"
-                                        onClick={() => { setFixZipResult(null); setFixZipLog([]) }}
+                                        onClick={() => { setFixZipResult(null); setFixZipLog([]); setFixZipProgress(null) }}
                                     >
                                         {locale === 'en' ? 'Run Again' : 'Chạy lại'}
                                     </Button>
@@ -1104,7 +1250,7 @@ export function ResultsDashboard({
                                         className="ml-auto"
                                         onClick={() => setFixZipOpen(false)}
                                     >
-                                        {locale === 'en' ? 'Done' : 'Xong'}
+                                        {locale === 'en' ? 'Close' : 'Đóng'}
                                     </Button>
                                 </>
                             )}
