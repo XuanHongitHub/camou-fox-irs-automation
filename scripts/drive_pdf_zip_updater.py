@@ -117,6 +117,17 @@ def fix_pdf_zip(pdf_bytes: bytes, old_zip: str, new_zip: str) -> Tuple[bytes, bo
         if raw_old in s["text"] and 140 < s["bbox"][1] < 220:
             target_span = s
             break
+    # Method 1 (100% Native Stream Patch): Replaces old ZIP directly in the page content stream
+    # Preserves 100% reading order, layout, and prevents text selection jump across lines
+    for xref in page.get_contents():
+        stream_bytes = doc.xref_stream(xref)
+        text = stream_bytes.decode('latin1', errors='ignore')
+        if raw_old in text:
+            pattern = re.compile(r'(\([^\)]*?)' + re.escape(raw_old) + r'([^\)]*\)\s*Tj)')
+            new_text = pattern.sub(r'\g<1>' + raw_new + r'\g<2>', text)
+            if new_text != text:
+                doc.update_stream(xref, new_text.encode('latin1'))
+                return doc.tobytes(), True
 
     rects = page.search_for(raw_old)
     matching_rects = [r for r in rects if 140 < r.y0 < 220]

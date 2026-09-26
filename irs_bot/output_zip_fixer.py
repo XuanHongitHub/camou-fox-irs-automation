@@ -65,6 +65,25 @@ def fix_pdf_zip_in_file(pdf_path: Path, old_zip: str, new_zip: str) -> bool:
         page = doc[0]
 
         # Locate address spans (y: 140..220)
+        # Method 1 (Best & 100% Native): Direct in-place content stream replacement.
+        # Preserves 100% natural reading order, identical byte layout, and prevents text selection jump.
+        stream_changed = False
+        for xref in page.get_contents():
+            stream_bytes = doc.xref_stream(xref)
+            text = stream_bytes.decode('latin1', errors='ignore')
+            if raw_old in text:
+                # Target '(CITY, ST OLD_ZIP) Tj' pattern in IRS notice stream
+                pattern = re.compile(r'(\([^\)]*?)' + re.escape(raw_old) + r'([^\)]*\)\s*Tj)')
+                new_text = pattern.sub(r'\g<1>' + raw_new + r'\g<2>', text)
+                if new_text != text:
+                    doc.update_stream(xref, new_text.encode('latin1'))
+                    stream_changed = True
+
+        if stream_changed:
+            pdf_path.write_bytes(doc.tobytes())
+            return True
+
+        # Method 2: Fallback visual span replacement
         dict_data = page.get_text("dict")
         spans = [
             s
