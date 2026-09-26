@@ -66,7 +66,7 @@ class EinSandboxController extends Controller
             return $this->redirectToCanonicalStep(1);
         }
 
-        $state = $request->session()->get('ein_sandbox', $this->defaultState());
+        $state = $this->hydrateState($request->session()->get('ein_sandbox', $this->defaultState()));
         $request->session()->put('ein_sandbox', $state);
 
         if ($step === 6) {
@@ -114,13 +114,13 @@ class EinSandboxController extends Controller
             return $this->redirectToCanonicalStep(1);
         }
 
-        $state = $request->session()->get('ein_sandbox', $this->defaultState());
+        $state = $this->hydrateState($request->session()->get('ein_sandbox', $this->defaultState()));
 
         switch ($step) {
             case 1:
-                $legalType = (string) $request->input('legalStructureInput', $request->input('legal_structure.type', ''));
-                $legalSubType = (string) $request->input('solePropStructureInput', $request->input('legal_structure.sub_type', ''));
-                $legalReason = (string) $request->input('reasonForApplyingInputControl', $request->input('legal_structure.reason', ''));
+                $legalType = (string) $request->input('legalStructureInput', $request->input('legal_structure.type', $state['legal_structure']['type'] ?? ''));
+                $legalSubType = (string) $request->input('solePropStructureInput', $request->input('legal_structure.sub_type', $state['legal_structure']['sub_type'] ?? ''));
+                $legalReason = (string) $request->input('reasonForApplyingInputControl', $request->input('legal_structure.reason', $state['legal_structure']['reason'] ?? ''));
                 $state['legal_structure'] = [
                     'type' => $legalType,
                     'sub_type' => $legalSubType,
@@ -129,28 +129,28 @@ class EinSandboxController extends Controller
                 break;
             case 2:
                 $state['identity'] = [
-                    'ssn' => (string) $request->input('responsibleSsn', $request->input('identity.ssn', '')),
-                    'first_name' => (string) $request->input('responsibleFirstName', $request->input('identity.first_name', '')),
-                    'middle_name' => (string) $request->input('responsibleMiddleName', $request->input('identity.middle_name', '')),
-                    'last_name' => (string) $request->input('responsibleLastName', $request->input('identity.last_name', '')),
-                    'suffix' => (string) $request->input('responsibleSuffix', $request->input('identity.suffix', '')),
-                    'role' => (string) $request->input('entityRoleRadioInput', $request->input('identity.role', '')),
-                    'third_party_name' => (string) $request->input('thirdPartyNameInput', $request->input('identity.third_party_name', '')),
-                    'third_party_phone' => (string) $request->input('thirdPartyPhoneInput', $request->input('identity.third_party_phone', '')),
+                    'ssn' => (string) $request->input('responsibleSsn', $request->input('identity.ssn', $state['identity']['ssn'] ?? '')),
+                    'first_name' => (string) $request->input('responsibleFirstName', $request->input('identity.first_name', $state['identity']['first_name'] ?? '')),
+                    'middle_name' => (string) $request->input('responsibleMiddleName', $request->input('identity.middle_name', $state['identity']['middle_name'] ?? '')),
+                    'last_name' => (string) $request->input('responsibleLastName', $request->input('identity.last_name', $state['identity']['last_name'] ?? '')),
+                    'suffix' => (string) $request->input('responsibleSuffix', $request->input('identity.suffix', $state['identity']['suffix'] ?? '')),
+                    'role' => (string) $request->input('entityRoleRadioInput', $request->input('identity.role', $state['identity']['role'] ?? '')),
+                    'third_party_name' => (string) $request->input('thirdPartyNameInput', $request->input('identity.third_party_name', $state['identity']['third_party_name'] ?? '')),
+                    'third_party_phone' => (string) $request->input('thirdPartyPhoneInput', $request->input('identity.third_party_phone', $state['identity']['third_party_phone'] ?? '')),
                 ];
                 break;
             case 3:
                 $state['addresses'] = [
-                    'street' => (string) $request->input('physicalStreet', $request->input('addresses.street', '')),
-                    'city' => (string) $request->input('physicalCity', $request->input('addresses.city', '')),
-                    'state' => (string) $request->input('physicalState', $request->input('addresses.state', '')),
-                    'zip' => (string) $request->input('physicalZipCode', $request->input('addresses.zip', '')),
-                    'phone' => (string) $request->input('thePhone', $request->input('addresses.phone', '')),
-                    'other_address' => (string) $request->input('otherAddress', $request->input('addresses.other_address', '')),
-                    'mailing_street' => (string) $request->input('mailingStreetInput', $request->input('addresses.mailing_street', '')),
-                    'mailing_city' => (string) $request->input('mailingCityInput', $request->input('addresses.mailing_city', '')),
-                    'mailing_state' => (string) $request->input('mailingStateInput', $request->input('addresses.mailing_state', '')),
-                    'mailing_zip' => (string) $request->input('mailingZipInput', $request->input('addresses.mailing_zip', '')),
+                    'street' => (string) $request->input('physicalStreet', $request->input('addresses.street', $state['addresses']['street'] ?? '')),
+                    'city' => (string) $request->input('physicalCity', $request->input('addresses.city', $state['addresses']['city'] ?? '')),
+                    'state' => (string) $request->input('physicalState', $request->input('addresses.state', $state['addresses']['state'] ?? '')),
+                    'zip' => (string) $request->input('physicalZipCode', $request->input('addresses.zip', $state['addresses']['zip'] ?? '')),
+                    'phone' => (string) $request->input('thePhone', $request->input('addresses.phone', $state['addresses']['phone'] ?? '')),
+                    'other_address' => (string) $request->input('otherAddress', $request->input('addresses.other_address', $state['addresses']['other_address'] ?? '')),
+                    'mailing_street' => (string) $request->input('mailingStreetInput', $request->input('addresses.mailing_street', $state['addresses']['mailing_street'] ?? '')),
+                    'mailing_city' => (string) $request->input('mailingCityInput', $request->input('addresses.mailing_city', $state['addresses']['mailing_city'] ?? '')),
+                    'mailing_state' => (string) $request->input('mailingStateInput', $request->input('addresses.mailing_state', $state['addresses']['mailing_state'] ?? '')),
+                    'mailing_zip' => (string) $request->input('mailingZipInput', $request->input('addresses.mailing_zip', $state['addresses']['mailing_zip'] ?? '')),
                 ];
                 break;
             case 4:
@@ -160,24 +160,24 @@ class EinSandboxController extends Controller
 
                 if ($phase === 'details') {
                     $state['additional'] = array_merge($existingAdditional, [
-                        'dba_name' => (string) $request->input('dbaNameInput', $request->input('additional.dba_name', '')),
-                        'county' => (string) $request->input('countyInput', $request->input('additional.county', '')),
-                        'state' => (string) $request->input('stateInput', $request->input('additional.state', '')),
-                        'start_month' => (string) $request->input('startDateMonthInput', $request->input('additional.start_month', '')),
-                        'start_year' => (string) $request->input('startDateYearInput', $request->input('additional.start_year', '')),
-                        'highway_vehicles' => (string) $request->input('highwayVehiclesInput', $request->input('additional.highway_vehicles', '')),
-                        'gambling' => (string) $request->input('gamblingWagerInput', $request->input('additional.gambling', '')),
-                        'form_720' => (string) $request->input('fileForm720Input', $request->input('additional.form_720', '')),
-                        'atf' => (string) $request->input('atfInput', $request->input('additional.atf', '')),
-                        'employees' => (string) $request->input('hasEmployeesInput', $request->input('additional.employees', '')),
-                        'employee_count' => (string) $request->input('employeeCountInput', $request->input('additional.employee_count', '')),
-                        'first_wage_date' => (string) $request->input('firstWageDateInput', $request->input('additional.first_wage_date', '')),
+                        'dba_name' => (string) $request->input('dbaNameInput', $request->input('additional.dba_name', $existingAdditional['dba_name'] ?? '')),
+                        'county' => (string) $request->input('countyInput', $request->input('additional.county', $existingAdditional['county'] ?? '')),
+                        'state' => (string) $request->input('stateInput', $request->input('additional.state', $existingAdditional['state'] ?? '')),
+                        'start_month' => (string) $request->input('startDateMonthInput', $request->input('additional.start_month', $existingAdditional['start_month'] ?? '')),
+                        'start_year' => (string) $request->input('startDateYearInput', $request->input('additional.start_year', $existingAdditional['start_year'] ?? '')),
+                        'highway_vehicles' => (string) $request->input('highwayVehiclesInput', $request->input('additional.highway_vehicles', $existingAdditional['highway_vehicles'] ?? '')),
+                        'gambling' => (string) $request->input('gamblingWagerInput', $request->input('additional.gambling', $existingAdditional['gambling'] ?? '')),
+                        'form_720' => (string) $request->input('fileForm720Input', $request->input('additional.form_720', $existingAdditional['form_720'] ?? '')),
+                        'atf' => (string) $request->input('atfInput', $request->input('additional.atf', $existingAdditional['atf'] ?? '')),
+                        'employees' => (string) $request->input('hasEmployeesInput', $request->input('additional.employees', $existingAdditional['employees'] ?? '')),
+                        'employee_count' => (string) $request->input('employeeCountInput', $request->input('additional.employee_count', $existingAdditional['employee_count'] ?? '')),
+                        'first_wage_date' => (string) $request->input('firstWageDateInput', $request->input('additional.first_wage_date', $existingAdditional['first_wage_date'] ?? '')),
                     ]);
                 } else {
-                    $activity = strtoupper((string) $request->input('entityBusinessCategoryInput', $request->input('additional.business_activity', '')));
-                    $ownsGoods = (string) $request->input('wholeSaleInput', $request->input('additional.wholesale_owns_goods', ''));
-                    $otherInput = (string) $request->input('otherInput', $request->input('additional.other_input', ''));
-                    $principalProduct = (string) $request->input('wholesaleSecondTextInput', $request->input('additional.principal_product', ''));
+                    $activity = strtoupper((string) $request->input('entityBusinessCategoryInput', $request->input('additional.business_activity', $existingAdditional['business_activity'] ?? '')));
+                    $ownsGoods = (string) $request->input('wholeSaleInput', $request->input('additional.wholesale_owns_goods', $existingAdditional['wholesale_owns_goods'] ?? ''));
+                    $otherInput = (string) $request->input('otherInput', $request->input('additional.other_input', $existingAdditional['other_input'] ?? ''));
+                    $principalProduct = (string) $request->input('wholesaleSecondTextInput', $request->input('additional.principal_product', $existingAdditional['principal_product'] ?? ''));
                     $state['additional'] = array_merge($existingAdditional, [
                         'business_activity' => $activity,
                         'principal_product' => $activity === 'OTHER' ? $otherInput : $principalProduct,
@@ -188,7 +188,7 @@ class EinSandboxController extends Controller
                 break;
             case 5:
                 $state['review'] = [
-                    'confirmation_letter_delivery' => (string) $request->input('confirmationLetterRadioInput', $request->input('review.confirmation_letter_delivery', '')),
+                    'confirmation_letter_delivery' => (string) $request->input('confirmationLetterRadioInput', $request->input('review.confirmation_letter_delivery', $state['review']['confirmation_letter_delivery'] ?? '')),
                     'agreed' => $request->boolean('review.agreed', true),
                 ];
                 $state = $this->ensureAssignment($state);
@@ -462,39 +462,63 @@ class EinSandboxController extends Controller
 
     private function defaultState(): array
     {
+        $currentMonth = strtoupper(now()->format('F'));
+        $currentYear = now()->format('Y');
+
         return [
-            'legal_structure' => ['type' => '', 'sub_type' => '', 'reason' => ''],
+            'legal_structure' => ['type' => 'SOLE_PROPRIETOR', 'sub_type' => 'SOLE_PROPRIETOR', 'reason' => 'NEW_BUSINESS'],
             'identity' => [
                 'ssn' => '',
                 'first_name' => '',
                 'middle_name' => '',
                 'last_name' => '',
                 'suffix' => '',
-                'role' => '',
+                'role' => 'yes',
                 'third_party_name' => '',
                 'third_party_phone' => '',
             ],
             'addresses' => [
                 'street' => '', 'city' => '', 'state' => '', 'zip' => '', 'phone' => '',
-                'other_address' => '', 'mailing_street' => '', 'mailing_city' => '', 'mailing_state' => '', 'mailing_zip' => '',
+                'other_address' => 'no', 'mailing_street' => '', 'mailing_city' => '', 'mailing_state' => '', 'mailing_zip' => '',
             ],
             'additional' => [
-                'dba_name' => '', 'county' => '', 'state' => '', 'start_month' => '', 'start_year' => '',
-                'business_activity' => '',
-                'principal_product' => '',
+                'dba_name' => '', 'county' => '', 'state' => 'OK', 'start_month' => $currentMonth, 'start_year' => $currentYear,
+                'business_activity' => 'WHOLESALE',
+                'principal_product' => 'fashion',
                 'other_input' => '',
-                'wholesale_owns_goods' => '',
-                'highway_vehicles' => '',
-                'gambling' => '',
-                'form_720' => '',
-                'atf' => '',
-                'employees' => '',
+                'wholesale_owns_goods' => 'yes',
+                'highway_vehicles' => 'no',
+                'gambling' => 'no',
+                'form_720' => 'no',
+                'atf' => 'no',
+                'employees' => 'no',
                 'employee_count' => '',
                 'first_wage_date' => '',
             ],
-            'review' => ['confirmation_letter_delivery' => '', 'agreed' => false],
+            'review' => ['confirmation_letter_delivery' => 'DIGITAL', 'agreed' => true],
             'assignment' => ['ein' => '', 'issued_at' => ''],
         ];
+    }
+
+    private function hydrateState(array $state): array
+    {
+        $defaults = $this->defaultState();
+
+        foreach ($defaults as $key => $value) {
+            if (!array_key_exists($key, $state) || !is_array($state[$key])) {
+                $state[$key] = $value;
+                continue;
+            }
+
+            foreach ($value as $nestedKey => $nestedValue) {
+                $current = $state[$key][$nestedKey] ?? null;
+                if ($current === null || $current === '') {
+                    $state[$key][$nestedKey] = $nestedValue;
+                }
+            }
+        }
+
+        return $state;
     }
 
     private function stepFromSlug(string $slug): ?int

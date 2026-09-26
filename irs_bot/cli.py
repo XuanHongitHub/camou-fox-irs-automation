@@ -475,6 +475,12 @@ def _parser() -> argparse.ArgumentParser:
     q_debug.add_argument("--batch-id", required=True, help="Batch id to export")
     q_debug.add_argument("--out-dir", default="", help="Output directory override")
 
+    fix_zip = sp.add_parser("fix-output-zips", help="Scan and fix ZIP codes in outputs and notice PDFs")
+    fix_zip.add_argument("--scope", default="tonight", choices=["tonight", "today", "all", "selected", "filtered"], help="Scope of outputs to fix")
+    fix_zip.add_argument("--keys", default="", help="Comma-separated batch_id:record_id keys for selected/filtered scope")
+    fix_zip.add_argument("--skip-pdfs", action="store_true", help="Skip modifying PDF files")
+    fix_zip.add_argument("--skip-csv", action="store_true", help="Skip modifying results.csv/xlsx")
+
     return p
 
 
@@ -851,6 +857,28 @@ def cmd_manual(args: argparse.Namespace) -> int:
 
 
 
+def cmd_fix_output_zips(args: argparse.Namespace) -> int:
+    from .output_zip_fixer import scan_and_fix_outputs
+    cfg = load_config(args.config)
+    csv_path = Path(cfg.output.output_csv).resolve()
+    storage_root = csv_path.parent.parent
+
+    keys = [k.strip() for k in args.keys.split(",") if k.strip()] if getattr(args, "keys", "") else None
+
+    def progress_cb(data: Dict[str, Any]) -> None:
+        print(json.dumps(data, ensure_ascii=False), flush=True)
+
+    result = scan_and_fix_outputs(
+        storage_root=storage_root,
+        scope=getattr(args, "scope", "tonight"),
+        target_keys=keys,
+        fix_pdfs=not bool(getattr(args, "skip_pdfs", False)),
+        fix_csv=not bool(getattr(args, "skip_csv", False)),
+        progress_cb=progress_cb,
+    )
+    return 0 if result.get("ok") else 1
+
+
 def main() -> int:
     import multiprocessing
     multiprocessing.freeze_support()
@@ -877,6 +905,8 @@ def main() -> int:
             return cmd_manual(args)
         if args.command == "queue":
             return cmd_queue(args)
+        if args.command == "fix-output-zips":
+            return cmd_fix_output_zips(args)
         parser.error("Unknown command")
         return 2
     except ConfigError as exc:

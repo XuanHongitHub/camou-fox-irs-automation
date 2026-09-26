@@ -1,0 +1,12 @@
+{
+  "batch_id": "manual-run",
+  "record_id": "409255797",
+  "record_name": "JEFF DRAPER",
+  "status": "manual_required",
+  "step6_ein": "",
+  "step6_legal_name": "",
+  "step6_data": {},
+  "proxy_code": "RUNTIME",
+  "proxy_ip": "",
+  "final_pdf_path": "artifacts\\manual-run\\__failed\\409255797\\409255797_no_ein_SUMMARY.pdf"
+}

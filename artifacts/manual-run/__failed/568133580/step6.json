@@ -1,0 +1,12 @@
+{
+  "batch_id": "manual-run",
+  "record_id": "568133580",
+  "record_name": "LISA BLACK",
+  "status": "manual_required",
+  "step6_ein": "",
+  "step6_legal_name": "",
+  "step6_data": {},
+  "proxy_code": "RUNTIME",
+  "proxy_ip": "",
+  "final_pdf_path": "artifacts\\manual-run\\__failed\\568133580\\568133580_no_ein_SUMMARY.pdf"
+}

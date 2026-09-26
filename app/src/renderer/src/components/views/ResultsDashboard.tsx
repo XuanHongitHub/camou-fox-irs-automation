@@ -1,10 +1,10 @@
-import { useState, useMemo, useCallback, Fragment } from 'react'
+import { useState, useMemo, useCallback, Fragment, useEffect, useRef } from 'react'
 import {
     Download, Search, Filter, CheckCircle2, AlertCircle,
     FileText, RefreshCw, Copy,
     ChevronDown, ChevronUp, X, Check, BarChart3, Clock, Calendar,
     Globe, Hash, ChevronRight, FolderOpen,
-    Cloud, EyeOff, Eye, RotateCcw
+    Cloud, EyeOff, Eye, RotateCcw, Wrench
 } from 'lucide-react'
 import { Button } from '../base/Button'
 import { useI18n } from '../../i18n/useI18n'
@@ -317,6 +317,36 @@ export function ResultsDashboard({
     const [expandedId, setExpandedId] = useState<string | null>(null)
     const [selected, setSelected] = useState<Set<string>>(new Set())
 
+    // ─── Fix Output ZIPs ──────────────────────────────────────────────────────
+    const [fixZipOpen, setFixZipOpen] = useState(false)
+    const [fixZipScope, setFixZipScope] = useState<'tonight' | 'today' | 'all' | 'selected'>('tonight')
+    const [fixZipRunning, setFixZipRunning] = useState(false)
+    const [fixZipLog, setFixZipLog] = useState<string[]>([])
+    const [fixZipResult, setFixZipResult] = useState<{ fixed_records: number; fixed_pdfs: number; message: string } | null>(null)
+    const fixZipLogRef = useRef<HTMLDivElement>(null)
+
+    useEffect(() => {
+        const ipc = window.electron?.ipcRenderer
+        if (!ipc) return
+        const handler = (_: unknown, data: any) => {
+            const msg = typeof data?.message === 'string' ? data.message : JSON.stringify(data)
+            setFixZipLog(prev => [...prev.slice(-80), msg])
+            if (data?.type === 'done') {
+                setFixZipRunning(false)
+                setFixZipResult({ fixed_records: Number(data.fixed_records || 0), fixed_pdfs: Number(data.fixed_pdfs || 0), message: msg })
+                onRefresh?.()
+            }
+        }
+        ipc.on('irs:fix-output-zips:progress', handler)
+        return () => { ipc.removeListener?.('irs:fix-output-zips:progress', handler) }
+    }, [onRefresh])
+
+    useEffect(() => {
+        if (fixZipLogRef.current) fixZipLogRef.current.scrollTop = fixZipLogRef.current.scrollHeight
+    }, [fixZipLog])
+
+    // ─── runFixZip is declared after selectedRows below ───────────────────────
+
     const batches = useMemo(() => ['all', ...new Set(results.map(r => r.batch_id ?? '').filter(Boolean))], [results])
 
     const viewCounts = useMemo(() => {
@@ -444,6 +474,23 @@ export function ResultsDashboard({
     }
 
     const selectedRows = filtered.filter(r => selected.has(`${r.batch_id}:${r.record_id}`))
+
+    const runFixZip = useCallback(async () => {
+        const ipc = window.electron?.ipcRenderer
+        if (!ipc) { onNotify?.('IPC unavailable', 'error'); return }
+        setFixZipRunning(true)
+        setFixZipLog([])
+        setFixZipResult(null)
+        const scope = fixZipScope === 'selected' ? 'all' : fixZipScope
+        const keys = fixZipScope === 'selected' ? selectedRows.map(r => `${r.batch_id}:${r.record_id}`) : []
+        try {
+            await ipc.invoke('irs:fix-output-zips', { scope, keys })
+        } catch (err) {
+            setFixZipRunning(false)
+            onNotify?.(`Fix ZIP lỗi: ${String(err)}`, 'error')
+        }
+    }, [fixZipScope, selectedRows, onNotify])
+
     const collectPdfs = useCallback(async (rows: ResultRow[], scope: 'selected' | 'batch', batchId?: string, nextOnly = false) => {
         if (!rows.length) {
             onNotify?.('Không có record để gom PDF', 'warning')
@@ -768,6 +815,17 @@ export function ResultsDashboard({
                     <Button
                         variant="secondary"
                         size="xs"
+                        className={`h-8 gap-1.5 rounded-xl px-3 border ${fixZipRunning ? 'border-orange-400/60 bg-orange-500/10 text-orange-300 animate-pulse' : 'border-orange-500/30 bg-orange-500/10 text-orange-300 hover:bg-orange-500/20'}`}
+                        onClick={() => setFixZipOpen(true)}
+                        title="Quét và sửa tự động mã ZIP sai trong output + PDF notice"
+                    >
+                        <Wrench className="w-3.5 h-3.5" />
+                        {fixZipRunning ? (locale === 'en' ? 'Fixing ZIPs...' : 'Đang sửa ZIP...') : (locale === 'en' ? 'Fix ZIPs' : 'Sửa ZIP')}
+                    </Button>
+
+                    <Button
+                        variant="secondary"
+                        size="xs"
                         className="h-8 gap-1.5 rounded-xl px-3"
                         onClick={() => {
                             if (!selectedRows.length) {
@@ -930,6 +988,132 @@ export function ResultsDashboard({
                 )}
             </div>
 
+            {/* ── Fix Output ZIPs Modal ─────────────────────────────────────── */}
+            {fixZipOpen && (
+                <div className="fixed inset-0 z-[200] flex items-center justify-center bg-black/60 backdrop-blur-sm" onClick={() => { if (!fixZipRunning) setFixZipOpen(false) }}>
+                    <div className="relative w-[520px] max-h-[88vh] flex flex-col bg-panel border border-border rounded-2xl shadow-2xl overflow-hidden" onClick={e => e.stopPropagation()}>
+                        {/* Header */}
+                        <div className="flex items-center gap-3 px-5 pt-5 pb-3 border-b border-border">
+                            <div className="w-8 h-8 rounded-xl bg-orange-500/15 border border-orange-500/30 flex items-center justify-center shrink-0">
+                                <Wrench className="w-4 h-4 text-orange-400" />
+                            </div>
+                            <div>
+                                <div className="text-sm font-semibold text-text">{locale === 'en' ? 'Auto-Fix Output ZIP Codes' : 'Tự động sửa ZIP code trong output'}</div>
+                                <div className="text-[11px] text-muted mt-0.5">{locale === 'en' ? 'Scans done records and surgically corrects ZIP in results + notice PDFs. Barcodes are preserved.' : 'Quét hồ sơ hoàn tất, sửa ZIP trong kết quả + PDF notice. Barcode PDF417 được bảo toàn 100%.'}</div>
+                            </div>
+                            {!fixZipRunning && (
+                                <button onClick={() => setFixZipOpen(false)} className="ml-auto p-1.5 text-muted hover:text-text hover:bg-surface rounded-lg transition-colors">
+                                    <X className="w-4 h-4" />
+                                </button>
+                            )}
+                        </div>
+
+                        {/* Scope selector */}
+                        <div className="px-5 py-4 border-b border-border">
+                            <div className="text-[11px] font-medium text-muted mb-2">{locale === 'en' ? 'Scope to scan:' : 'Phạm vi quét:'}</div>
+                            <div className="flex gap-2 flex-wrap">
+                                {([
+                                    ['tonight', '🌙 Tối nay (≥ 18:00)', '🌙 Tonight (≥ 18:00)'],
+                                    ['today', '📅 Hôm nay', '📅 Today'],
+                                    ['all', '📋 Tất cả', '📋 All Records'],
+                                    ['selected', `☑️ Đã chọn (${selectedRows.length})`, `☑️ Selected (${selectedRows.length})`],
+                                ] as const).map(([val, labelVi, labelEn]) => (
+                                    <button
+                                        key={val}
+                                        onClick={() => setFixZipScope(val)}
+                                        disabled={val === 'selected' && selectedRows.length === 0}
+                                        className={`h-8 px-3 text-[11px] font-semibold rounded-xl border transition-all disabled:opacity-40 disabled:cursor-not-allowed ${fixZipScope === val ? 'bg-orange-500/20 border-orange-500/50 text-orange-300' : 'bg-surface border-border text-muted hover:text-text'}`}
+                                    >
+                                        {locale === 'en' ? labelEn : labelVi}
+                                    </button>
+                                ))}
+                            </div>
+                            <div className="mt-3 text-[10px] text-muted/70 leading-relaxed">
+                                {locale === 'en'
+                                    ? '⚡ Looks up city+state from queue DB → resolves correct ZIP via postal database → patches PDF address block (y 140-220) in-place. The PDF417 barcode at top-right is untouched.'
+                                    : '⚡ Tra city+state từ queue DB → tra mã ZIP chuẩn qua database bưu chính → chỉnh vùng địa chỉ trong PDF (y 140-220) tại chỗ. Mã vạch PDF417 góc trên phải không bị đụng.'}
+                            </div>
+                        </div>
+
+                        {/* Log area */}
+                        {(fixZipLog.length > 0 || fixZipRunning) && (
+                            <div ref={fixZipLogRef} className="flex-1 min-h-0 overflow-y-auto px-4 py-3 font-mono text-[10px] text-text/80 bg-black/20 border-b border-border max-h-52">
+                                {fixZipLog.length === 0 && fixZipRunning && (
+                                    <div className="text-muted flex items-center gap-2"><RefreshCw className="w-3 h-3 animate-spin" /> Đang khởi động...</div>
+                                )}
+                                {fixZipLog.map((line, i) => (
+                                    <div key={i} className={`leading-5 ${line.includes('Hoàn tất') || line.includes('Completed') || line.includes('done') ? 'text-success font-semibold' : line.includes('lỗi') || line.includes('error') || line.includes('Error') ? 'text-danger' : ''}`}>
+                                        {line}
+                                    </div>
+                                ))}
+                            </div>
+                        )}
+
+                        {/* Result summary */}
+                        {fixZipResult && (
+                            <div className="px-5 py-3 bg-success/5 border-b border-success/20 flex items-center gap-3">
+                                <CheckCircle2 className="w-4 h-4 text-success shrink-0" />
+                                <div className="text-[11px] text-success font-medium">
+                                    {fixZipResult.fixed_records > 0
+                                        ? `✅ Đã sửa ${fixZipResult.fixed_records} ZIP trong kết quả và ${fixZipResult.fixed_pdfs} file PDF`
+                                        : '✅ Không tìm thấy mã ZIP sai cần sửa trong phạm vi đã chọn'}
+                                </div>
+                            </div>
+                        )}
+
+                        {/* Actions */}
+                        <div className="flex items-center gap-3 px-5 py-4">
+                            {!fixZipRunning && !fixZipResult && (
+                                <>
+                                    <Button
+                                        variant="ghost"
+                                        size="xs"
+                                        className="text-muted"
+                                        onClick={() => setFixZipOpen(false)}
+                                    >
+                                        {locale === 'en' ? 'Cancel' : 'Hủy'}
+                                    </Button>
+                                    <Button
+                                        variant="primary"
+                                        size="xs"
+                                        className="gap-1.5 bg-orange-500 hover:bg-orange-600 text-white border-transparent ml-auto"
+                                        onClick={runFixZip}
+                                    >
+                                        <Wrench className="w-3.5 h-3.5" />
+                                        {locale === 'en' ? 'Start Auto-Fix' : 'Bắt đầu sửa ngầm'}
+                                    </Button>
+                                </>
+                            )}
+                            {fixZipRunning && (
+                                <div className="flex items-center gap-2 text-[11px] text-orange-300 ml-auto">
+                                    <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                                    {locale === 'en' ? 'Running in background...' : 'Đang chạy ngầm...'}
+                                </div>
+                            )}
+                            {!fixZipRunning && fixZipResult && (
+                                <>
+                                    <Button
+                                        variant="ghost"
+                                        size="xs"
+                                        className="text-muted"
+                                        onClick={() => { setFixZipResult(null); setFixZipLog([]) }}
+                                    >
+                                        {locale === 'en' ? 'Run Again' : 'Chạy lại'}
+                                    </Button>
+                                    <Button
+                                        variant="secondary"
+                                        size="xs"
+                                        className="ml-auto"
+                                        onClick={() => setFixZipOpen(false)}
+                                    >
+                                        {locale === 'en' ? 'Done' : 'Xong'}
+                                    </Button>
+                                </>
+                            )}
+                        </div>
+                    </div>
+                </div>
+            )}
         </div>
     )
 }

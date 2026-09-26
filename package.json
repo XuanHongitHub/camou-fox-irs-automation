@@ -1,0 +1,14 @@
+{
+    "name": "fox-auto-root",
+    "version": "1.0.0",
+    "private": true,
+    "description": "Root package.json to manage sub-projects",
+    "scripts": {
+        "dev": "npm run dev --prefix app",
+        "build": "npm run build --prefix app",
+        "format": "npm run format --prefix app",
+        "lint": "npm run lint --prefix app",
+        "typecheck": "npm run typecheck --prefix app",
+        "postinstall": "npm install --prefix app"
+    }
+}

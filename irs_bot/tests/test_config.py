@@ -31,12 +31,20 @@ class ConfigTests(unittest.TestCase):
                   port: 8178
                   username: "x"
                   password: "y"
+                  proxy_list:
+                    - enabled: true
+                      host: "http://proxy-a.example"
+                      port: 9001
+                      username: "a"
+                      password: "b"
                 """,
                 encoding="utf-8",
             )
             cfg = load_config(path)
             self.assertIsInstance(cfg, AppConfig)
             self.assertEqual(cfg.proxy_runtime.port, 8178)
+            self.assertEqual(len(cfg.proxy_runtime.proxy_list), 1)
+            self.assertEqual(cfg.proxy_runtime.proxy_list[0]["host"], "http://proxy-a.example")
 
     def test_load_config_missing_file(self) -> None:
         with self.assertRaises(ConfigError):

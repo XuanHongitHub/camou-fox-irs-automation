@@ -2,10 +2,17 @@ import { useEffect, useState, useRef } from 'react'
 import { X, Upload, FileText, CheckCircle2, AlertTriangle, Table2 } from 'lucide-react'
 import { Button } from '../base/Button'
 import Papa from 'papaparse'
+import { useI18n } from '../../i18n/useI18n'
 
 interface Props {
     onClose: () => void
-    onImport: (batchId: string, file: File, rows: Record<string, string>[]) => void
+    onImport: (items: Array<{ batchId: string; file: File; rows: Record<string, string>[] }>) => void
+}
+
+interface ImportItem {
+    file: File
+    batchId: string
+    preview: { headers: string[]; rows: Record<string, string>[] }
 }
 
 const REQUIRED_NEW_SCHEMA = ['NAME', 'SSN', 'ADDRESS', 'CITI', 'BANG', 'ZIP', 'Phone'] as const
@@ -130,17 +137,19 @@ async function parseXlsx(file: File): Promise<{ headers: string[]; rows: Record<
 }
 
 export function CsvImportModal({ onClose, onImport }: Props) {
-    const [file, setFile] = useState<File | null>(null)
-    const [preview, setPreview] = useState<{ headers: string[]; rows: Record<string, string>[] } | null>(null)
-    const [batchId, setBatchId] = useState(() => {
-        const now = new Date()
-        const ymd = now.toISOString().split('T')[0].replace(/-/g, '')
-        const hm = now.getHours().toString().padStart(2, '0') + now.getMinutes().toString().padStart(2, '0')
-        return `batch_${ymd}_${hm}`
-    })
+    const { locale } = useI18n()
+    const [items, setItems] = useState<ImportItem[]>([])
     const [error, setError] = useState('')
     const [loadingSample, setLoadingSample] = useState(false)
     const inputRef = useRef<HTMLInputElement>(null)
+
+    const buildBatchId = (f: File, suffix?: string) => {
+        const now = new Date()
+        const ymd = now.toISOString().split('T')[0].replace(/-/g, '')
+        const hm = now.getHours().toString().padStart(2, '0') + now.getMinutes().toString().padStart(2, '0')
+        const nameSlug = f.name.replace(/\.[^/.]+$/, "").replace(/[^a-z0-9]/gi, '_').toLowerCase()
+        return `batch_${ymd}_${hm}_${nameSlug}${suffix ? `_${suffix}` : ''}`
+    }
 
     useEffect(() => {
         const onKeyDown = (e: KeyboardEvent) => {
@@ -150,17 +159,7 @@ export function CsvImportModal({ onClose, onImport }: Props) {
         return () => document.removeEventListener('keydown', onKeyDown)
     }, [onClose])
 
-    const handleFile = async (f: File) => {
-        setFile(f)
-        setError('')
-
-        // Auto-update Batch ID with filename slug
-        const now = new Date()
-        const ymd = now.toISOString().split('T')[0].replace(/-/g, '')
-        const hm = now.getHours().toString().padStart(2, '0') + now.getMinutes().toString().padStart(2, '0')
-        const nameSlug = f.name.replace(/\.[^/.]+$/, "").replace(/[^a-z0-9]/gi, '_').toLowerCase()
-        setBatchId(`batch_${ymd}_${hm}_${nameSlug}`)
-
+    const parseSingleFile = async (f: File): Promise<ImportItem> => {
         let parsed: { headers: string[]; rows: Record<string, string>[] } = { headers: [], rows: [] }
         if (f.name.toLowerCase().endsWith('.csv')) {
             const text = await f.text()
@@ -168,28 +167,44 @@ export function CsvImportModal({ onClose, onImport }: Props) {
         } else if (f.name.toLowerCase().endsWith('.xlsx')) {
             parsed = await parseXlsx(f)
         } else {
-            setError('Chỉ hỗ trợ .csv hoặc .xlsx')
-            setPreview(null)
-            return
+            throw new Error('Chỉ hỗ trợ .csv hoặc .xlsx')
         }
         if (!parsed.headers.includes('record_id')) {
-            // Accept NAME-based import without explicit record_id.
             const hasNewSchema = REQUIRED_NEW_SCHEMA.every((k) => parsed.headers.includes(k))
             if (!hasNewSchema) {
-                setError('File cần cột "record_id" hoặc schema mới: NAME,SSN,ADDRESS,CITI,BANG,ZIP,Phone (country/county là tùy chọn)')
-                setPreview(null)
-            } else {
-                setPreview(parsed)
+                throw new Error(`${f.name}: thiếu cột "record_id" hoặc schema NAME,SSN,ADDRESS,CITI,BANG,ZIP,Phone`)
             }
-        } else {
-            setPreview(parsed)
+        }
+        return {
+            file: f,
+            batchId: buildBatchId(f),
+            preview: parsed,
+        }
+    }
+
+    const handleFiles = async (fileList: FileList | File[]) => {
+        const picked = Array.from(fileList).filter((f) => f.name.toLowerCase().endsWith('.csv') || f.name.toLowerCase().endsWith('.xlsx'))
+        if (!picked.length) return
+        setError('')
+        try {
+            const nextItems: ImportItem[] = []
+            for (const [index, file] of picked.entries()) {
+                const parsed = await parseSingleFile(file)
+                if (parsed) {
+                    parsed.batchId = buildBatchId(file, picked.length > 1 ? String(index + 1).padStart(2, '0') : '')
+                    nextItems.push(parsed)
+                }
+            }
+            setItems(nextItems)
+        } catch (err) {
+            setItems([])
+            setError(String(err))
         }
     }
 
     const handleDrop = (e: React.DragEvent) => {
         e.preventDefault()
-        const f = e.dataTransfer.files[0]
-        if (f && (f.name.toLowerCase().endsWith('.csv') || f.name.toLowerCase().endsWith('.xlsx'))) handleFile(f)
+        if (e.dataTransfer.files?.length) handleFiles(e.dataTransfer.files)
     }
 
     const handleLoadSample = async (limit: number) => {
@@ -216,13 +231,11 @@ export function CsvImportModal({ onClose, onImport }: Props) {
             const picked = parsed.rows.slice(0, Math.max(1, Math.min(limit, parsed.rows.length)))
             const csv = toCsv(parsed.headers, picked)
             const f = new File([csv], name.replace(/\.csv$/i, `_${picked.length}.csv`), { type: 'text/csv' })
-            setFile(f)
-            setPreview({ headers: parsed.headers, rows: picked })
-
-            const now = new Date()
-            const ymd = now.toISOString().split('T')[0].replace(/-/g, '')
-            const hm = now.getHours().toString().padStart(2, '0') + now.getMinutes().toString().padStart(2, '0')
-            setBatchId(`batch_${ymd}_${hm}_sandbox_${picked.length}`)
+            setItems([{
+                file: f,
+                batchId: buildBatchId(f),
+                preview: { headers: parsed.headers, rows: picked },
+            }])
         } catch (err) {
             setError(`Load sample lỗi: ${String(err)}`)
         } finally {
@@ -245,7 +258,7 @@ export function CsvImportModal({ onClose, onImport }: Props) {
                 {/* Header */}
                 <div className="flex items-center gap-2 px-5 py-4 border-b border-border">
                     <Table2 className="w-4 h-4 text-accent" />
-                    <span className="font-semibold text-sm text-text">Import CSV</span>
+                    <span className="font-semibold text-sm text-text">{locale === 'en' ? 'Import CSV' : 'Nhập CSV'}</span>
                     <button onClick={onClose} className="ml-auto text-muted hover:text-text transition-colors">
                         <X className="w-4 h-4" />
                     </button>
@@ -258,27 +271,36 @@ export function CsvImportModal({ onClose, onImport }: Props) {
                         onDrop={handleDrop}
                         onDragOver={e => e.preventDefault()}
                         onClick={() => inputRef.current?.click()}
-                        className={`border-2 border-dashed rounded-xl p-6 text-center cursor-pointer transition-colors ${file ? 'border-accent/40 bg-accent/5' : 'border-border hover:border-accent/30 hover:bg-surface/50'}`}
+                        className={`border-2 border-dashed rounded-xl p-6 text-center cursor-pointer transition-colors ${items.length ? 'border-accent/40 bg-accent/5' : 'border-border hover:border-accent/30 hover:bg-surface/50'}`}
                     >
-                        <input ref={inputRef} type="file" accept=".csv,.xlsx" className="hidden" onChange={e => e.target.files?.[0] && handleFile(e.target.files[0])} />
-                        {file ? (
-                            <div className="flex items-center justify-center gap-2 text-sm">
-                                <FileText className="w-4 h-4 text-accent" />
-                                <span className="font-medium text-text">{file.name}</span>
-                                <span className="text-muted">({(file.size / 1024).toFixed(1)} kB)</span>
+                        <input ref={inputRef} type="file" multiple accept=".csv,.xlsx" className="hidden" onChange={e => e.target.files?.length && handleFiles(e.target.files)} />
+                        {items.length ? (
+                            <div className="space-y-2 text-sm">
+                                <div className="flex items-center justify-center gap-2">
+                                    <FileText className="w-4 h-4 text-accent" />
+                                    <span className="font-medium text-text">{items.length} {locale === 'en' ? 'file' : 'file'}</span>
+                                    <span className="text-muted">{items.length > 1 ? 's' : ''} {locale === 'en' ? 'ready' : 'đã sẵn sàng'}</span>
+                                </div>
+                                <div className="max-h-24 overflow-y-auto text-[11px] text-muted space-y-1">
+                                    {items.map((item, idx) => (
+                                        <div key={`${item.file.name}-${idx}`} className="truncate">
+                                            {idx + 1}. {item.file.name} · {item.preview.rows.length} rows
+                                        </div>
+                                    ))}
+                                </div>
                             </div>
                         ) : (
                             <div className="space-y-1">
                                 <Upload className="w-6 h-6 text-muted mx-auto" />
-                                <div className="text-sm text-muted">Kéo thả hoặc click để chọn file CSV</div>
-                                <div className="text-[11px] text-muted/50">Hỗ trợ CSV/XLSX. Cần cột: record_id hoặc schema NAME/SSN/.../Phone (country/county tùy chọn)</div>
+                                <div className="text-sm text-muted">{locale === 'en' ? 'Drag and drop or click to choose one or more CSV/XLSX files' : 'Kéo thả hoặc bấm để chọn một hay nhiều file CSV/XLSX'}</div>
+                                <div className="text-[11px] text-muted/50">{locale === 'en' ? 'Supports CSV/XLSX. Each file becomes its own batch and runs in the order you choose.' : 'Hỗ trợ CSV/XLSX. Mỗi file sẽ thành một batch riêng và chạy theo thứ tự bạn chọn.'}</div>
                             </div>
                         )}
                     </div>
                     <div className="flex items-center justify-end gap-2">
                         {[10, 20, 50, 100].map((n) => (
                             <Button key={n} variant="secondary" size="xs" onClick={() => handleLoadSample(n)} disabled={loadingSample}>
-                                {loadingSample ? 'Loading...' : `Sample ${n}`}
+                                {loadingSample ? (locale === 'en' ? 'Loading...' : 'Đang tải...') : `Sample ${n}`}
                             </Button>
                         ))}
                     </div>
@@ -291,33 +313,33 @@ export function CsvImportModal({ onClose, onImport }: Props) {
                     )}
 
                     {/* Preview */}
-                    {preview && (
+                    {items[0]?.preview && (
                         <div className="space-y-2">
                             <div className="flex items-center gap-2 text-[11px] text-success">
                                 <CheckCircle2 className="w-3.5 h-3.5" />
-                                {preview.rows.length} records · {preview.headers.length} columns
+                                Preview file đầu tiên: {items[0].preview.rows.length} records · {items[0].preview.headers.length} columns
                             </div>
 
                             <div className="border border-border rounded-lg overflow-hidden">
                                 <div className="overflow-x-auto max-h-[180px] overflow-y-auto">
                                     <table className="w-full text-[10px]">
-                                        <thead className="bg-surface sticky top-0">
+                                                <thead className="bg-surface sticky top-0">
                                             <tr>
-                                                {preview.headers.map(h => (
+                                                {items[0].preview.headers.map(h => (
                                                     <th key={h} className={`text-left px-2.5 py-2 font-medium border-b border-border ${h === 'record_id' ? 'text-accent' : 'text-muted'}`}>{h}</th>
                                                 ))}
                                             </tr>
                                         </thead>
                                         <tbody>
-                                            {preview.rows.slice(0, 5).map((row, i) => (
+                                            {items[0].preview.rows.slice(0, 5).map((row, i) => (
                                                 <tr key={i} className="border-b border-border/40 hover:bg-surface/30">
-                                                    {preview.headers.map(h => (
+                                                    {items[0].preview.headers.map(h => (
                                                         <td key={h} className="px-2.5 py-1.5 text-text/70 font-mono truncate max-w-[120px]">{row[h]}</td>
                                                     ))}
                                                 </tr>
                                             ))}
-                                            {preview.rows.length > 5 && (
-                                                <tr><td colSpan={preview.headers.length} className="px-2.5 py-1.5 text-muted/50 text-center">+{preview.rows.length - 5} more rows</td></tr>
+                                            {items[0].preview.rows.length > 5 && (
+                                                <tr><td colSpan={items[0].preview.headers.length} className="px-2.5 py-1.5 text-muted/50 text-center">+{items[0].preview.rows.length - 5} more rows</td></tr>
                                             )}
                                         </tbody>
                                     </table>
@@ -326,16 +348,20 @@ export function CsvImportModal({ onClose, onImport }: Props) {
                         </div>
                     )}
 
-                    {/* Batch ID */}
-                    <div className="space-y-1.5">
-                        <label className="text-[11px] text-muted font-medium">Batch ID</label>
-                        <input
-                            value={batchId}
-                            onChange={e => setBatchId(e.target.value)}
-                            className="w-full h-8 px-3 text-[11px] font-mono bg-surface border border-border rounded-lg text-text focus:outline-none focus:border-accent/60 transition-colors"
-                        />
-                        <div className="text-[10px] text-muted/50">Artifacts sẽ lưu vào: artifacts/{batchId}/{"<record_id>"}/</div>
-                    </div>
+                    {items.length > 0 && (
+                        <div className="space-y-1.5">
+                            <label className="text-[11px] text-muted font-medium">Batch Queue</label>
+                            <div className="max-h-32 overflow-y-auto rounded-lg border border-border bg-surface/40">
+                                {items.map((item, idx) => (
+                                    <div key={`${item.batchId}-${idx}`} className="px-3 py-2 text-[11px] border-b border-border/50 last:border-b-0">
+                                        <div className="font-mono text-text">{idx + 1}. {item.batchId}</div>
+                                        <div className="text-muted truncate">{item.file.name} · {item.preview.rows.length} rows</div>
+                                    </div>
+                                ))}
+                            </div>
+                            <div className="text-[10px] text-muted/50">Artifacts sẽ lưu theo từng batch riêng, file đứng trước sẽ enqueue trước.</div>
+                        </div>
+                    )}
                 </div>
 
                 {/* Footer */}
@@ -344,11 +370,11 @@ export function CsvImportModal({ onClose, onImport }: Props) {
                     <Button
                         variant="primary" size="sm"
                         className="ml-auto gap-1.5"
-                        disabled={!preview || !!error || !batchId.trim()}
-                        onClick={() => preview && file && onImport(batchId, file, preview.rows)}
+                        disabled={!items.length || !!error}
+                        onClick={() => onImport(items.map((item) => ({ batchId: item.batchId, file: item.file, rows: item.preview.rows })))}
                     >
                         <Upload className="w-3.5 h-3.5" />
-                        Enqueue {preview?.rows.length ?? 0} records
+                        Enqueue {items.reduce((sum, item) => sum + item.preview.rows.length, 0)} records
                     </Button>
                 </div>
             </div>

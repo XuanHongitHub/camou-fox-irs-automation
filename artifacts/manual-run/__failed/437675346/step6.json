@@ -1,0 +1,12 @@
+{
+  "batch_id": "manual-run",
+  "record_id": "437675346",
+  "record_name": "DAMIAN SMITH",
+  "status": "manual_required",
+  "step6_ein": "",
+  "step6_legal_name": "",
+  "step6_data": {},
+  "proxy_code": "RUNTIME",
+  "proxy_ip": "",
+  "final_pdf_path": "artifacts\\manual-run\\__failed\\437675346\\437675346_no_ein_SUMMARY.pdf"
+}

@@ -84,3 +84,7 @@ python -m irs_bot --config irs_bot/config.yml proxy renew --codes N0001_CS747,N0
 - Submit is guarded by two-step confirm gate.
 - `workflow` and `selectors` in config must be tailored to the target flow.
 - `manual` mode requires valid ProxyXoay API credentials only when rotate is enabled.
+- Runtime proxy modes:
+  - `proxy_runtime.rotate_url` set: rotate by URL (global throttle).
+  - `rotate_url` empty + `proxy_runtime.proxy_list` non-empty: round-robin runtime list, with per-proxy cooldown based on `change_ip_wait_seconds`.
+  - Otherwise: default ProxyXoay API rotate flow.

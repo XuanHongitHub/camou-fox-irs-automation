@@ -1,4 +1,4 @@
-target_url: "http://ein-sandbox.test/step/1"
+target_url: "https://sa.www4.irs.gov/applyein/"
 
 required_columns:
   - NAME
@@ -17,17 +17,30 @@ proxyxoay:
   type_search: "NORMAL"
   auth:
     login_endpoint: "/api/v1/auth/login"
-    username: "YOUR_PROXYXOAY_USERNAME"
-    password: "YOUR_PROXYXOAY_PASSWORD"
-    access_token: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJjb2RlIjoiWFBQMDE0MyIsInVzZXJfbmFtZSI6Im5ob25jb24iLCJhdXRob3JpemVzIjpudWxsLCJyb2xlcyI6bnVsbCwiZGVwYXJ0bWVudENvZGUiOm51bGwsInBhc3N3b3JkVmVyc2lvbiI6MCwiYW5jZXN0b3JzRGVwYXJ0bWVudENvZGUiOm51bGwsInRpdGxlQ29kZSI6bnVsbCwiY2xpZW50X2lkIjoiY3VzdG9tZXIiLCJpc0N1c3RvbWVyIjp0cnVlLCJhdWQiOlsic29kby1jb3JvbmEiXSwib3duZXJUZW5hbnQiOiJtYXhjbG91ZCIsInNjb3BlIjpbInJlYWQiLCJ3cml0ZSJdLCJkZXBhcnRtZW50Um9sZSI6bnVsbCwibmFtZSI6bnVsbCwiZXhwIjoxNzc2MzE5NTk1LCJkZXBhcnRtZW50TW9kZXMiOm51bGwsImp0aSI6ImQ3RVBZaFRod21WVk1JeUZjX0VMSUpJS0drcyIsImVtYWlsIjoibGV0aGFuaG5ob24xMTNAZ21haWwuY29tIiwidGVuYW50IjoicHJveHl4b2F5IiwidXNlcm5hbWUiOiJuaG9uY29uIn0.FSME2fPPkjM11Ibrwc4_lv3NIekYjRBd9yV8FW35n1I"
+    username: ""
+    password: ""
+    access_token: ""
 
 proxy_runtime:
-  host: "4gusa4.id.proxyxoay.net"
-  port: 8178
-  username: "feko9v3s"
-  password: "fEkO9v3s"
-  rotate_url: ""
-  change_ip_wait_seconds: 600
+  host: "154.198.33.103"
+  port: 8083
+  username: "heoheohihi.custom2_pp"
+  password: "heoheohihi"
+  proxy_list:
+    - host: "154.198.33.103"
+      port: 8083
+      username: "heoheohihi.custom2_pp"
+      password: "heoheohihi"
+    - host: "pg.proxi.es"
+      port: 20000
+      username: "5zqEqBPdQBCiSNu3-co-UnitedStates-type-residential"
+      password: "NBMkkjEJCADWCO80"
+    - host: "pg.proxi.es"
+      port: 20000
+      username: "4CCWXTSCe5qrPmF2-s-pL3JeUqDHA"
+      password: "RznstMR0BDgHwwRb"
+  rotate_url: "https://api.proxidize.com/api/v1/perproxy/mobile/rotate-url/Z7qDLSnkQfyeZra/"
+  change_ip_wait_seconds: 10
   healthcheck_url: "http://api.ipify.org?format=json"
   skip_healthcheck: true
 
@@ -68,6 +81,14 @@ browser:
   timeout_ms: 30000
   step_delay_ms: 180
   step_delay_jitter_ms: 120
+  observe_mode_active: false
+  observe_step_delay_multiplier: 2.5
+  observe_extra_delay_ms: 350
+  observe_min_delay_ms: 1400
+  observe_min_jitter_ms: 450
+  observe_disable_ready_speedup: true
+  observe_type_char_delay_ms: 140
+  observe_field_pause_ms: 800
   manual_window_width: 1600
   manual_window_height: 960
   manual_autosave_seconds: 1.0

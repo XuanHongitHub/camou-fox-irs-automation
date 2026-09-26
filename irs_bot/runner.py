@@ -244,6 +244,17 @@ def _load_postal_database() -> Dict[Tuple[str, str], Dict[str, Any]]:
     return db
 
 
+DISALLOWED_STREET_ZIPS = {
+    "73301", "73344",  # Austin IRS Processing Center / PO Box
+    "77001",           # Houston PO Box Main Office
+    "75221", "75222",  # Dallas PO Box
+    "90009", "90050", "90051", # LA PO Box
+    "60690", "60691",  # Chicago PO Box
+    "33101", "33102",  # Miami PO Box
+    "64141", "64144",  # Kansas City PO Box
+}
+
+
 def auto_fix_record_postal(record: Dict[str, Any]) -> bool:
     """Auto-corrects mismatched, truncated, or fallback ZIP codes and County in-place."""
     db = _load_postal_database()
@@ -269,7 +280,7 @@ def auto_fix_record_postal(record: Dict[str, Any]) -> bool:
     if info:
         # Check if 4 digits (lost leading zero in Excel, e.g. 7039 -> 07039)
         padded_z = z.zfill(5) if (0 < len(z) <= 5) else ""
-        current_valid = len(padded_z) == 5 and padded_z in info["valid_zips"]
+        current_valid = len(padded_z) == 5 and padded_z in info["valid_zips"] and padded_z not in DISALLOWED_STREET_ZIPS
         
         if current_valid:
             if len(z) == 4:

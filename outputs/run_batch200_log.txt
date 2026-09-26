@@ -1,0 +1,356 @@
+EVENT::{"event": "job_started", "job_id": "manual-run:219526645", "record_id": "219526645", "batch_id": "manual-run", "source_file": "batch_200_fox_auto.csv", "attempt": 1, "mode": "full"}
+EVENT::{"event": "step_update", "job_id": "manual-run:219526645", "record_id": "219526645", "step": "proxy_rotate", "status": "running", "note": "Rotating runtime IP...", "proxy_code": "RUNTIME"}
+EVENT::{"event": "step_update", "job_id": "manual-run:219526645", "record_id": "219526645", "step": "proxy_rotate", "status": "done", "note": "IP rotated via runtime URL \u2192 ok", "proxy_code": "RUNTIME", "proxy_ip": null}
+EVENT::{"event": "step_update", "job_id": "manual-run:219526645", "record_id": "219526645", "step": "init", "status": "running", "note": "Proxy ready, launching browser...", "proxy_code": "RUNTIME", "proxy_ip": "", "mode": "full"}
+G:\RTTS\19-08-2026\fox-auto\irs_bot\runner.py:1777: LeakWarning: When using a proxy, it is heavily recommended that you pass `geoip=True`.
+  with Camoufox(**launch_kwargs) as browser:
+Run attempt failed
+Traceback (most recent call last):
+  File "G:\RTTS\19-08-2026\fox-auto\irs_bot\runner.py", line 1793, in run_single_attempt
+    _goto_with_retry(page, config.target_url, config)
+  File "G:\RTTS\19-08-2026\fox-auto\irs_bot\runner.py", line 978, in _goto_with_retry
+    page.goto(url, timeout=timeout_ms, wait_until="domcontentloaded")
+  File "G:\RTTS\19-08-2026\fox-auto\.venv-win\Lib\site-packages\playwright\sync_api\_generated.py", line 9054, in goto
+    self._sync(
+  File "G:\RTTS\19-08-2026\fox-auto\.venv-win\Lib\site-packages\playwright\_impl\_sync_base.py", line 115, in _sync
+    return task.result()
+           ^^^^^^^^^^^^^
+  File "G:\RTTS\19-08-2026\fox-auto\.venv-win\Lib\site-packages\playwright\_impl\_page.py", line 552, in goto
+    return await self._main_frame.goto(**locals_to_params(locals()))
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "G:\RTTS\19-08-2026\fox-auto\.venv-win\Lib\site-packages\playwright\_impl\_frame.py", line 153, in goto
+    await self._channel.send(
+  File "G:\RTTS\19-08-2026\fox-auto\.venv-win\Lib\site-packages\playwright\_impl\_connection.py", line 69, in send
+    return await self._connection.wrap_api_call(
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "G:\RTTS\19-08-2026\fox-auto\.venv-win\Lib\site-packages\playwright\_impl\_connection.py", line 559, in wrap_api_call
+    raise rewrite_error(error, f"{parsed_st['apiName']}: {error}") from None
+playwright._impl._errors.Error: Page.goto: NS_ERROR_PROXY_FORBIDDEN
+Call log:
+  - navigating to "https://sa.www4.irs.gov/applyein/", waiting until "domcontentloaded"
+
+EVENT::{"event": "step_update", "job_id": "manual-run:219526645", "record_id": "219526645", "step": "runtime", "status": "failed", "note": "Page.goto: NS_ERROR_PROXY_FORBIDDEN\nCall log:\n  - navigating to \"https://sa.www4.irs.gov/applyein/\", waiting until \"domcontentloaded\"\n", "proxy_code": "RUNTIME"}
+EVENT::{"event": "step_update", "job_id": "manual-run:219526645", "record_id": "219526645", "step": "runtime", "status": "failed", "note": "unknown failure -> moved to manual queue (no auto retry): Page.goto: NS_ERROR_PROXY_FORBIDDEN\nCall log:\n  - navigating to \"https://sa.www4.irs.gov/applyein/\", waiting until \"domcontentloaded\"\n", "proxy_code": "RUNTIME"}
+EVENT::{"event": "job_complete", "job_id": "manual-run:219526645", "record_id": "219526645", "record_name": "GEORGIA KIRKPATRICK", "batch_id": "manual-run", "source_file": "batch_200_fox_auto.csv", "mode": "full", "status": "manual_required", "confirmation_number": "", "step6_ein": "", "step6_legal_name": "", "step6_data": {}, "pdf_path": "", "final_pdf_path": "artifacts\\manual-run\\__failed\\219526645\\219526645_no_ein_SUMMARY.pdf", "error_type": "automation", "error_code": "runtime", "error_message": "Page.goto: NS_ERROR_PROXY_FORBIDDEN\nCall log:\n  - navigating to \"https://sa.www4.irs.gov/applyein/\", waiting until \"domcontentloaded\"\n", "last_step": "runtime", "proxy_used": "RUNTIME", "proxy_ip": "", "attempt_count": 1, "started_at": "2026-09-22T05:24:53.478142+00:00", "ended_at": "2026-09-22T05:25:06.510438+00:00", "artifact_dir": "artifacts\\manual-run\\__failed\\219526645"}
+{"batch_id": "manual-run", "record_id": "219526645", "record_name": "GEORGIA KIRKPATRICK", "status": "manual_required", "attempt_count": 1, "proxy_used": "RUNTIME", "proxy_ip": "", "started_at": "2026-09-22T05:24:53.478142+00:00", "ended_at": "2026-09-22T05:25:06.510438+00:00", "last_step": "runtime", "artifact_dir": "artifacts\\manual-run\\__failed\\219526645", "error_type": "automation", "error_code": "runtime", "error_message": "Page.goto: NS_ERROR_PROXY_FORBIDDEN\nCall log:\n  - navigating to \"https://sa.www4.irs.gov/applyein/\", waiting until \"domcontentloaded\"\n", "confirmation_number": "", "step6_ein": "", "step6_legal_name": "", "step6_name_control": "", "step6_phone_number": "", "step6_county": "", "step6_state": "", "step6_start_date": "", "step6_principal_activity": "", "step6_principal_product_service": "", "step6_reason_for_applying": "", "step6_physical_location": "", "step6_responsible_name": "", "step6_responsible_ssn_itin": "", "step6_data_json": "{}", "pdf_path": "", "final_pdf_path": "artifacts\\manual-run\\__failed\\219526645\\219526645_no_ein_SUMMARY.pdf"}
+EVENT::{"event": "job_started", "job_id": "manual-run:409255797", "record_id": "409255797", "batch_id": "manual-run", "source_file": "batch_200_fox_auto.csv", "attempt": 1, "mode": "full"}
+EVENT::{"event": "step_update", "job_id": "manual-run:409255797", "record_id": "409255797", "step": "proxy_rotate", "status": "running", "note": "Rotating runtime IP...", "proxy_code": "RUNTIME"}
+EVENT::{"event": "step_update", "job_id": "manual-run:409255797", "record_id": "409255797", "step": "proxy_rotate", "status": "done", "note": "IP rotated via runtime URL \u2192 ok", "proxy_code": "RUNTIME", "proxy_ip": null}
+EVENT::{"event": "step_update", "job_id": "manual-run:409255797", "record_id": "409255797", "step": "init", "status": "running", "note": "Proxy ready, launching browser...", "proxy_code": "RUNTIME", "proxy_ip": "", "mode": "full"}
+G:\RTTS\19-08-2026\fox-auto\irs_bot\runner.py:1777: LeakWarning: When using a proxy, it is heavily recommended that you pass `geoip=True`.
+  with Camoufox(**launch_kwargs) as browser:
+Run attempt failed
+Traceback (most recent call last):
+  File "G:\RTTS\19-08-2026\fox-auto\irs_bot\runner.py", line 1793, in run_single_attempt
+    _goto_with_retry(page, config.target_url, config)
+  File "G:\RTTS\19-08-2026\fox-auto\irs_bot\runner.py", line 978, in _goto_with_retry
+    page.goto(url, timeout=timeout_ms, wait_until="domcontentloaded")
+  File "G:\RTTS\19-08-2026\fox-auto\.venv-win\Lib\site-packages\playwright\sync_api\_generated.py", line 9054, in goto
+    self._sync(
+  File "G:\RTTS\19-08-2026\fox-auto\.venv-win\Lib\site-packages\playwright\_impl\_sync_base.py", line 115, in _sync
+    return task.result()
+           ^^^^^^^^^^^^^
+  File "G:\RTTS\19-08-2026\fox-auto\.venv-win\Lib\site-packages\playwright\_impl\_page.py", line 552, in goto
+    return await self._main_frame.goto(**locals_to_params(locals()))
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "G:\RTTS\19-08-2026\fox-auto\.venv-win\Lib\site-packages\playwright\_impl\_frame.py", line 153, in goto
+    await self._channel.send(
+  File "G:\RTTS\19-08-2026\fox-auto\.venv-win\Lib\site-packages\playwright\_impl\_connection.py", line 69, in send
+    return await self._connection.wrap_api_call(
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "G:\RTTS\19-08-2026\fox-auto\.venv-win\Lib\site-packages\playwright\_impl\_connection.py", line 559, in wrap_api_call
+    raise rewrite_error(error, f"{parsed_st['apiName']}: {error}") from None
+playwright._impl._errors.Error: Page.goto: NS_ERROR_PROXY_FORBIDDEN
+Call log:
+  - navigating to "https://sa.www4.irs.gov/applyein/", waiting until "domcontentloaded"
+
+EVENT::{"event": "step_update", "job_id": "manual-run:409255797", "record_id": "409255797", "step": "runtime", "status": "failed", "note": "Page.goto: NS_ERROR_PROXY_FORBIDDEN\nCall log:\n  - navigating to \"https://sa.www4.irs.gov/applyein/\", waiting until \"domcontentloaded\"\n", "proxy_code": "RUNTIME"}
+EVENT::{"event": "step_update", "job_id": "manual-run:409255797", "record_id": "409255797", "step": "runtime", "status": "failed", "note": "unknown failure -> moved to manual queue (no auto retry): Page.goto: NS_ERROR_PROXY_FORBIDDEN\nCall log:\n  - navigating to \"https://sa.www4.irs.gov/applyein/\", waiting until \"domcontentloaded\"\n", "proxy_code": "RUNTIME"}
+EVENT::{"event": "job_complete", "job_id": "manual-run:409255797", "record_id": "409255797", "record_name": "JEFF DRAPER", "batch_id": "manual-run", "source_file": "batch_200_fox_auto.csv", "mode": "full", "status": "manual_required", "confirmation_number": "", "step6_ein": "", "step6_legal_name": "", "step6_data": {}, "pdf_path": "", "final_pdf_path": "artifacts\\manual-run\\__failed\\409255797\\409255797_no_ein_SUMMARY.pdf", "error_type": "automation", "error_code": "runtime", "error_message": "Page.goto: NS_ERROR_PROXY_FORBIDDEN\nCall log:\n  - navigating to \"https://sa.www4.irs.gov/applyein/\", waiting until \"domcontentloaded\"\n", "last_step": "runtime", "proxy_used": "RUNTIME", "proxy_ip": "", "attempt_count": 1, "started_at": "2026-09-22T05:25:07.387368+00:00", "ended_at": "2026-09-22T05:25:23.549190+00:00", "artifact_dir": "artifacts\\manual-run\\__failed\\409255797"}
+{"batch_id": "manual-run", "record_id": "409255797", "record_name": "JEFF DRAPER", "status": "manual_required", "attempt_count": 1, "proxy_used": "RUNTIME", "proxy_ip": "", "started_at": "2026-09-22T05:25:07.387368+00:00", "ended_at": "2026-09-22T05:25:23.549190+00:00", "last_step": "runtime", "artifact_dir": "artifacts\\manual-run\\__failed\\409255797", "error_type": "automation", "error_code": "runtime", "error_message": "Page.goto: NS_ERROR_PROXY_FORBIDDEN\nCall log:\n  - navigating to \"https://sa.www4.irs.gov/applyein/\", waiting until \"domcontentloaded\"\n", "confirmation_number": "", "step6_ein": "", "step6_legal_name": "", "step6_name_control": "", "step6_phone_number": "", "step6_county": "", "step6_state": "", "step6_start_date": "", "step6_principal_activity": "", "step6_principal_product_service": "", "step6_reason_for_applying": "", "step6_physical_location": "", "step6_responsible_name": "", "step6_responsible_ssn_itin": "", "step6_data_json": "{}", "pdf_path": "", "final_pdf_path": "artifacts\\manual-run\\__failed\\409255797\\409255797_no_ein_SUMMARY.pdf"}
+EVENT::{"event": "job_started", "job_id": "manual-run:308544962", "record_id": "308544962", "batch_id": "manual-run", "source_file": "batch_200_fox_auto.csv", "attempt": 1, "mode": "full"}
+EVENT::{"event": "step_update", "job_id": "manual-run:308544962", "record_id": "308544962", "step": "proxy_rotate", "status": "running", "note": "Rotating runtime IP...", "proxy_code": "RUNTIME"}
+EVENT::{"event": "step_update", "job_id": "manual-run:308544962", "record_id": "308544962", "step": "proxy_rotate", "status": "done", "note": "IP rotated via runtime URL \u2192 ok", "proxy_code": "RUNTIME", "proxy_ip": null}
+EVENT::{"event": "step_update", "job_id": "manual-run:308544962", "record_id": "308544962", "step": "init", "status": "running", "note": "Proxy ready, launching browser...", "proxy_code": "RUNTIME", "proxy_ip": "", "mode": "full"}
+G:\RTTS\19-08-2026\fox-auto\irs_bot\runner.py:1777: LeakWarning: When using a proxy, it is heavily recommended that you pass `geoip=True`.
+  with Camoufox(**launch_kwargs) as browser:
+Run attempt failed
+Traceback (most recent call last):
+  File "G:\RTTS\19-08-2026\fox-auto\irs_bot\runner.py", line 1793, in run_single_attempt
+    _goto_with_retry(page, config.target_url, config)
+  File "G:\RTTS\19-08-2026\fox-auto\irs_bot\runner.py", line 978, in _goto_with_retry
+    page.goto(url, timeout=timeout_ms, wait_until="domcontentloaded")
+  File "G:\RTTS\19-08-2026\fox-auto\.venv-win\Lib\site-packages\playwright\sync_api\_generated.py", line 9054, in goto
+    self._sync(
+  File "G:\RTTS\19-08-2026\fox-auto\.venv-win\Lib\site-packages\playwright\_impl\_sync_base.py", line 115, in _sync
+    return task.result()
+           ^^^^^^^^^^^^^
+  File "G:\RTTS\19-08-2026\fox-auto\.venv-win\Lib\site-packages\playwright\_impl\_page.py", line 552, in goto
+    return await self._main_frame.goto(**locals_to_params(locals()))
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "G:\RTTS\19-08-2026\fox-auto\.venv-win\Lib\site-packages\playwright\_impl\_frame.py", line 153, in goto
+    await self._channel.send(
+  File "G:\RTTS\19-08-2026\fox-auto\.venv-win\Lib\site-packages\playwright\_impl\_connection.py", line 69, in send
+    return await self._connection.wrap_api_call(
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "G:\RTTS\19-08-2026\fox-auto\.venv-win\Lib\site-packages\playwright\_impl\_connection.py", line 559, in wrap_api_call
+    raise rewrite_error(error, f"{parsed_st['apiName']}: {error}") from None
+playwright._impl._errors.Error: Page.goto: NS_ERROR_PROXY_FORBIDDEN
+Call log:
+  - navigating to "https://sa.www4.irs.gov/applyein/", waiting until "domcontentloaded"
+
+EVENT::{"event": "step_update", "job_id": "manual-run:308544962", "record_id": "308544962", "step": "runtime", "status": "failed", "note": "Page.goto: NS_ERROR_PROXY_FORBIDDEN\nCall log:\n  - navigating to \"https://sa.www4.irs.gov/applyein/\", waiting until \"domcontentloaded\"\n", "proxy_code": "RUNTIME"}
+EVENT::{"event": "step_update", "job_id": "manual-run:308544962", "record_id": "308544962", "step": "runtime", "status": "failed", "note": "unknown failure -> moved to manual queue (no auto retry): Page.goto: NS_ERROR_PROXY_FORBIDDEN\nCall log:\n  - navigating to \"https://sa.www4.irs.gov/applyein/\", waiting until \"domcontentloaded\"\n", "proxy_code": "RUNTIME"}
+EVENT::{"event": "job_complete", "job_id": "manual-run:308544962", "record_id": "308544962", "record_name": "ELLEN DUCOTE", "batch_id": "manual-run", "source_file": "batch_200_fox_auto.csv", "mode": "full", "status": "manual_required", "confirmation_number": "", "step6_ein": "", "step6_legal_name": "", "step6_data": {}, "pdf_path": "", "final_pdf_path": "artifacts\\manual-run\\__failed\\308544962\\308544962_no_ein_SUMMARY.pdf", "error_type": "automation", "error_code": "runtime", "error_message": "Page.goto: NS_ERROR_PROXY_FORBIDDEN\nCall log:\n  - navigating to \"https://sa.www4.irs.gov/applyein/\", waiting until \"domcontentloaded\"\n", "last_step": "runtime", "proxy_used": "RUNTIME", "proxy_ip": "", "attempt_count": 1, "started_at": "2026-09-22T05:25:23.653772+00:00", "ended_at": "2026-09-22T05:25:47.014037+00:00", "artifact_dir": "artifacts\\manual-run\\__failed\\308544962"}
+{"batch_id": "manual-run", "record_id": "308544962", "record_name": "ELLEN DUCOTE", "status": "manual_required", "attempt_count": 1, "proxy_used": "RUNTIME", "proxy_ip": "", "started_at": "2026-09-22T05:25:23.653772+00:00", "ended_at": "2026-09-22T05:25:47.014566+00:00", "last_step": "runtime", "artifact_dir": "artifacts\\manual-run\\__failed\\308544962", "error_type": "automation", "error_code": "runtime", "error_message": "Page.goto: NS_ERROR_PROXY_FORBIDDEN\nCall log:\n  - navigating to \"https://sa.www4.irs.gov/applyein/\", waiting until \"domcontentloaded\"\n", "confirmation_number": "", "step6_ein": "", "step6_legal_name": "", "step6_name_control": "", "step6_phone_number": "", "step6_county": "", "step6_state": "", "step6_start_date": "", "step6_principal_activity": "", "step6_principal_product_service": "", "step6_reason_for_applying": "", "step6_physical_location": "", "step6_responsible_name": "", "step6_responsible_ssn_itin": "", "step6_data_json": "{}", "pdf_path": "", "final_pdf_path": "artifacts\\manual-run\\__failed\\308544962\\308544962_no_ein_SUMMARY.pdf"}
+EVENT::{"event": "job_started", "job_id": "manual-run:620565936", "record_id": "620565936", "batch_id": "manual-run", "source_file": "batch_200_fox_auto.csv", "attempt": 1, "mode": "full"}
+EVENT::{"event": "step_update", "job_id": "manual-run:620565936", "record_id": "620565936", "step": "proxy_rotate", "status": "running", "note": "Rotating runtime IP...", "proxy_code": "RUNTIME"}
+EVENT::{"event": "step_update", "job_id": "manual-run:620565936", "record_id": "620565936", "step": "proxy_rotate", "status": "done", "note": "IP rotated via runtime URL \u2192 ok", "proxy_code": "RUNTIME", "proxy_ip": null}
+EVENT::{"event": "step_update", "job_id": "manual-run:620565936", "record_id": "620565936", "step": "init", "status": "running", "note": "Proxy ready, launching browser...", "proxy_code": "RUNTIME", "proxy_ip": "", "mode": "full"}
+G:\RTTS\19-08-2026\fox-auto\irs_bot\runner.py:1777: LeakWarning: When using a proxy, it is heavily recommended that you pass `geoip=True`.
+  with Camoufox(**launch_kwargs) as browser:
+Run attempt failed
+Traceback (most recent call last):
+  File "G:\RTTS\19-08-2026\fox-auto\irs_bot\runner.py", line 1793, in run_single_attempt
+    _goto_with_retry(page, config.target_url, config)
+  File "G:\RTTS\19-08-2026\fox-auto\irs_bot\runner.py", line 978, in _goto_with_retry
+    page.goto(url, timeout=timeout_ms, wait_until="domcontentloaded")
+  File "G:\RTTS\19-08-2026\fox-auto\.venv-win\Lib\site-packages\playwright\sync_api\_generated.py", line 9054, in goto
+    self._sync(
+  File "G:\RTTS\19-08-2026\fox-auto\.venv-win\Lib\site-packages\playwright\_impl\_sync_base.py", line 115, in _sync
+    return task.result()
+           ^^^^^^^^^^^^^
+  File "G:\RTTS\19-08-2026\fox-auto\.venv-win\Lib\site-packages\playwright\_impl\_page.py", line 552, in goto
+    return await self._main_frame.goto(**locals_to_params(locals()))
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "G:\RTTS\19-08-2026\fox-auto\.venv-win\Lib\site-packages\playwright\_impl\_frame.py", line 153, in goto
+    await self._channel.send(
+  File "G:\RTTS\19-08-2026\fox-auto\.venv-win\Lib\site-packages\playwright\_impl\_connection.py", line 69, in send
+    return await self._connection.wrap_api_call(
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "G:\RTTS\19-08-2026\fox-auto\.venv-win\Lib\site-packages\playwright\_impl\_connection.py", line 559, in wrap_api_call
+    raise rewrite_error(error, f"{parsed_st['apiName']}: {error}") from None
+playwright._impl._errors.Error: Page.goto: NS_ERROR_PROXY_FORBIDDEN
+Call log:
+  - navigating to "https://sa.www4.irs.gov/applyein/", waiting until "domcontentloaded"
+
+EVENT::{"event": "step_update", "job_id": "manual-run:620565936", "record_id": "620565936", "step": "runtime", "status": "failed", "note": "Page.goto: NS_ERROR_PROXY_FORBIDDEN\nCall log:\n  - navigating to \"https://sa.www4.irs.gov/applyein/\", waiting until \"domcontentloaded\"\n", "proxy_code": "RUNTIME"}
+EVENT::{"event": "step_update", "job_id": "manual-run:620565936", "record_id": "620565936", "step": "runtime", "status": "failed", "note": "unknown failure -> moved to manual queue (no auto retry): Page.goto: NS_ERROR_PROXY_FORBIDDEN\nCall log:\n  - navigating to \"https://sa.www4.irs.gov/applyein/\", waiting until \"domcontentloaded\"\n", "proxy_code": "RUNTIME"}
+EVENT::{"event": "job_complete", "job_id": "manual-run:620565936", "record_id": "620565936", "record_name": "CARMEN L ORTIZ", "batch_id": "manual-run", "source_file": "batch_200_fox_auto.csv", "mode": "full", "status": "manual_required", "confirmation_number": "", "step6_ein": "", "step6_legal_name": "", "step6_data": {}, "pdf_path": "", "final_pdf_path": "artifacts\\manual-run\\__failed\\620565936\\620565936_no_ein_SUMMARY.pdf", "error_type": "automation", "error_code": "runtime", "error_message": "Page.goto: NS_ERROR_PROXY_FORBIDDEN\nCall log:\n  - navigating to \"https://sa.www4.irs.gov/applyein/\", waiting until \"domcontentloaded\"\n", "last_step": "runtime", "proxy_used": "RUNTIME", "proxy_ip": "", "attempt_count": 1, "started_at": "2026-09-22T05:25:47.107023+00:00", "ended_at": "2026-09-22T05:26:05.409380+00:00", "artifact_dir": "artifacts\\manual-run\\__failed\\620565936"}
+{"batch_id": "manual-run", "record_id": "620565936", "record_name": "CARMEN L ORTIZ", "status": "manual_required", "attempt_count": 1, "proxy_used": "RUNTIME", "proxy_ip": "", "started_at": "2026-09-22T05:25:47.107023+00:00", "ended_at": "2026-09-22T05:26:05.409380+00:00", "last_step": "runtime", "artifact_dir": "artifacts\\manual-run\\__failed\\620565936", "error_type": "automation", "error_code": "runtime", "error_message": "Page.goto: NS_ERROR_PROXY_FORBIDDEN\nCall log:\n  - navigating to \"https://sa.www4.irs.gov/applyein/\", waiting until \"domcontentloaded\"\n", "confirmation_number": "", "step6_ein": "", "step6_legal_name": "", "step6_name_control": "", "step6_phone_number": "", "step6_county": "", "step6_state": "", "step6_start_date": "", "step6_principal_activity": "", "step6_principal_product_service": "", "step6_reason_for_applying": "", "step6_physical_location": "", "step6_responsible_name": "", "step6_responsible_ssn_itin": "", "step6_data_json": "{}", "pdf_path": "", "final_pdf_path": "artifacts\\manual-run\\__failed\\620565936\\620565936_no_ein_SUMMARY.pdf"}
+EVENT::{"event": "job_started", "job_id": "manual-run:621155754", "record_id": "621155754", "batch_id": "manual-run", "source_file": "batch_200_fox_auto.csv", "attempt": 1, "mode": "full"}
+EVENT::{"event": "step_update", "job_id": "manual-run:621155754", "record_id": "621155754", "step": "proxy_rotate", "status": "running", "note": "Rotating runtime IP...", "proxy_code": "RUNTIME"}
+EVENT::{"event": "step_update", "job_id": "manual-run:621155754", "record_id": "621155754", "step": "proxy_rotate", "status": "done", "note": "IP rotated via runtime URL \u2192 ok", "proxy_code": "RUNTIME", "proxy_ip": null}
+EVENT::{"event": "step_update", "job_id": "manual-run:621155754", "record_id": "621155754", "step": "init", "status": "running", "note": "Proxy ready, launching browser...", "proxy_code": "RUNTIME", "proxy_ip": "", "mode": "full"}
+G:\RTTS\19-08-2026\fox-auto\irs_bot\runner.py:1777: LeakWarning: When using a proxy, it is heavily recommended that you pass `geoip=True`.
+  with Camoufox(**launch_kwargs) as browser:
+Run attempt failed
+Traceback (most recent call last):
+  File "G:\RTTS\19-08-2026\fox-auto\irs_bot\runner.py", line 1793, in run_single_attempt
+    _goto_with_retry(page, config.target_url, config)
+  File "G:\RTTS\19-08-2026\fox-auto\irs_bot\runner.py", line 978, in _goto_with_retry
+    page.goto(url, timeout=timeout_ms, wait_until="domcontentloaded")
+  File "G:\RTTS\19-08-2026\fox-auto\.venv-win\Lib\site-packages\playwright\sync_api\_generated.py", line 9054, in goto
+    self._sync(
+  File "G:\RTTS\19-08-2026\fox-auto\.venv-win\Lib\site-packages\playwright\_impl\_sync_base.py", line 115, in _sync
+    return task.result()
+           ^^^^^^^^^^^^^
+  File "G:\RTTS\19-08-2026\fox-auto\.venv-win\Lib\site-packages\playwright\_impl\_page.py", line 552, in goto
+    return await self._main_frame.goto(**locals_to_params(locals()))
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "G:\RTTS\19-08-2026\fox-auto\.venv-win\Lib\site-packages\playwright\_impl\_frame.py", line 153, in goto
+    await self._channel.send(
+  File "G:\RTTS\19-08-2026\fox-auto\.venv-win\Lib\site-packages\playwright\_impl\_connection.py", line 69, in send
+    return await self._connection.wrap_api_call(
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "G:\RTTS\19-08-2026\fox-auto\.venv-win\Lib\site-packages\playwright\_impl\_connection.py", line 559, in wrap_api_call
+    raise rewrite_error(error, f"{parsed_st['apiName']}: {error}") from None
+playwright._impl._errors.Error: Page.goto: NS_ERROR_PROXY_FORBIDDEN
+Call log:
+  - navigating to "https://sa.www4.irs.gov/applyein/", waiting until "domcontentloaded"
+
+EVENT::{"event": "step_update", "job_id": "manual-run:621155754", "record_id": "621155754", "step": "runtime", "status": "failed", "note": "Page.goto: NS_ERROR_PROXY_FORBIDDEN\nCall log:\n  - navigating to \"https://sa.www4.irs.gov/applyein/\", waiting until \"domcontentloaded\"\n", "proxy_code": "RUNTIME"}
+EVENT::{"event": "step_update", "job_id": "manual-run:621155754", "record_id": "621155754", "step": "runtime", "status": "failed", "note": "unknown failure -> moved to manual queue (no auto retry): Page.goto: NS_ERROR_PROXY_FORBIDDEN\nCall log:\n  - navigating to \"https://sa.www4.irs.gov/applyein/\", waiting until \"domcontentloaded\"\n", "proxy_code": "RUNTIME"}
+EVENT::{"event": "job_complete", "job_id": "manual-run:621155754", "record_id": "621155754", "record_name": "HENRY ALAS", "batch_id": "manual-run", "source_file": "batch_200_fox_auto.csv", "mode": "full", "status": "manual_required", "confirmation_number": "", "step6_ein": "", "step6_legal_name": "", "step6_data": {}, "pdf_path": "", "final_pdf_path": "artifacts\\manual-run\\__failed\\621155754\\621155754_no_ein_SUMMARY.pdf", "error_type": "automation", "error_code": "runtime", "error_message": "Page.goto: NS_ERROR_PROXY_FORBIDDEN\nCall log:\n  - navigating to \"https://sa.www4.irs.gov/applyein/\", waiting until \"domcontentloaded\"\n", "last_step": "runtime", "proxy_used": "RUNTIME", "proxy_ip": "", "attempt_count": 1, "started_at": "2026-09-22T05:26:05.437091+00:00", "ended_at": "2026-09-22T05:26:16.904520+00:00", "artifact_dir": "artifacts\\manual-run\\__failed\\621155754"}
+{"batch_id": "manual-run", "record_id": "621155754", "record_name": "HENRY ALAS", "status": "manual_required", "attempt_count": 1, "proxy_used": "RUNTIME", "proxy_ip": "", "started_at": "2026-09-22T05:26:05.437091+00:00", "ended_at": "2026-09-22T05:26:16.904520+00:00", "last_step": "runtime", "artifact_dir": "artifacts\\manual-run\\__failed\\621155754", "error_type": "automation", "error_code": "runtime", "error_message": "Page.goto: NS_ERROR_PROXY_FORBIDDEN\nCall log:\n  - navigating to \"https://sa.www4.irs.gov/applyein/\", waiting until \"domcontentloaded\"\n", "confirmation_number": "", "step6_ein": "", "step6_legal_name": "", "step6_name_control": "", "step6_phone_number": "", "step6_county": "", "step6_state": "", "step6_start_date": "", "step6_principal_activity": "", "step6_principal_product_service": "", "step6_reason_for_applying": "", "step6_physical_location": "", "step6_responsible_name": "", "step6_responsible_ssn_itin": "", "step6_data_json": "{}", "pdf_path": "", "final_pdf_path": "artifacts\\manual-run\\__failed\\621155754\\621155754_no_ein_SUMMARY.pdf"}
+EVENT::{"event": "job_started", "job_id": "manual-run:303029602", "record_id": "303029602", "batch_id": "manual-run", "source_file": "batch_200_fox_auto.csv", "attempt": 1, "mode": "full"}
+EVENT::{"event": "step_update", "job_id": "manual-run:303029602", "record_id": "303029602", "step": "proxy_rotate", "status": "running", "note": "Rotating runtime IP...", "proxy_code": "RUNTIME"}
+EVENT::{"event": "step_update", "job_id": "manual-run:303029602", "record_id": "303029602", "step": "proxy_rotate", "status": "done", "note": "IP rotated via runtime URL \u2192 ok", "proxy_code": "RUNTIME", "proxy_ip": null}
+EVENT::{"event": "step_update", "job_id": "manual-run:303029602", "record_id": "303029602", "step": "init", "status": "running", "note": "Proxy ready, launching browser...", "proxy_code": "RUNTIME", "proxy_ip": "", "mode": "full"}
+G:\RTTS\19-08-2026\fox-auto\irs_bot\runner.py:1777: LeakWarning: When using a proxy, it is heavily recommended that you pass `geoip=True`.
+  with Camoufox(**launch_kwargs) as browser:
+Run attempt failed
+Traceback (most recent call last):
+  File "G:\RTTS\19-08-2026\fox-auto\irs_bot\runner.py", line 1793, in run_single_attempt
+    _goto_with_retry(page, config.target_url, config)
+  File "G:\RTTS\19-08-2026\fox-auto\irs_bot\runner.py", line 978, in _goto_with_retry
+    page.goto(url, timeout=timeout_ms, wait_until="domcontentloaded")
+  File "G:\RTTS\19-08-2026\fox-auto\.venv-win\Lib\site-packages\playwright\sync_api\_generated.py", line 9054, in goto
+    self._sync(
+  File "G:\RTTS\19-08-2026\fox-auto\.venv-win\Lib\site-packages\playwright\_impl\_sync_base.py", line 115, in _sync
+    return task.result()
+           ^^^^^^^^^^^^^
+  File "G:\RTTS\19-08-2026\fox-auto\.venv-win\Lib\site-packages\playwright\_impl\_page.py", line 552, in goto
+    return await self._main_frame.goto(**locals_to_params(locals()))
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "G:\RTTS\19-08-2026\fox-auto\.venv-win\Lib\site-packages\playwright\_impl\_frame.py", line 153, in goto
+    await self._channel.send(
+  File "G:\RTTS\19-08-2026\fox-auto\.venv-win\Lib\site-packages\playwright\_impl\_connection.py", line 69, in send
+    return await self._connection.wrap_api_call(
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "G:\RTTS\19-08-2026\fox-auto\.venv-win\Lib\site-packages\playwright\_impl\_connection.py", line 559, in wrap_api_call
+    raise rewrite_error(error, f"{parsed_st['apiName']}: {error}") from None
+playwright._impl._errors.Error: Page.goto: NS_ERROR_PROXY_FORBIDDEN
+Call log:
+  - navigating to "https://sa.www4.irs.gov/applyein/", waiting until "domcontentloaded"
+
+EVENT::{"event": "step_update", "job_id": "manual-run:303029602", "record_id": "303029602", "step": "runtime", "status": "failed", "note": "Page.goto: NS_ERROR_PROXY_FORBIDDEN\nCall log:\n  - navigating to \"https://sa.www4.irs.gov/applyein/\", waiting until \"domcontentloaded\"\n", "proxy_code": "RUNTIME"}
+EVENT::{"event": "step_update", "job_id": "manual-run:303029602", "record_id": "303029602", "step": "runtime", "status": "failed", "note": "unknown failure -> moved to manual queue (no auto retry): Page.goto: NS_ERROR_PROXY_FORBIDDEN\nCall log:\n  - navigating to \"https://sa.www4.irs.gov/applyein/\", waiting until \"domcontentloaded\"\n", "proxy_code": "RUNTIME"}
+EVENT::{"event": "job_complete", "job_id": "manual-run:303029602", "record_id": "303029602", "record_name": "CHRISTOPHER FORD", "batch_id": "manual-run", "source_file": "batch_200_fox_auto.csv", "mode": "full", "status": "manual_required", "confirmation_number": "", "step6_ein": "", "step6_legal_name": "", "step6_data": {}, "pdf_path": "", "final_pdf_path": "artifacts\\manual-run\\__failed\\303029602\\303029602_no_ein_SUMMARY.pdf", "error_type": "automation", "error_code": "runtime", "error_message": "Page.goto: NS_ERROR_PROXY_FORBIDDEN\nCall log:\n  - navigating to \"https://sa.www4.irs.gov/applyein/\", waiting until \"domcontentloaded\"\n", "last_step": "runtime", "proxy_used": "RUNTIME", "proxy_ip": "", "attempt_count": 1, "started_at": "2026-09-22T05:26:16.926780+00:00", "ended_at": "2026-09-22T05:26:29.185740+00:00", "artifact_dir": "artifacts\\manual-run\\__failed\\303029602"}
+{"batch_id": "manual-run", "record_id": "303029602", "record_name": "CHRISTOPHER FORD", "status": "manual_required", "attempt_count": 1, "proxy_used": "RUNTIME", "proxy_ip": "", "started_at": "2026-09-22T05:26:16.926780+00:00", "ended_at": "2026-09-22T05:26:29.185740+00:00", "last_step": "runtime", "artifact_dir": "artifacts\\manual-run\\__failed\\303029602", "error_type": "automation", "error_code": "runtime", "error_message": "Page.goto: NS_ERROR_PROXY_FORBIDDEN\nCall log:\n  - navigating to \"https://sa.www4.irs.gov/applyein/\", waiting until \"domcontentloaded\"\n", "confirmation_number": "", "step6_ein": "", "step6_legal_name": "", "step6_name_control": "", "step6_phone_number": "", "step6_county": "", "step6_state": "", "step6_start_date": "", "step6_principal_activity": "", "step6_principal_product_service": "", "step6_reason_for_applying": "", "step6_physical_location": "", "step6_responsible_name": "", "step6_responsible_ssn_itin": "", "step6_data_json": "{}", "pdf_path": "", "final_pdf_path": "artifacts\\manual-run\\__failed\\303029602\\303029602_no_ein_SUMMARY.pdf"}
+EVENT::{"event": "job_started", "job_id": "manual-run:568133580", "record_id": "568133580", "batch_id": "manual-run", "source_file": "batch_200_fox_auto.csv", "attempt": 1, "mode": "full"}
+EVENT::{"event": "step_update", "job_id": "manual-run:568133580", "record_id": "568133580", "step": "proxy_rotate", "status": "running", "note": "Rotating runtime IP...", "proxy_code": "RUNTIME"}
+EVENT::{"event": "step_update", "job_id": "manual-run:568133580", "record_id": "568133580", "step": "proxy_rotate", "status": "done", "note": "IP rotated via runtime URL \u2192 ok", "proxy_code": "RUNTIME", "proxy_ip": null}
+EVENT::{"event": "step_update", "job_id": "manual-run:568133580", "record_id": "568133580", "step": "init", "status": "running", "note": "Proxy ready, launching browser...", "proxy_code": "RUNTIME", "proxy_ip": "", "mode": "full"}
+G:\RTTS\19-08-2026\fox-auto\irs_bot\runner.py:1777: LeakWarning: When using a proxy, it is heavily recommended that you pass `geoip=True`.
+  with Camoufox(**launch_kwargs) as browser:
+Run attempt failed
+Traceback (most recent call last):
+  File "G:\RTTS\19-08-2026\fox-auto\irs_bot\runner.py", line 1793, in run_single_attempt
+    _goto_with_retry(page, config.target_url, config)
+  File "G:\RTTS\19-08-2026\fox-auto\irs_bot\runner.py", line 978, in _goto_with_retry
+    page.goto(url, timeout=timeout_ms, wait_until="domcontentloaded")
+  File "G:\RTTS\19-08-2026\fox-auto\.venv-win\Lib\site-packages\playwright\sync_api\_generated.py", line 9054, in goto
+    self._sync(
+  File "G:\RTTS\19-08-2026\fox-auto\.venv-win\Lib\site-packages\playwright\_impl\_sync_base.py", line 115, in _sync
+    return task.result()
+           ^^^^^^^^^^^^^
+  File "G:\RTTS\19-08-2026\fox-auto\.venv-win\Lib\site-packages\playwright\_impl\_page.py", line 552, in goto
+    return await self._main_frame.goto(**locals_to_params(locals()))
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "G:\RTTS\19-08-2026\fox-auto\.venv-win\Lib\site-packages\playwright\_impl\_frame.py", line 153, in goto
+    await self._channel.send(
+  File "G:\RTTS\19-08-2026\fox-auto\.venv-win\Lib\site-packages\playwright\_impl\_connection.py", line 69, in send
+    return await self._connection.wrap_api_call(
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "G:\RTTS\19-08-2026\fox-auto\.venv-win\Lib\site-packages\playwright\_impl\_connection.py", line 559, in wrap_api_call
+    raise rewrite_error(error, f"{parsed_st['apiName']}: {error}") from None
+playwright._impl._errors.Error: Page.goto: NS_ERROR_PROXY_FORBIDDEN
+Call log:
+  - navigating to "https://sa.www4.irs.gov/applyein/", waiting until "domcontentloaded"
+
+EVENT::{"event": "step_update", "job_id": "manual-run:568133580", "record_id": "568133580", "step": "runtime", "status": "failed", "note": "Page.goto: NS_ERROR_PROXY_FORBIDDEN\nCall log:\n  - navigating to \"https://sa.www4.irs.gov/applyein/\", waiting until \"domcontentloaded\"\n", "proxy_code": "RUNTIME"}
+EVENT::{"event": "step_update", "job_id": "manual-run:568133580", "record_id": "568133580", "step": "runtime", "status": "failed", "note": "unknown failure -> moved to manual queue (no auto retry): Page.goto: NS_ERROR_PROXY_FORBIDDEN\nCall log:\n  - navigating to \"https://sa.www4.irs.gov/applyein/\", waiting until \"domcontentloaded\"\n", "proxy_code": "RUNTIME"}
+EVENT::{"event": "job_complete", "job_id": "manual-run:568133580", "record_id": "568133580", "record_name": "LISA BLACK", "batch_id": "manual-run", "source_file": "batch_200_fox_auto.csv", "mode": "full", "status": "manual_required", "confirmation_number": "", "step6_ein": "", "step6_legal_name": "", "step6_data": {}, "pdf_path": "", "final_pdf_path": "artifacts\\manual-run\\__failed\\568133580\\568133580_no_ein_SUMMARY.pdf", "error_type": "automation", "error_code": "runtime", "error_message": "Page.goto: NS_ERROR_PROXY_FORBIDDEN\nCall log:\n  - navigating to \"https://sa.www4.irs.gov/applyein/\", waiting until \"domcontentloaded\"\n", "last_step": "runtime", "proxy_used": "RUNTIME", "proxy_ip": "", "attempt_count": 1, "started_at": "2026-09-22T05:26:29.211096+00:00", "ended_at": "2026-09-22T05:26:42.621793+00:00", "artifact_dir": "artifacts\\manual-run\\__failed\\568133580"}
+{"batch_id": "manual-run", "record_id": "568133580", "record_name": "LISA BLACK", "status": "manual_required", "attempt_count": 1, "proxy_used": "RUNTIME", "proxy_ip": "", "started_at": "2026-09-22T05:26:29.211096+00:00", "ended_at": "2026-09-22T05:26:42.621793+00:00", "last_step": "runtime", "artifact_dir": "artifacts\\manual-run\\__failed\\568133580", "error_type": "automation", "error_code": "runtime", "error_message": "Page.goto: NS_ERROR_PROXY_FORBIDDEN\nCall log:\n  - navigating to \"https://sa.www4.irs.gov/applyein/\", waiting until \"domcontentloaded\"\n", "confirmation_number": "", "step6_ein": "", "step6_legal_name": "", "step6_name_control": "", "step6_phone_number": "", "step6_county": "", "step6_state": "", "step6_start_date": "", "step6_principal_activity": "", "step6_principal_product_service": "", "step6_reason_for_applying": "", "step6_physical_location": "", "step6_responsible_name": "", "step6_responsible_ssn_itin": "", "step6_data_json": "{}", "pdf_path": "", "final_pdf_path": "artifacts\\manual-run\\__failed\\568133580\\568133580_no_ein_SUMMARY.pdf"}
+EVENT::{"event": "job_started", "job_id": "manual-run:177286233", "record_id": "177286233", "batch_id": "manual-run", "source_file": "batch_200_fox_auto.csv", "attempt": 1, "mode": "full"}
+EVENT::{"event": "step_update", "job_id": "manual-run:177286233", "record_id": "177286233", "step": "proxy_rotate", "status": "running", "note": "Rotating runtime IP...", "proxy_code": "RUNTIME"}
+EVENT::{"event": "step_update", "job_id": "manual-run:177286233", "record_id": "177286233", "step": "proxy_rotate", "status": "done", "note": "IP rotated via runtime URL \u2192 ok", "proxy_code": "RUNTIME", "proxy_ip": null}
+EVENT::{"event": "step_update", "job_id": "manual-run:177286233", "record_id": "177286233", "step": "init", "status": "running", "note": "Proxy ready, launching browser...", "proxy_code": "RUNTIME", "proxy_ip": "", "mode": "full"}
+G:\RTTS\19-08-2026\fox-auto\irs_bot\runner.py:1777: LeakWarning: When using a proxy, it is heavily recommended that you pass `geoip=True`.
+  with Camoufox(**launch_kwargs) as browser:
+Run attempt failed
+Traceback (most recent call last):
+  File "G:\RTTS\19-08-2026\fox-auto\irs_bot\runner.py", line 1793, in run_single_attempt
+    _goto_with_retry(page, config.target_url, config)
+  File "G:\RTTS\19-08-2026\fox-auto\irs_bot\runner.py", line 978, in _goto_with_retry
+    page.goto(url, timeout=timeout_ms, wait_until="domcontentloaded")
+  File "G:\RTTS\19-08-2026\fox-auto\.venv-win\Lib\site-packages\playwright\sync_api\_generated.py", line 9054, in goto
+    self._sync(
+  File "G:\RTTS\19-08-2026\fox-auto\.venv-win\Lib\site-packages\playwright\_impl\_sync_base.py", line 115, in _sync
+    return task.result()
+           ^^^^^^^^^^^^^
+  File "G:\RTTS\19-08-2026\fox-auto\.venv-win\Lib\site-packages\playwright\_impl\_page.py", line 552, in goto
+    return await self._main_frame.goto(**locals_to_params(locals()))
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "G:\RTTS\19-08-2026\fox-auto\.venv-win\Lib\site-packages\playwright\_impl\_frame.py", line 153, in goto
+    await self._channel.send(
+  File "G:\RTTS\19-08-2026\fox-auto\.venv-win\Lib\site-packages\playwright\_impl\_connection.py", line 69, in send
+    return await self._connection.wrap_api_call(
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "G:\RTTS\19-08-2026\fox-auto\.venv-win\Lib\site-packages\playwright\_impl\_connection.py", line 559, in wrap_api_call
+    raise rewrite_error(error, f"{parsed_st['apiName']}: {error}") from None
+playwright._impl._errors.Error: Page.goto: NS_ERROR_PROXY_FORBIDDEN
+Call log:
+  - navigating to "https://sa.www4.irs.gov/applyein/", waiting until "domcontentloaded"
+
+EVENT::{"event": "step_update", "job_id": "manual-run:177286233", "record_id": "177286233", "step": "runtime", "status": "failed", "note": "Page.goto: NS_ERROR_PROXY_FORBIDDEN\nCall log:\n  - navigating to \"https://sa.www4.irs.gov/applyein/\", waiting until \"domcontentloaded\"\n", "proxy_code": "RUNTIME"}
+EVENT::{"event": "step_update", "job_id": "manual-run:177286233", "record_id": "177286233", "step": "runtime", "status": "failed", "note": "unknown failure -> moved to manual queue (no auto retry): Page.goto: NS_ERROR_PROXY_FORBIDDEN\nCall log:\n  - navigating to \"https://sa.www4.irs.gov/applyein/\", waiting until \"domcontentloaded\"\n", "proxy_code": "RUNTIME"}
+EVENT::{"event": "job_complete", "job_id": "manual-run:177286233", "record_id": "177286233", "record_name": "JAMES KEEZEL", "batch_id": "manual-run", "source_file": "batch_200_fox_auto.csv", "mode": "full", "status": "manual_required", "confirmation_number": "", "step6_ein": "", "step6_legal_name": "", "step6_data": {}, "pdf_path": "", "final_pdf_path": "artifacts\\manual-run\\__failed\\177286233\\177286233_no_ein_SUMMARY.pdf", "error_type": "automation", "error_code": "runtime", "error_message": "Page.goto: NS_ERROR_PROXY_FORBIDDEN\nCall log:\n  - navigating to \"https://sa.www4.irs.gov/applyein/\", waiting until \"domcontentloaded\"\n", "last_step": "runtime", "proxy_used": "RUNTIME", "proxy_ip": "", "attempt_count": 1, "started_at": "2026-09-22T05:26:42.658095+00:00", "ended_at": "2026-09-22T05:26:55.645491+00:00", "artifact_dir": "artifacts\\manual-run\\__failed\\177286233"}
+{"batch_id": "manual-run", "record_id": "177286233", "record_name": "JAMES KEEZEL", "status": "manual_required", "attempt_count": 1, "proxy_used": "RUNTIME", "proxy_ip": "", "started_at": "2026-09-22T05:26:42.658095+00:00", "ended_at": "2026-09-22T05:26:55.645491+00:00", "last_step": "runtime", "artifact_dir": "artifacts\\manual-run\\__failed\\177286233", "error_type": "automation", "error_code": "runtime", "error_message": "Page.goto: NS_ERROR_PROXY_FORBIDDEN\nCall log:\n  - navigating to \"https://sa.www4.irs.gov/applyein/\", waiting until \"domcontentloaded\"\n", "confirmation_number": "", "step6_ein": "", "step6_legal_name": "", "step6_name_control": "", "step6_phone_number": "", "step6_county": "", "step6_state": "", "step6_start_date": "", "step6_principal_activity": "", "step6_principal_product_service": "", "step6_reason_for_applying": "", "step6_physical_location": "", "step6_responsible_name": "", "step6_responsible_ssn_itin": "", "step6_data_json": "{}", "pdf_path": "", "final_pdf_path": "artifacts\\manual-run\\__failed\\177286233\\177286233_no_ein_SUMMARY.pdf"}
+EVENT::{"event": "job_started", "job_id": "manual-run:437675346", "record_id": "437675346", "batch_id": "manual-run", "source_file": "batch_200_fox_auto.csv", "attempt": 1, "mode": "full"}
+EVENT::{"event": "step_update", "job_id": "manual-run:437675346", "record_id": "437675346", "step": "proxy_rotate", "status": "running", "note": "Rotating runtime IP...", "proxy_code": "RUNTIME"}
+EVENT::{"event": "step_update", "job_id": "manual-run:437675346", "record_id": "437675346", "step": "proxy_rotate", "status": "done", "note": "IP rotated via runtime URL \u2192 ok", "proxy_code": "RUNTIME", "proxy_ip": null}
+EVENT::{"event": "step_update", "job_id": "manual-run:437675346", "record_id": "437675346", "step": "init", "status": "running", "note": "Proxy ready, launching browser...", "proxy_code": "RUNTIME", "proxy_ip": "", "mode": "full"}
+G:\RTTS\19-08-2026\fox-auto\irs_bot\runner.py:1777: LeakWarning: When using a proxy, it is heavily recommended that you pass `geoip=True`.
+  with Camoufox(**launch_kwargs) as browser:
+Run attempt failed
+Traceback (most recent call last):
+  File "G:\RTTS\19-08-2026\fox-auto\irs_bot\runner.py", line 1793, in run_single_attempt
+    _goto_with_retry(page, config.target_url, config)
+  File "G:\RTTS\19-08-2026\fox-auto\irs_bot\runner.py", line 978, in _goto_with_retry
+    page.goto(url, timeout=timeout_ms, wait_until="domcontentloaded")
+  File "G:\RTTS\19-08-2026\fox-auto\.venv-win\Lib\site-packages\playwright\sync_api\_generated.py", line 9054, in goto
+    self._sync(
+  File "G:\RTTS\19-08-2026\fox-auto\.venv-win\Lib\site-packages\playwright\_impl\_sync_base.py", line 115, in _sync
+    return task.result()
+           ^^^^^^^^^^^^^
+  File "G:\RTTS\19-08-2026\fox-auto\.venv-win\Lib\site-packages\playwright\_impl\_page.py", line 552, in goto
+    return await self._main_frame.goto(**locals_to_params(locals()))
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "G:\RTTS\19-08-2026\fox-auto\.venv-win\Lib\site-packages\playwright\_impl\_frame.py", line 153, in goto
+    await self._channel.send(
+  File "G:\RTTS\19-08-2026\fox-auto\.venv-win\Lib\site-packages\playwright\_impl\_connection.py", line 69, in send
+    return await self._connection.wrap_api_call(
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "G:\RTTS\19-08-2026\fox-auto\.venv-win\Lib\site-packages\playwright\_impl\_connection.py", line 559, in wrap_api_call
+    raise rewrite_error(error, f"{parsed_st['apiName']}: {error}") from None
+playwright._impl._errors.Error: Page.goto: NS_ERROR_PROXY_FORBIDDEN
+Call log:
+  - navigating to "https://sa.www4.irs.gov/applyein/", waiting until "domcontentloaded"
+
+EVENT::{"event": "step_update", "job_id": "manual-run:437675346", "record_id": "437675346", "step": "runtime", "status": "failed", "note": "Page.goto: NS_ERROR_PROXY_FORBIDDEN\nCall log:\n  - navigating to \"https://sa.www4.irs.gov/applyein/\", waiting until \"domcontentloaded\"\n", "proxy_code": "RUNTIME"}
+EVENT::{"event": "step_update", "job_id": "manual-run:437675346", "record_id": "437675346", "step": "runtime", "status": "failed", "note": "unknown failure -> moved to manual queue (no auto retry): Page.goto: NS_ERROR_PROXY_FORBIDDEN\nCall log:\n  - navigating to \"https://sa.www4.irs.gov/applyein/\", waiting until \"domcontentloaded\"\n", "proxy_code": "RUNTIME"}
+EVENT::{"event": "job_complete", "job_id": "manual-run:437675346", "record_id": "437675346", "record_name": "DAMIAN SMITH", "batch_id": "manual-run", "source_file": "batch_200_fox_auto.csv", "mode": "full", "status": "manual_required", "confirmation_number": "", "step6_ein": "", "step6_legal_name": "", "step6_data": {}, "pdf_path": "", "final_pdf_path": "artifacts\\manual-run\\__failed\\437675346\\437675346_no_ein_SUMMARY.pdf", "error_type": "automation", "error_code": "runtime", "error_message": "Page.goto: NS_ERROR_PROXY_FORBIDDEN\nCall log:\n  - navigating to \"https://sa.www4.irs.gov/applyein/\", waiting until \"domcontentloaded\"\n", "last_step": "runtime", "proxy_used": "RUNTIME", "proxy_ip": "", "attempt_count": 1, "started_at": "2026-09-22T05:26:55.686754+00:00", "ended_at": "2026-09-22T05:27:10.132177+00:00", "artifact_dir": "artifacts\\manual-run\\__failed\\437675346"}
+{"batch_id": "manual-run", "record_id": "437675346", "record_name": "DAMIAN SMITH", "status": "manual_required", "attempt_count": 1, "proxy_used": "RUNTIME", "proxy_ip": "", "started_at": "2026-09-22T05:26:55.686754+00:00", "ended_at": "2026-09-22T05:27:10.132177+00:00", "last_step": "runtime", "artifact_dir": "artifacts\\manual-run\\__failed\\437675346", "error_type": "automation", "error_code": "runtime", "error_message": "Page.goto: NS_ERROR_PROXY_FORBIDDEN\nCall log:\n  - navigating to \"https://sa.www4.irs.gov/applyein/\", waiting until \"domcontentloaded\"\n", "confirmation_number": "", "step6_ein": "", "step6_legal_name": "", "step6_name_control": "", "step6_phone_number": "", "step6_county": "", "step6_state": "", "step6_start_date": "", "step6_principal_activity": "", "step6_principal_product_service": "", "step6_reason_for_applying": "", "step6_physical_location": "", "step6_responsible_name": "", "step6_responsible_ssn_itin": "", "step6_data_json": "{}", "pdf_path": "", "final_pdf_path": "artifacts\\manual-run\\__failed\\437675346\\437675346_no_ein_SUMMARY.pdf"}
+EVENT::{"event": "job_started", "job_id": "manual-run:216579923", "record_id": "216579923", "batch_id": "manual-run", "source_file": "batch_200_fox_auto.csv", "attempt": 1, "mode": "full"}
+EVENT::{"event": "step_update", "job_id": "manual-run:216579923", "record_id": "216579923", "step": "proxy_rotate", "status": "running", "note": "Rotating runtime IP...", "proxy_code": "RUNTIME"}
+EVENT::{"event": "step_update", "job_id": "manual-run:216579923", "record_id": "216579923", "step": "proxy_rotate", "status": "done", "note": "IP rotated via runtime URL \u2192 ok", "proxy_code": "RUNTIME", "proxy_ip": null}
+EVENT::{"event": "step_update", "job_id": "manual-run:216579923", "record_id": "216579923", "step": "init", "status": "running", "note": "Proxy ready, launching browser...", "proxy_code": "RUNTIME", "proxy_ip": "", "mode": "full"}
+G:\RTTS\19-08-2026\fox-auto\irs_bot\runner.py:1777: LeakWarning: When using a proxy, it is heavily recommended that you pass `geoip=True`.
+  with Camoufox(**launch_kwargs) as browser:
+Run attempt failed
+Traceback (most recent call last):
+  File "G:\RTTS\19-08-2026\fox-auto\irs_bot\runner.py", line 1793, in run_single_attempt
+    _goto_with_retry(page, config.target_url, config)
+  File "G:\RTTS\19-08-2026\fox-auto\irs_bot\runner.py", line 978, in _goto_with_retry
+    page.goto(url, timeout=timeout_ms, wait_until="domcontentloaded")
+  File "G:\RTTS\19-08-2026\fox-auto\.venv-win\Lib\site-packages\playwright\sync_api\_generated.py", line 9054, in goto
+    self._sync(
+  File "G:\RTTS\19-08-2026\fox-auto\.venv-win\Lib\site-packages\playwright\_impl\_sync_base.py", line 115, in _sync
+    return task.result()
+           ^^^^^^^^^^^^^
+  File "G:\RTTS\19-08-2026\fox-auto\.venv-win\Lib\site-packages\playwright\_impl\_page.py", line 552, in goto
+    return await self._main_frame.goto(**locals_to_params(locals()))
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "G:\RTTS\19-08-2026\fox-auto\.venv-win\Lib\site-packages\playwright\_impl\_frame.py", line 153, in goto
+    await self._channel.send(
+  File "G:\RTTS\19-08-2026\fox-auto\.venv-win\Lib\site-packages\playwright\_impl\_connection.py", line 69, in send
+    return await self._connection.wrap_api_call(
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "G:\RTTS\19-08-2026\fox-auto\.venv-win\Lib\site-packages\playwright\_impl\_connection.py", line 559, in wrap_api_call
+    raise rewrite_error(error, f"{parsed_st['apiName']}: {error}") from None
+playwright._impl._errors.Error: Page.goto: NS_ERROR_PROXY_FORBIDDEN
+Call log:
+  - navigating to "https://sa.www4.irs.gov/applyein/", waiting until "domcontentloaded"
+
+EVENT::{"event": "step_update", "job_id": "manual-run:216579923", "record_id": "216579923", "step": "runtime", "status": "failed", "note": "Page.goto: NS_ERROR_PROXY_FORBIDDEN\nCall log:\n  - navigating to \"https://sa.www4.irs.gov/applyein/\", waiting until \"domcontentloaded\"\n", "proxy_code": "RUNTIME"}
+EVENT::{"event": "step_update", "job_id": "manual-run:216579923", "record_id": "216579923", "step": "runtime", "status": "failed", "note": "unknown failure -> moved to manual queue (no auto retry): Page.goto: NS_ERROR_PROXY_FORBIDDEN\nCall log:\n  - navigating to \"https://sa.www4.irs.gov/applyein/\", waiting until \"domcontentloaded\"\n", "proxy_code": "RUNTIME"}
+EVENT::{"event": "job_complete", "job_id": "manual-run:216579923", "record_id": "216579923", "record_name": "EDITH KAKE", "batch_id": "manual-run", "source_file": "batch_200_fox_auto.csv", "mode": "full", "status": "manual_required", "confirmation_number": "", "step6_ein": "", "step6_legal_name": "", "step6_data": {}, "pdf_path": "", "final_pdf_path": "artifacts\\manual-run\\__failed\\216579923\\216579923_no_ein_SUMMARY.pdf", "error_type": "automation", "error_code": "runtime", "error_message": "Page.goto: NS_ERROR_PROXY_FORBIDDEN\nCall log:\n  - navigating to \"https://sa.www4.irs.gov/applyein/\", waiting until \"domcontentloaded\"\n", "last_step": "runtime", "proxy_used": "RUNTIME", "proxy_ip": "", "attempt_count": 1, "started_at": "2026-09-22T05:27:10.159359+00:00", "ended_at": "2026-09-22T05:27:24.256914+00:00", "artifact_dir": "artifacts\\manual-run\\__failed\\216579923"}
+{"batch_id": "manual-run", "record_id": "216579923", "record_name": "EDITH KAKE", "status": "manual_required", "attempt_count": 1, "proxy_used": "RUNTIME", "proxy_ip": "", "started_at": "2026-09-22T05:27:10.159359+00:00", "ended_at": "2026-09-22T05:27:24.257917+00:00", "last_step": "runtime", "artifact_dir": "artifacts\\manual-run\\__failed\\216579923", "error_type": "automation", "error_code": "runtime", "error_message": "Page.goto: NS_ERROR_PROXY_FORBIDDEN\nCall log:\n  - navigating to \"https://sa.www4.irs.gov/applyein/\", waiting until \"domcontentloaded\"\n", "confirmation_number": "", "step6_ein": "", "step6_legal_name": "", "step6_name_control": "", "step6_phone_number": "", "step6_county": "", "step6_state": "", "step6_start_date": "", "step6_principal_activity": "", "step6_principal_product_service": "", "step6_reason_for_applying": "", "step6_physical_location": "", "step6_responsible_name": "", "step6_responsible_ssn_itin": "", "step6_data_json": "{}", "pdf_path": "", "final_pdf_path": "artifacts\\manual-run\\__failed\\216579923\\216579923_no_ein_SUMMARY.pdf"}
+EVENT::{"event": "job_started", "job_id": "manual-run:428139629", "record_id": "428139629", "batch_id": "manual-run", "source_file": "batch_200_fox_auto.csv", "attempt": 1, "mode": "full"}
+EVENT::{"event": "step_update", "job_id": "manual-run:428139629", "record_id": "428139629", "step": "proxy_rotate", "status": "running", "note": "Rotating runtime IP...", "proxy_code": "RUNTIME"}
+EVENT::{"event": "step_update", "job_id": "manual-run:428139629", "record_id": "428139629", "step": "proxy_rotate", "status": "done", "note": "IP rotated via runtime URL \u2192 ok", "proxy_code": "RUNTIME", "proxy_ip": null}
+EVENT::{"event": "step_update", "job_id": "manual-run:428139629", "record_id": "428139629", "step": "init", "status": "running", "note": "Proxy ready, launching browser...", "proxy_code": "RUNTIME", "proxy_ip": "", "mode": "full"}
+G:\RTTS\19-08-2026\fox-auto\irs_bot\runner.py:1777: LeakWarning: When using a proxy, it is heavily recommended that you pass `geoip=True`.
+  with Camoufox(**launch_kwargs) as browser:

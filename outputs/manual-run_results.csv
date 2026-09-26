@@ -1,9 +1,0 @@
-batch_id,record_id,status,attempt_count,proxy_used,started_at,ended_at,last_step,artifact_dir,error_code,error_message,confirmation_number
-manual-run,TEST-001,manual_required,3,,2026-03-06T04:15:33.396443+00:00,2026-03-06T04:15:34.035441+00:00,exception,artifacts\manual-run\TEST-001,exception,"ProxyXoay request failed [502] /api/v1/inside-proxies/pageable: <!DOCTYPE html>
-<!--[if lt IE 7]> <html class=""no-js ie6 oldie"" lang=""en-US""> <![endif]-->
-<!--[if IE 7]>    <html class=""no-js ie7 oldie"" lang=""en-US""> <![endif]-->
-<!--[if IE 8]>    <html class=""no-js ie8 oldie"" lang=""en-US""> <![endif]-->",
-manual-run,TEST-002,manual_required,3,,2026-03-06T04:15:34.059840+00:00,2026-03-06T04:15:34.524741+00:00,exception,artifacts\manual-run\TEST-002,exception,"ProxyXoay request failed [502] /api/v1/inside-proxies/pageable: <!DOCTYPE html>
-<!--[if lt IE 7]> <html class=""no-js ie6 oldie"" lang=""en-US""> <![endif]-->
-<!--[if IE 7]>    <html class=""no-js ie7 oldie"" lang=""en-US""> <![endif]-->
-<!--[if IE 8]>    <html class=""no-js ie8 oldie"" lang=""en-US""> <![endif]-->",

@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { X, Plus, Trash2, RefreshCw, Shield, Info, AlertTriangle, ClipboardPaste, ChevronDown } from 'lucide-react'
 import { Button } from '../base/Button'
+import { useI18n } from '../../i18n/useI18n'
 
 interface ProxyEntry {
     id: string
@@ -177,6 +178,7 @@ const ROTATE_PRESETS = [
 // ── Component ──────────────────────────────────────────────────────────────────
 
 export function ProxyConfigModal({ onClose, onSave, initial, initialAuth, onTestRotate, profileName }: Props) {
+    const { locale } = useI18n()
     const [proxies, setProxies] = useState<ProxyEntry[]>(initial ?? [])
     const [globalRotate, setGlobalRotate] = useState(5)
     const [applyGlobal, setApplyGlobal] = useState(false)
@@ -187,6 +189,7 @@ export function ProxyConfigModal({ onClose, onSave, initial, initialAuth, onTest
     const [providerUsername, setProviderUsername] = useState(initialAuth?.providerUsername ?? '')
     const [providerPassword, setProviderPassword] = useState(initialAuth?.providerPassword ?? '')
     const [rotateUrl, setRotateUrl] = useState(initialAuth?.rotateUrl ?? '')
+    const [useRotateUrl, setUseRotateUrl] = useState(Boolean((initialAuth?.rotateUrl || '').trim()))
     const [testingRotate, setTestingRotate] = useState(false)
     const [rotateResult, setRotateResult] = useState('')
     const importRef = useRef<HTMLInputElement>(null)
@@ -250,9 +253,16 @@ export function ProxyConfigModal({ onClose, onSave, initial, initialAuth, onTest
                 {/* Header */}
                 <div className="flex items-center gap-2 px-5 py-4 border-b border-border shrink-0">
                     <Shield className="w-4 h-4 text-accent" />
-                    <span className="font-semibold text-sm text-text">Proxy Pool Config</span>
-                    <span className="text-[10px] text-muted ml-1">{proxies.length} configured{profileName ? ` · ${profileName}` : ''}</span>
-                    <button onClick={onClose} className="ml-auto text-muted hover:text-text transition-colors">
+                    <span className="font-semibold text-sm text-text">{locale === 'en' ? 'Proxy Pool Settings' : 'Thiết lập pool proxy'}</span>
+                    <span className="text-[10px] text-muted ml-1">{proxies.length} {locale === 'en' ? 'configured' : 'đã cấu hình'}{profileName ? ` · ${profileName}` : ''}</span>
+                    <button
+                        onClick={() => setProxies([])}
+                        className="ml-auto px-2 py-0.5 text-[10px] text-danger border border-danger/30 hover:bg-danger/10 rounded transition-colors"
+                        title="Xóa toàn bộ proxy cũ"
+                    >
+                        Xóa sạch proxy
+                    </button>
+                    <button onClick={onClose} className="ml-2 text-muted hover:text-text transition-colors">
                         <X className="w-4 h-4" />
                     </button>
                 </div>
@@ -264,8 +274,8 @@ export function ProxyConfigModal({ onClose, onSave, initial, initialAuth, onTest
                         className="w-full flex items-center gap-2 px-5 py-2.5 text-[11px] font-medium text-text hover:bg-surface/30 transition-colors"
                     >
                         <ClipboardPaste className="w-3.5 h-3.5 text-accent" />
-                        Quick Paste
-                        <span className="text-[10px] text-muted font-normal ml-1">— dán thông tin proxy bất kỳ định dạng</span>
+                        {locale === 'en' ? 'Quick Paste' : 'Dán nhanh'}
+                        <span className="text-[10px] text-muted font-normal ml-1">— {locale === 'en' ? 'paste proxy details in almost any format' : 'dán thông tin proxy ở nhiều định dạng'}</span>
                         <ChevronDown className={`w-3.5 h-3.5 text-muted ml-auto transition-transform ${pasteOpen ? 'rotate-180' : ''}`} />
                     </button>
 
@@ -301,17 +311,30 @@ export function ProxyConfigModal({ onClose, onSave, initial, initialAuth, onTest
 
                 {/* ProxyXoay auth */}
                 <div className="px-5 py-3 border-b border-border bg-surface/20">
-                <div className="text-[11px] font-medium text-text mb-2">Rotate Config</div>
+                <div className="flex items-center gap-2 mb-2">
+                    <div className="text-[11px] font-medium text-text">Rotate Config</div>
+                    <label className="ml-auto inline-flex items-center gap-1.5 text-[10px] text-muted cursor-pointer select-none">
+                        <input
+                            type="checkbox"
+                            checked={useRotateUrl}
+                            onChange={e => setUseRotateUrl(e.target.checked)}
+                            className="ba-checkbox"
+                        />
+                        Bật rotate link
+                    </label>
+                </div>
                 <div className="grid grid-cols-1 gap-2">
                     <input
                         value={rotateUrl}
                         onChange={e => setRotateUrl(e.target.value)}
+                        disabled={!useRotateUrl}
                         placeholder="Rotate URL (không cần bearer với proxy mới)"
                         className="w-full h-8 px-3 text-[11px] font-mono bg-surface border border-border rounded-lg text-text placeholder:text-muted/40 focus:outline-none focus:border-accent/60"
                     />
                     <input
                         value={bearerToken}
                         onChange={e => setBearerToken(e.target.value)}
+                            disabled={!useRotateUrl}
                             placeholder="Bearer access token (ưu tiên dùng token này)"
                             className="w-full h-8 px-3 text-[11px] font-mono bg-surface border border-border rounded-lg text-text placeholder:text-muted/40 focus:outline-none focus:border-accent/60"
                         />
@@ -319,12 +342,14 @@ export function ProxyConfigModal({ onClose, onSave, initial, initialAuth, onTest
                             <input
                                 value={providerUsername}
                                 onChange={e => setProviderUsername(e.target.value)}
+                                disabled={!useRotateUrl}
                                 placeholder="ProxyXoay username (fallback login)"
                                 className="w-full h-8 px-3 text-[11px] font-mono bg-surface border border-border rounded-lg text-text placeholder:text-muted/40 focus:outline-none focus:border-accent/60"
                             />
                             <input
                                 value={providerPassword}
                                 onChange={e => setProviderPassword(e.target.value)}
+                                disabled={!useRotateUrl}
                                 placeholder="ProxyXoay password (fallback login)"
                                 className="w-full h-8 px-3 text-[11px] font-mono bg-surface border border-border rounded-lg text-text placeholder:text-muted/40 focus:outline-none focus:border-accent/60"
                             />
@@ -354,7 +379,9 @@ export function ProxyConfigModal({ onClose, onSave, initial, initialAuth, onTest
                                         setBearerToken(String(importedAuth?.bearerToken || ''))
                                         setProviderUsername(String(importedAuth?.providerUsername || ''))
                                         setProviderPassword(String(importedAuth?.providerPassword || ''))
-                                        setRotateUrl(String(importedAuth?.rotateUrl || ''))
+                                        const importedRotateUrl = String(importedAuth?.rotateUrl || '')
+                                        setRotateUrl(importedRotateUrl)
+                                        setUseRotateUrl(Boolean(importedRotateUrl.trim()))
                                         setRotateResult(`Imported ${importedProxies.length} proxies from ${f.name}`)
                                     } catch (err) {
                                         setRotateResult(`Import failed: ${String(err)}`)
@@ -373,7 +400,12 @@ export function ProxyConfigModal({ onClose, onSave, initial, initialAuth, onTest
                                         exportedAt: new Date().toISOString(),
                                         globalRotateSecs: globalRotate,
                                         proxies,
-                                        proxyAuth: { bearerToken, providerUsername, providerPassword, rotateUrl },
+                                        proxyAuth: {
+                                            bearerToken: useRotateUrl ? bearerToken : '',
+                                            providerUsername: useRotateUrl ? providerUsername : '',
+                                            providerPassword: useRotateUrl ? providerPassword : '',
+                                            rotateUrl: useRotateUrl ? rotateUrl : '',
+                                        },
                                     }
                                     const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' })
                                     const url = URL.createObjectURL(blob)
@@ -401,9 +433,9 @@ export function ProxyConfigModal({ onClose, onSave, initial, initialAuth, onTest
                                 variant="secondary"
                                 size="xs"
                                 className="whitespace-nowrap"
-                                disabled={!onTestRotate || testingRotate}
+                                disabled={!onTestRotate || testingRotate || !useRotateUrl}
                                 onClick={async () => {
-                                    if (!onTestRotate) return
+                                    if (!onTestRotate || !useRotateUrl) return
                                     setTestingRotate(true)
                                     setRotateResult('')
                                     try {
@@ -492,7 +524,7 @@ export function ProxyConfigModal({ onClose, onSave, initial, initialAuth, onTest
                                     </button>
                                 </div>
 
-                                <div className="grid grid-cols-5 gap-2 px-3 pb-2.5">
+                                <div className="grid grid-cols-6 gap-2 px-3 pb-2.5">
                                     <div className="col-span-2">
                                         <label className="text-[9px] text-muted uppercase tracking-wider">Host</label>
                                         <input value={px.host} onChange={e => update(px.id, 'host', e.target.value)}
@@ -506,6 +538,11 @@ export function ProxyConfigModal({ onClose, onSave, initial, initialAuth, onTest
                                     <div>
                                         <label className="text-[9px] text-muted uppercase tracking-wider">User</label>
                                         <input value={px.username} onChange={e => update(px.id, 'username', e.target.value)}
+                                            className="w-full mt-0.5 h-6 px-2 text-[10px] font-mono bg-surface border border-border rounded-md text-text focus:outline-none focus:border-accent/60" />
+                                    </div>
+                                    <div>
+                                        <label className="text-[9px] text-muted uppercase tracking-wider">Pass</label>
+                                        <input type="password" value={px.password} onChange={e => update(px.id, 'password', e.target.value)}
                                             className="w-full mt-0.5 h-6 px-2 text-[10px] font-mono bg-surface border border-border rounded-md text-text focus:outline-none focus:border-accent/60" />
                                     </div>
                                     <div>
@@ -545,7 +582,12 @@ export function ProxyConfigModal({ onClose, onSave, initial, initialAuth, onTest
                     <Button
                         variant="primary"
                         size="sm"
-                        onClick={() => onSave(proxies, globalRotate, { bearerToken, providerUsername, providerPassword, rotateUrl })}
+                        onClick={() => onSave(proxies, globalRotate, {
+                            bearerToken: useRotateUrl ? bearerToken : '',
+                            providerUsername: useRotateUrl ? providerUsername : '',
+                            providerPassword: useRotateUrl ? providerPassword : '',
+                            rotateUrl: useRotateUrl ? rotateUrl : '',
+                        })}
                         className="gap-1.5"
                     >
                         <Shield className="w-3.5 h-3.5" />Save Config

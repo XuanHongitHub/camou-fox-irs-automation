@@ -19,6 +19,8 @@ packages_to_collect = [
     'idna',
     'charset_normalizer',
     'lxml',
+    'pymupdf',
+    'fitz',
 ]
 
 datas = [('irs_bot/data/us_city_zip_county.csv', 'irs_bot/data')]
@@ -57,6 +59,8 @@ a = Analysis(
         'aiohttp',
         'charset_normalizer',
         'chardet',
+        'pymupdf',
+        'fitz',
     ],
     hookspath=[],
     hooksconfig={},

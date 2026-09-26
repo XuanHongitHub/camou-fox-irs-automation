@@ -1,0 +1,12 @@
+{
+  "batch_id": "manual-run",
+  "record_id": "303029602",
+  "record_name": "CHRISTOPHER FORD",
+  "status": "manual_required",
+  "step6_ein": "",
+  "step6_legal_name": "",
+  "step6_data": {},
+  "proxy_code": "RUNTIME",
+  "proxy_ip": "",
+  "final_pdf_path": "artifacts\\manual-run\\__failed\\303029602\\303029602_no_ein_SUMMARY.pdf"
+}

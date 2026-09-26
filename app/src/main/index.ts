@@ -3939,6 +3939,56 @@ app.whenReady().then(async () => {
       return { ok: false, error: String(err) }
     }
   })
+  ipcMain.handle('irs:fix-output-zips', async (event, payload) => {
+    const scope = String(payload?.scope || 'tonight').trim()
+    const keys = Array.isArray(payload?.keys) ? payload.keys.join(',') : String(payload?.keys || '')
+    const skipPdfs = Boolean(payload?.skipPdfs)
+    const skipCsv = Boolean(payload?.skipCsv)
+    const args: string[] = ['fix-output-zips', '--scope', scope]
+    if (keys) { args.push('--keys', keys) }
+    if (skipPdfs) args.push('--skip-pdfs')
+    if (skipCsv) args.push('--skip-csv')
+    const senderWindow = BrowserWindow.fromWebContents(event.sender)
+    const sendProgress = (data: unknown) => {
+      try {
+        senderWindow?.webContents?.send('irs:fix-output-zips:progress', data)
+      } catch { /* ignore */ }
+    }
+    try {
+      const root = foxAutoRootPath()
+      if (is.dev) await ensureDevPythonReady()
+      const cmd = is.dev
+        ? (() => { const l = pythonDevLaunch(['-m', 'irs_bot', '--config', runtimeConfigPath(), ...args]); return { cmd: l.cmd, args: l.args } })()
+        : { cmd: cliBinaryPath(), args: ['--config', runtimeConfigPath(), ...args] }
+      const proc = spawn(cmd.cmd, cmd.args, {
+        cwd: root,
+        env: { ...process.env, PYTHONPATH: root, PYTHONUNBUFFERED: '1' },
+      })
+      let stdoutBuf = ''
+      let stderrBuf = ''
+      proc.stdout?.on('data', (d: Buffer) => {
+        stdoutBuf += d.toString()
+        const lines = stdoutBuf.split('\n')
+        stdoutBuf = lines.pop() ?? ''
+        for (const line of lines) {
+          const trimmed = line.trim()
+          if (!trimmed) continue
+          try {
+            const obj = JSON.parse(trimmed)
+            sendProgress(obj)
+          } catch {
+            sendProgress({ type: 'log', message: trimmed })
+          }
+        }
+      })
+      proc.stderr?.on('data', (d: Buffer) => { stderrBuf += d.toString() })
+      await new Promise<void>((resolve) => { proc.on('close', () => resolve()) })
+      return { ok: true }
+    } catch (err) {
+      sendProgress({ type: 'error', message: String(err) })
+      return { ok: false, error: String(err) }
+    }
+  })
   ipcMain.handle('irs:open-path', async (_event, payload) => {
     try {
       const target = String(payload?.path || '').trim()

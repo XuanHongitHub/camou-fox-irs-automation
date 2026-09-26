@@ -79,6 +79,7 @@ def enqueue_records(
             "source_file": source_file,
             "record": record,
             "sandbox": q_name == config.queue.queue_manual or "sandbox" in q_name.lower(),
+            "observe": "observe" in q_name.lower(),
         }
         
         job_id = f"{batch_id}:{record_id}"

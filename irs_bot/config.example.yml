@@ -26,6 +26,19 @@ proxy_runtime:
   port: 8178
   username: "YOUR_PROXY_RUNTIME_USERNAME"
   password: "YOUR_PROXY_RUNTIME_PASSWORD"
+  # Optional list mode (fallback when rotate_url is empty):
+  # bot will round-robin enabled proxies and respect change_ip_wait_seconds per proxy.
+  proxy_list:
+    - enabled: true
+      host: "http://proxy1.example.net"
+      port: 8000
+      username: ""
+      password: ""
+    - enabled: true
+      host: "socks5://proxy2.example.net"
+      port: 1080
+      username: ""
+      password: ""
   rotate_url: ""
   change_ip_wait_seconds: 15
   healthcheck_url: "http://api.ipify.org?format=json"
@@ -68,6 +81,14 @@ browser:
   timeout_ms: 30000
   step_delay_ms: 180
   step_delay_jitter_ms: 120
+  observe_mode_active: false
+  observe_step_delay_multiplier: 2.5
+  observe_extra_delay_ms: 350
+  observe_min_delay_ms: 1400
+  observe_min_jitter_ms: 450
+  observe_disable_ready_speedup: true
+  observe_type_char_delay_ms: 140
+  observe_field_pause_ms: 800
   manual_window_width: 1600
   manual_window_height: 960
   manual_autosave_seconds: 1.0

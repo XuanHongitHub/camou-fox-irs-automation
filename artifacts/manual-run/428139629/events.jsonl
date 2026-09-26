@@ -1,0 +1,2 @@
+{"time": "2026-09-22T05:27:25.094338+00:00", "record_id": "428139629", "attempt": 1, "event": "proxy_rotate", "proxy_code": "RUNTIME", "rotate_status": "SUCCESS", "rotate_message": "proxy rotated successfully", "new_ip": null}
+{"time": "2026-09-22T05:27:40.244971+00:00", "record_id": "428139629", "attempt": 1, "event": "attempt_exception", "error": "[Errno 22] Invalid argument"}

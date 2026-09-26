@@ -1,0 +1,12 @@
+{
+  "batch_id": "manual-run",
+  "record_id": "620565936",
+  "record_name": "CARMEN L ORTIZ",
+  "status": "manual_required",
+  "step6_ein": "",
+  "step6_legal_name": "",
+  "step6_data": {},
+  "proxy_code": "RUNTIME",
+  "proxy_ip": "",
+  "final_pdf_path": "artifacts\\manual-run\\__failed\\620565936\\620565936_no_ein_SUMMARY.pdf"
+}

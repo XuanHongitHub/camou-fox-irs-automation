@@ -1,3 +1,0 @@
-batch_id,record_id,status,attempt_count,proxy_used,started_at,ended_at,last_step,artifact_dir,error_code,error_message,confirmation_number
-batch-20260306-110020-1a2cfe68,rec-0001-zack-langer-tulsa-1145,success,1,SANDBOX,2026-03-06T04:15:34.543667+00:00,2026-03-06T04:16:28.699444+00:00,submitted,artifacts\batch-20260306-110020-1a2cfe68\rec-0001-zack-langer-tulsa-1145,,,
-batch-20260306-110020-1a2cfe68,rec-0002-savannah-smith-anadarko-5053,success,1,SANDBOX,2026-03-06T04:16:28.718882+00:00,2026-03-06T04:17:40.653607+00:00,submitted,artifacts\batch-20260306-110020-1a2cfe68\rec-0002-savannah-smith-anadarko-5053,,,

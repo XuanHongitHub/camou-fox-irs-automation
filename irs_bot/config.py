@@ -31,6 +31,7 @@ class ProxyRuntimeConfig:
     port: int
     username: str
     password: str
+    proxy_list: List[Dict[str, Any]] = field(default_factory=list)
     rotate_url: str = ""
     change_ip_wait_seconds: int = 15
     healthcheck_url: str = "https://api.ipify.org?format=json"
@@ -61,6 +62,7 @@ class QueueConfig:
     queue_default: str = "ein.default"
     queue_retry: str = "ein.retry"
     queue_manual: str = "ein.manual"
+    queue_observe: str = "ein.observe"
     queue_timezone: str = "Asia/Ho_Chi_Minh"
     queue_country: str = "VN"
     queue_start_hour: int = 18
@@ -83,6 +85,14 @@ class BrowserConfig:
     timeout_ms: int = 30000
     step_delay_ms: int = 180
     step_delay_jitter_ms: int = 120
+    observe_mode_active: bool = False
+    observe_step_delay_multiplier: float = 2.5
+    observe_extra_delay_ms: int = 350
+    observe_min_delay_ms: int = 1400
+    observe_min_jitter_ms: int = 450
+    observe_disable_ready_speedup: bool = True
+    observe_type_char_delay_ms: int = 140
+    observe_field_pause_ms: int = 800
     manual_window_width: int = 1600
     manual_window_height: int = 960
     manual_autosave_seconds: float = 1.0
@@ -175,11 +185,35 @@ def load_config(path: str | Path) -> AppConfig:
     )
 
     runtime = _require(data, "proxy_runtime", "root")
+    raw_proxy_list = runtime.get("proxy_list", runtime.get("proxies", [])) or []
+    proxy_list: List[Dict[str, Any]] = []
+    if isinstance(raw_proxy_list, list):
+        for item in raw_proxy_list:
+            if not isinstance(item, dict):
+                continue
+            host = str(item.get("host", "") or "").strip()
+            if not host:
+                continue
+            port_raw = item.get("port", 0)
+            try:
+                port = int(port_raw or 0)
+            except Exception:
+                port = 0
+            proxy_list.append(
+                {
+                    "host": host,
+                    "port": port,
+                    "username": str(item.get("username", "") or ""),
+                    "password": str(item.get("password", "") or ""),
+                    "enabled": bool(item.get("enabled", True)),
+                }
+            )
     runtime_cfg = ProxyRuntimeConfig(
         host=_require(runtime, "host", "proxy_runtime"),
         port=int(_require(runtime, "port", "proxy_runtime")),
         username=_require(runtime, "username", "proxy_runtime"),
         password=_require(runtime, "password", "proxy_runtime"),
+        proxy_list=proxy_list,
         rotate_url=str(runtime.get("rotate_url", "") or ""),
         change_ip_wait_seconds=int(runtime.get("change_ip_wait_seconds", 15)),
         healthcheck_url=runtime.get("healthcheck_url", "https://api.ipify.org?format=json"),
