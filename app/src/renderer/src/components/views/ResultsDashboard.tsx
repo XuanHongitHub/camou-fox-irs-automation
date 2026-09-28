@@ -4,7 +4,7 @@ import {
     FileText, RefreshCw, Copy,
     ChevronDown, ChevronUp, X, Check, BarChart3, Clock, Calendar,
     Globe, Hash, ChevronRight, FolderOpen,
-    Cloud, EyeOff, Eye, RotateCcw, ShieldCheck, SlidersHorizontal
+    Cloud, EyeOff, Eye, RotateCcw, ShieldCheck, SlidersHorizontal, Upload
 } from 'lucide-react'
 import { Button } from '../base/Button'
 import { useI18n } from '../../i18n/useI18n'
@@ -299,7 +299,7 @@ export function ResultsDashboard({
     onRefresh?: () => void
     onQuickExportStyled?: (batchId: string, reportType?: 'report' | 'failures') => void
     onQuickExportSelected?: (rows: ResultRow[], reportType?: 'report' | 'failures') => void
-    onQuickExportSelectedNext?: (rows: ResultRow[], reportType?: 'report' | 'failures') => void
+    onQuickExportSelectedNext?: (rows: ResultRow[], reportType?: 'report' | 'failures', forceAll?: boolean) => void
     quickExportSelectedNextRunning?: boolean
     quickExportSelectedNextLabel?: string
     onNotify?: (msg: string, type?: 'success' | 'error' | 'warning' | 'info') => void
@@ -658,21 +658,37 @@ export function ResultsDashboard({
                             <span className="text-[10px] text-muted uppercase">{locale === 'en' ? 'Results' : 'Dòng'}</span>
                         </div>
                         <div className="h-6 w-px bg-border/40" />
-                        <div className="flex items-center gap-4">
-                            <div className="flex items-center gap-2">
+                        <div className="flex items-center gap-2">
+                            <button
+                                onClick={() => setStatusFilter(f => f === 'done' ? 'all' : 'done')}
+                                className={`flex items-center gap-2 px-2.5 py-1 rounded-xl transition-all ${
+                                    statusFilter === 'done'
+                                        ? 'bg-success/20 ring-1 ring-success/50 shadow-xs'
+                                        : 'hover:bg-surface/80'
+                                }`}
+                                title="Bấm để lọc nhanh danh sách Hoàn tất"
+                            >
                                 <CheckCircle2 className="w-4 h-4 text-success" />
-                                <div className="flex flex-col leading-none">
+                                <div className="flex flex-col text-left leading-none">
                                     <span className="text-sm font-bold text-success tabular-nums">{stats.done}</span>
                                     <span className="text-[9px] text-muted uppercase">{locale === 'en' ? 'Completed' : 'Hoàn tất'}</span>
                                 </div>
-                            </div>
-                            <div className="flex items-center gap-2">
+                            </button>
+                            <button
+                                onClick={() => setStatusFilter(f => f === 'failed' ? 'all' : 'failed')}
+                                className={`flex items-center gap-2 px-2.5 py-1 rounded-xl transition-all ${
+                                    statusFilter === 'failed'
+                                        ? 'bg-danger/20 ring-1 ring-danger/50 shadow-xs'
+                                        : 'hover:bg-surface/80'
+                                }`}
+                                title="Bấm để lọc nhanh danh sách Thất bại"
+                            >
                                 <AlertCircle className="w-4 h-4 text-danger" />
-                                <div className="flex flex-col leading-none">
+                                <div className="flex flex-col text-left leading-none">
                                     <span className="text-sm font-bold text-danger tabular-nums">{stats.failed}</span>
                                     <span className="text-[9px] text-muted uppercase">{locale === 'en' ? 'Failed' : 'Thất bại'}</span>
                                 </div>
-                            </div>
+                            </button>
                         </div>
                     </div>
                 </div>
@@ -829,6 +845,46 @@ export function ResultsDashboard({
                     {batches.map(b => <option key={b} value={b}>{b === 'all' ? (locale === 'en' ? 'All batches' : 'Tất cả batch') : b}</option>)}
                 </select>
 
+                {/* Status Filter segmented control: Tất cả | Hoàn tất | Thất bại */}
+                <div className="flex items-center p-0.5 bg-surface border border-border rounded-xl">
+                    <button
+                        onClick={() => setStatusFilter('all')}
+                        className={`h-7 px-2.5 text-[11px] font-medium rounded-lg transition-all ${
+                            statusFilter === 'all'
+                                ? 'bg-panel text-text font-semibold shadow-xs'
+                                : 'text-muted hover:text-text'
+                        }`}
+                    >
+                        {locale === 'en' ? 'All' : 'Tất cả'}
+                    </button>
+                    <button
+                        onClick={() => setStatusFilter(f => f === 'done' ? 'all' : 'done')}
+                        className={`h-7 px-2.5 text-[11px] font-medium rounded-lg flex items-center gap-1.5 transition-all ${
+                            statusFilter === 'done'
+                                ? 'bg-success/20 text-success border border-success/30 font-semibold shadow-xs'
+                                : 'text-muted hover:text-success'
+                        }`}
+                        title="Lọc chỉ các hồ sơ Hoàn tất thành công (DONE)"
+                    >
+                        <CheckCircle2 className="w-3.5 h-3.5 text-success" />
+                        <span>{locale === 'en' ? 'Done' : 'Hoàn tất'}</span>
+                        <span className="text-[10px] tabular-nums font-mono opacity-80">({stats.done})</span>
+                    </button>
+                    <button
+                        onClick={() => setStatusFilter(f => f === 'failed' ? 'all' : 'failed')}
+                        className={`h-7 px-2.5 text-[11px] font-medium rounded-lg flex items-center gap-1.5 transition-all ${
+                            statusFilter === 'failed'
+                                ? 'bg-danger/20 text-danger border border-danger/30 font-semibold shadow-xs'
+                                : 'text-muted hover:text-danger'
+                        }`}
+                        title="Lọc chỉ các hồ sơ Thất bại"
+                    >
+                        <AlertCircle className="w-3.5 h-3.5 text-danger" />
+                        <span>{locale === 'en' ? 'Failed' : 'Thất bại'}</span>
+                        <span className="text-[10px] tabular-nums font-mono opacity-80">({stats.failed})</span>
+                    </button>
+                </div>
+
                 {/* Display filter options in 1 clean dropdown */}
                 <div className="relative">
                     <button
@@ -975,24 +1031,76 @@ export function ResultsDashboard({
                     >
                         <Download className="w-3.5 h-3.5" />{locale === 'en' ? 'Export Report' : 'Xuất báo cáo'} {selectedRows.length ? `(${selectedRows.length})` : ''}
                     </Button>
-                    <Button
-                        variant="secondary"
-                        size="xs"
-                        className={`h-8 gap-1.5 rounded-xl px-3 ${quickExportSelectedNextRunning ? 'opacity-80' : ''}`}
-                        onClick={() => {
-                            if (quickExportSelectedNextRunning) return
-                            if (!selectedRows.length) {
-                                onNotify?.('Hãy tick ít nhất 1 record để upload selected', 'warning')
-                                return
-                            }
-                            const reportType = statusFilter === 'failed' ? 'failures' : 'report'
-                            onQuickExportSelectedNext?.(selectedRows, reportType)
-                        }}
-                        disabled={selectedRows.length === 0 || quickExportSelectedNextRunning}
-                    >
-                        {quickExportSelectedNextRunning ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : <Download className="w-3.5 h-3.5" />}
-                        {quickExportSelectedNextRunning ? quickExportSelectedNextLabel : (locale === 'en' ? 'Upload Selection' : 'Tải lên mục đã chọn')}
-                    </Button>
+                    {(() => {
+                        const unuploadedCount = selectedRows.filter(r => !r.uploaded_to_drive).length
+                        const uploadedCount = selectedRows.filter(r => r.uploaded_to_drive).length
+                        const isAllUploaded = selectedRows.length > 0 && unuploadedCount === 0
+                        const isMixed = unuploadedCount > 0 && uploadedCount > 0
+
+                        return (
+                            <div className="flex items-center gap-1">
+                                <Button
+                                    variant="secondary"
+                                    size="xs"
+                                    className={`h-8 gap-1.5 rounded-xl px-3 ${quickExportSelectedNextRunning ? 'opacity-80' : ''} ${isAllUploaded ? 'border-sky-500/40 text-sky-300 bg-sky-500/10 hover:bg-sky-500/20' : ''}`}
+                                    onClick={() => {
+                                        if (quickExportSelectedNextRunning) return
+                                        if (!selectedRows.length) {
+                                            onNotify?.('Hãy tick ít nhất 1 record để upload', 'warning')
+                                            return
+                                        }
+                                        const reportType = statusFilter === 'failed' ? 'failures' : 'report'
+                                        if (isAllUploaded) {
+                                            onQuickExportSelectedNext?.(selectedRows, reportType, true)
+                                        } else if (isMixed) {
+                                            const targetRows = selectedRows.filter(r => !r.uploaded_to_drive)
+                                            onQuickExportSelectedNext?.(targetRows, reportType, false)
+                                        } else {
+                                            onQuickExportSelectedNext?.(selectedRows, reportType, false)
+                                        }
+                                    }}
+                                    disabled={selectedRows.length === 0 || quickExportSelectedNextRunning}
+                                    title={
+                                        isAllUploaded
+                                            ? 'Cập nhật / ghi đè các file PDF đã sửa lên Google Drive'
+                                            : isMixed
+                                                ? `Tải lên ${unuploadedCount} hồ sơ chưa có trên Drive (bỏ qua ${uploadedCount} hồ sơ đã tải)`
+                                                : 'Tải các hồ sơ đã chọn lên Google Drive'
+                                    }
+                                >
+                                    {quickExportSelectedNextRunning ? (
+                                        <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                                    ) : isAllUploaded ? (
+                                        <Cloud className="w-3.5 h-3.5 text-sky-400" />
+                                    ) : (
+                                        <Upload className="w-3.5 h-3.5" />
+                                    )}
+                                    {quickExportSelectedNextRunning
+                                        ? quickExportSelectedNextLabel
+                                        : isAllUploaded
+                                            ? (locale === 'en' ? `Sync to Drive (${selectedRows.length})` : `Cập nhật Drive (${selectedRows.length})`)
+                                            : isMixed
+                                                ? (locale === 'en' ? `Upload New (${unuploadedCount})` : `Tải lên (${unuploadedCount} mới)`)
+                                                : (locale === 'en' ? `Upload Selection (${selectedRows.length})` : `Tải lên mục đã chọn (${selectedRows.length})`)}
+                                </Button>
+                                {isMixed && (
+                                    <Button
+                                        variant="ghost"
+                                        size="xs"
+                                        className="h-8 px-2 rounded-xl text-[10px] text-muted hover:text-sky-300"
+                                        onClick={() => {
+                                            if (quickExportSelectedNextRunning) return
+                                            const reportType = statusFilter === 'failed' ? 'failures' : 'report'
+                                            onQuickExportSelectedNext?.(selectedRows, reportType, true)
+                                        }}
+                                        title={`Đồng bộ / ghi đè toàn bộ ${selectedRows.length} hồ sơ đã chọn lên Google Drive`}
+                                    >
+                                        {locale === 'en' ? 'Sync All' : `Ghi đè tất cả (${selectedRows.length})`}
+                                    </Button>
+                                )}
+                            </div>
+                        )
+                    })()}
                 </div>
                 </div>
             </div>

@@ -44,6 +44,55 @@ from .storage import RESULT_HEADERS, _sync_styled_xlsx
 logger = logging.getLogger("irs_bot.zip_fixer")
 
 
+class GoogleDriveSession:
+    """Manages an OAuth-authenticated Google Drive session for file download and in-place update."""
+    def __init__(self, client_json: str, user_json: str):
+        self.client_json = client_json
+        self.user_json = user_json
+        self.access_token = ""
+        self.token_expiry = 0.0
+        self._ensure_token()
+
+    def _ensure_token(self):
+        import time
+        if time.time() < self.token_expiry - 60 and self.access_token:
+            return
+        client = json.loads(Path(self.client_json).read_text("utf-8"))
+        user = json.loads(Path(self.user_json).read_text("utf-8"))
+        body = {
+            "client_id": client["web"]["client_id"],
+            "client_secret": client["web"]["client_secret"],
+            "refresh_token": user["refresh_token"],
+            "grant_type": "refresh_token",
+        }
+        resp = requests.post("https://oauth2.googleapis.com/token", data=body, timeout=30)
+        data = resp.json()
+        if resp.status_code != 200 or not data.get("access_token"):
+            raise RuntimeError(f"Failed to refresh OAuth token: {data}")
+        self.access_token = data["access_token"]
+        expires_in = data.get("expires_in", 3500)
+        self.token_expiry = time.time() + expires_in
+
+    def headers(self) -> Dict[str, str]:
+        self._ensure_token()
+        return {"Authorization": f"Bearer {self.access_token}"}
+
+    def download_file(self, file_id: str) -> bytes:
+        url = f"https://www.googleapis.com/drive/v3/files/{file_id}"
+        resp = requests.get(url, headers=self.headers(), params={"alt": "media", "supportsAllDrives": "true"}, timeout=60)
+        if resp.status_code != 200:
+            raise RuntimeError(f"Failed to download file {file_id}: HTTP {resp.status_code}")
+        return resp.content
+
+    def upload_file_in_place(self, file_id: str, content: bytes, mime_type: str = "application/pdf"):
+        url = f"https://www.googleapis.com/upload/drive/v3/files/{file_id}?uploadType=media&supportsAllDrives=true"
+        hdrs = self.headers()
+        hdrs["Content-Type"] = mime_type
+        resp = requests.patch(url, headers=hdrs, data=content, timeout=60)
+        if resp.status_code != 200:
+            raise RuntimeError(f"Failed to update file {file_id}: HTTP {resp.status_code} - {resp.text}")
+
+
 def extract_file_id_from_url(url: str) -> str:
     """Extracts the Google Drive file ID from a view or download URL."""
     if not url:
@@ -545,18 +594,17 @@ def scan_and_fix_outputs(
 
     drive_session = None
     if sync_drive:
+        appdata_roaming = os.environ.get("APPDATA", "")
         drive_candidates = [
             (storage_root / "google-drive" / "oauth-web-client.json", storage_root / "google-drive" / "oauth-user.json"),
+            (Path(appdata_roaming) / "bug-auto" / "google-drive" / "oauth-web-client.json", Path(appdata_roaming) / "bug-auto" / "google-drive" / "oauth-user.json") if appdata_roaming else (None, None),
+            (Path(appdata_roaming) / "IRS_Bot" / "google-drive" / "oauth-web-client.json", Path(appdata_roaming) / "IRS_Bot" / "google-drive" / "oauth-user.json") if appdata_roaming else (None, None),
             (Path(sys.executable).parent / "private" / "google-drive" / "oauth-web-client.json", Path(sys.executable).parent / "private" / "google-drive" / "oauth-user.json"),
             (Path(r"F:\Herd\fox-auto\private\google-drive\oauth-web-client.json"), Path(r"F:\Herd\fox-auto\private\google-drive\oauth-user.json")),
         ]
         for client_p, user_p in drive_candidates:
-            if client_p.exists() and user_p.exists():
+            if client_p and client_p.exists() and user_p and user_p.exists():
                 try:
-                    scripts_dir = str(Path(r"F:\Herd\fox-auto\scripts"))
-                    if scripts_dir not in sys.path:
-                        sys.path.insert(0, scripts_dir)
-                    from drive_pdf_zip_updater import GoogleDriveSession
                     drive_session = GoogleDriveSession(str(client_p), str(user_p))
                     if progress_cb:
                         progress_cb({"type": "log", "message": "🔗 Đã kết nối Google Drive Session để đồng bộ file trực tiếp."})

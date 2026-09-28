@@ -1601,7 +1601,7 @@ function AppContent({
     showMessage(`Đã export selected ${reportType} XLSX: ${res.rows || selectedRows.length} rows`)
   }, [])
 
-  const quickExportSelectedStyledNext = useCallback(async (rows: ResultRow[], reportType: 'report' | 'failures' = 'report') => {
+  const quickExportSelectedStyledNext = useCallback(async (rows: ResultRow[], reportType: 'report' | 'failures' = 'report', forceAll = false) => {
     const ipc = window.electron?.ipcRenderer
     if (!ipc) return
     if (bundleUploadRunning) return
@@ -1626,7 +1626,8 @@ function AppContent({
         rows: selectedRows,
         batchId: batchToken,
         type: reportType,
-        nextOnly: false,
+        nextOnly: !forceAll,
+        forceAll,
       })
       if (!res?.ok) {
         showMessage(`Upload selected lỗi: ${res?.error || 'unknown'}`, 'error')
@@ -1640,12 +1641,13 @@ function AppContent({
       const part = Number(res.part || 0)
       const skipped = Number(res.skipped_duplicates || 0)
       const partText = part > 0 ? ` part ${part}` : ''
-      showMessage(`Đã upload phần đã chọn${partText}: ${res.rows || selectedRows.length} dòng${skipped ? ` (trùng ${skipped})` : ''}`)
+      showMessage(`Đã upload phần đã chọn${partText}: ${res.rows || selectedRows.length} dòng${skipped ? ` (bỏ qua ${skipped} dòng đã có trên Drive)` : ''}`)
+      loadResultsFromDisk()
     } finally {
       setBundleUploadRunning(false)
       setBundleUploadLabel(uiLanguage === 'en' ? 'Upload Selection' : 'Tải lên mục đã chọn')
     }
-  }, [bundleUploadRunning])
+  }, [bundleUploadRunning, uiLanguage, loadResultsFromDisk])
 
   const applyRuntimeConfig = useCallback(async (override?: Partial<{ proxies: any[]; globalRotateSecs: number; bearerToken: string; providerUsername: string; providerPassword: string; rotateUrl: string; flowMode: FlowMode; browserMode: BrowserMode; forceRunNow: boolean }>) => {
     const ipc = window.electron?.ipcRenderer

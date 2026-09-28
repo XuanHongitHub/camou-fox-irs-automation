@@ -1436,10 +1436,11 @@ async function googleDriveUploadFile(input: {
   remoteName: string
   mimeType: string
   replaceExisting?: boolean
+  existingId?: string
 }) {
-  const existingId = input.replaceExisting
+  const existingId = input.existingId || (input.replaceExisting
     ? await googleDriveFindFileIdByName(input.token, input.folderId, input.remoteName)
-    : ''
+    : '')
   const metadataObj: Record<string, unknown> = { name: input.remoteName }
   if (!existingId) {
     metadataObj.parents = [input.folderId]
@@ -2196,7 +2197,34 @@ async function buildAndUploadDriveBundle(input: {
   for (let idx = 0; idx < input.rows.length; idx += 1) {
     const row = input.rows[idx] || {}
     const source = inputs.get(String(row?.record_id || '').trim()) || {}
-    const sourcePdfPath = normalizeRuntimePath(String(row?.final_pdf_path || row?.pdf_path || '').trim())
+    let sourcePdfPath = ''
+    const candidatePaths = [
+      String(row?.final_pdf_path || '').trim(),
+      String(row?.pdf_path || '').trim(),
+    ]
+    for (const cand of candidatePaths) {
+      if (!cand) continue
+      const norm = normalizeRuntimePath(cand)
+      if (existsSync(norm)) {
+        sourcePdfPath = norm
+        break
+      }
+      const rel = normalizeRuntimePath(join(input.baseDir, cand))
+      if (existsSync(rel)) {
+        sourcePdfPath = rel
+        break
+      }
+    }
+    if (!sourcePdfPath && row?.artifact_dir) {
+      const artDir = normalizeRuntimePath(String(row.artifact_dir).trim())
+      if (existsSync(artDir)) {
+        try {
+          const files = readdirSync(artDir)
+          const pdf = files.find((f) => f.toLowerCase().endsWith('.pdf'))
+          if (pdf) sourcePdfPath = join(artDir, pdf)
+        } catch {}
+      }
+    }
     let fileName = ''
     let localPdfPath = ''
     let hasPdf = false
@@ -2227,26 +2255,24 @@ async function buildAndUploadDriveBundle(input: {
         try {
           await fs.access(item.sourcePdfPath)
           await fs.copyFile(item.sourcePdfPath, item.localPdfPath)
-          let fileId = String(existingPdfByName.get(item.fileName) || '').trim()
-          if (fileId) {
-            reusedPdfCount += 1
-          } else {
-            for (let attempt = 1; attempt <= 2; attempt += 1) {
-              try {
-                fileId = await googleDriveUploadFile({
-                  token,
-                  folderId: drivePdfFolderId,
-                  localPath: item.localPdfPath,
-                  remoteName: item.fileName,
-                  mimeType: 'application/pdf',
-                  replaceExisting: true,
-                })
-                existingPdfByName.set(item.fileName, fileId)
-                break
-              } catch (upErr) {
-                if (attempt === 2) throw upErr
-                await new Promise((r) => setTimeout(r, 1000))
-              }
+          const existingId = String(existingPdfByName.get(item.fileName) || '').trim()
+          let fileId = ''
+          for (let attempt = 1; attempt <= 2; attempt += 1) {
+            try {
+              fileId = await googleDriveUploadFile({
+                token,
+                folderId: drivePdfFolderId,
+                localPath: item.localPdfPath,
+                remoteName: item.fileName,
+                mimeType: 'application/pdf',
+                replaceExisting: true,
+                existingId: existingId || undefined,
+              })
+              existingPdfByName.set(item.fileName, fileId)
+              break
+            } catch (upErr) {
+              if (attempt === 2) throw upErr
+              await new Promise((r) => setTimeout(r, 1000))
             }
           }
           await googleDriveMakePublic(token, fileId).catch(() => {})
@@ -3697,7 +3723,8 @@ app.whenReady().then(async () => {
       const filteredRows = sourceRows.filter((row: any) => String(row?.confirmation_number || row?.step6_ein || '').trim())
       if (!filteredRows.length) return { ok: false, error: 'No confirmed rows after filter' }
       const base = storageRootDir()
-      const nextOnly = Boolean(payload?.nextOnly ?? true)
+      const forceAll = Boolean(payload?.forceAll)
+      const nextOnly = forceAll ? false : Boolean(payload?.nextOnly ?? true)
       const uniqueBatches = Array.from(new Set(filteredRows.map((row: any) => String(row?.batch_id || '').trim()).filter(Boolean)))
       const batchToken = String(uniqueBatches.length === 1 ? uniqueBatches[0] : 'mixed')
       const uploadToken = `bundle_upload:${batchToken}`
@@ -3708,15 +3735,20 @@ app.whenReady().then(async () => {
       if (nextOnly) {
         continuationState = await loadExportContinuationState(base)
         const tokenExported = ensureTokenExportMap(continuationState, uploadToken)
+        const drivePushState = await loadGoogleDriveAutoPushState(base)
+        const driveMap = drivePushState.pdf_url_by_batch_record || {}
         const seen = new Set<string>()
         const dedupedRows: any[] = []
         for (const row of filteredRows) {
           const key = makeExportRowKey(row)
+          const bid = String(row?.batch_id || '').trim()
+          const rid = String(row?.record_id || '').trim()
+          const isDriveUploaded = Boolean(row?.uploaded_to_drive || driveMap[`${bid}:${rid}`] || driveMap[`${bid}::${rid}`] || driveMap[rid])
           if (!key) {
-            dedupedRows.push(row)
+            if (!isDriveUploaded) dedupedRows.push(row)
             continue
           }
-          if (tokenExported[key] || seen.has(key)) {
+          if (tokenExported[key] || seen.has(key) || isDriveUploaded) {
             skippedDuplicates += 1
             continue
           }
@@ -3724,7 +3756,7 @@ app.whenReady().then(async () => {
           dedupedRows.push(row)
         }
         rowsToUpload = dedupedRows
-        if (!rowsToUpload.length) return { ok: false, error: 'No new rows after removing duplicates (already uploaded)' }
+        if (!rowsToUpload.length) return { ok: false, error: 'Tất cả các mục đã chọn đều đã có trên Google Drive.' }
         part = nextPartNumber(continuationState, uploadToken)
         continuationState.part_by_token[uploadToken] = part
       }
