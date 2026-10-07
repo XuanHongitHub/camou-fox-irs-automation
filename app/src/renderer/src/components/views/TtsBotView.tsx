@@ -35,7 +35,9 @@ import {
   Stethoscope,
   XCircle,
   CheckCheck,
-  Play
+  Play,
+  Key,
+  Save
 } from 'lucide-react'
 
 export interface RecordItem {
@@ -224,6 +226,16 @@ const ttsIpc = {
   adspowerStop: async (userId: string) => {
     if (window.api?.tts?.adspower?.stop) return await window.api.tts.adspower.stop(userId)
     if (window.electron?.ipcRenderer) return await window.electron.ipcRenderer.invoke('tts:adspower:stop', userId)
+    return { ok: false, error: 'IPC unavailable' }
+  },
+  adspowerGetConfig: async () => {
+    if ((window.api?.tts?.adspower as any)?.getConfig) return await (window.api?.tts?.adspower as any).getConfig()
+    if (window.electron?.ipcRenderer) return await window.electron.ipcRenderer.invoke('tts:adspower:get-config')
+    return { ok: false, apiKey: '', baseUrl: '' }
+  },
+  adspowerSetConfig: async (payload: { apiKey?: string; baseUrl?: string }) => {
+    if ((window.api?.tts?.adspower as any)?.setConfig) return await (window.api?.tts?.adspower as any).setConfig(payload)
+    if (window.electron?.ipcRenderer) return await window.electron.ipcRenderer.invoke('tts:adspower:set-config', payload)
     return { ok: false, error: 'IPC unavailable' }
   },
   inboxList: async () => {
@@ -423,6 +435,13 @@ export function TtsBotView() {
   const [isRunningPreflight, setIsRunningPreflight] = useState(false)
   const [preflightCopyFeedback, setPreflightCopyFeedback] = useState(false)
 
+  // AdsPower Local API Config State
+  const [adsApiKeyInput, setAdsApiKeyInput] = useState('c9ea96522fba29ee72f2fee511b77868008da729dcdcc201')
+  const [adsBaseUrlInput, setAdsBaseUrlInput] = useState('http://127.0.0.1:50325')
+  const [isSavingAdsConfig, setIsSavingAdsConfig] = useState(false)
+  const [adsConfigSavedFeedback, setAdsConfigSavedFeedback] = useState(false)
+  const [copiedDefaultKeyFeedback, setCopiedDefaultKeyFeedback] = useState(false)
+
   // Selected Record & Drawer
   const [selectedRecordId, setSelectedRecordId] = useState<string>('')
   const [isDrawerOpen, setIsDrawerOpen] = useState(false)
@@ -527,9 +546,10 @@ export function TtsBotView() {
         if (res.data.consumedRecords) setConsumedRecords(res.data.consumedRecords)
         if (res.data.activeTab) setSelectedSheetTab(res.data.activeTab)
         if (res.data.harvestedUploads) setHarvestedUploads(res.data.harvestedUploads)
-        if (res.data.mailStatuses) setMailStatuses(res.data.mailStatuses)
         if (res.data.poolFolderPath) setPoolFolderPath(res.data.poolFolderPath)
         if (res.data.autoConfig) setAutoConfig((prev) => ({ ...prev, ...res.data.autoConfig }))
+        if (res.data.adsApiKey) setAdsApiKeyInput(res.data.adsApiKey)
+        if (res.data.adsBaseUrl) setAdsBaseUrlInput(res.data.adsBaseUrl)
 
         // Hydrate in-memory records with saved setups
         setRecords((prev) =>
@@ -548,10 +568,44 @@ export function TtsBotView() {
           })
         )
       }
+
+      // Also query current live config from main process
+      try {
+        const adsCfg = await ttsIpc.adspowerGetConfig()
+        if (adsCfg && adsCfg.ok) {
+          if (adsCfg.apiKey) setAdsApiKeyInput(adsCfg.apiKey)
+          if (adsCfg.baseUrl) setAdsBaseUrlInput(adsCfg.baseUrl)
+        }
+      } catch {}
     } catch (err) {
       console.error('Failed to load state:', err)
     }
   }, [])
+
+  // Save AdsPower Local API Config Handler
+  const handleSaveAdsConfig = useCallback(async (newKey?: string, newBase?: string) => {
+    const keyToSave = newKey !== undefined ? newKey : adsApiKeyInput
+    const baseToSave = newBase !== undefined ? newBase : adsBaseUrlInput
+    setIsSavingAdsConfig(true)
+    try {
+      const res = await ttsIpc.adspowerSetConfig({
+        apiKey: keyToSave,
+        baseUrl: baseToSave
+      })
+      if (res && res.ok) {
+        if (res.apiKey) setAdsApiKeyInput(res.apiKey)
+        if (res.baseUrl) setAdsBaseUrlInput(res.baseUrl)
+        setAdsConfigSavedFeedback(true)
+        setTimeout(() => setAdsConfigSavedFeedback(false), 3000)
+        // Refresh connection status
+        refreshStatus()
+      }
+    } catch (err) {
+      console.error('Failed to save AdsPower config:', err)
+    } finally {
+      setIsSavingAdsConfig(false)
+    }
+  }, [adsApiKeyInput, adsBaseUrlInput, refreshStatus])
 
   // 3. Save State Helper
   const persistState = useCallback(async (
@@ -4341,6 +4395,81 @@ export function TtsBotView() {
                   </label>
                 </div>
               </div>
+
+              {/* Nhóm 5: CẤU HÌNH ADSPOWER LOCAL API & KEY */}
+              <div className="bg-slate-950/70 border border-slate-800/80 rounded-xl p-4 space-y-3.5">
+                <div className="flex items-center space-x-2 pb-2 border-b border-slate-800/60">
+                  <Key className="w-4 h-4 text-cyan-400" />
+                  <h4 className="text-xs font-bold text-slate-200 uppercase tracking-wider">
+                    5. Cấu Hình AdsPower Local API (API Key & Cổng 50325)
+                  </h4>
+                </div>
+
+                <div className="space-y-3">
+                  <p className="text-[11px] text-slate-400">
+                    Nếu phần mềm AdsPower báo lỗi <i>&quot;Require api-key&quot;</i> hoặc <i>&quot;API Key mismatch&quot;</i>, bạn hãy mở <b>AdsPower ➜ Cài đặt ➜ Local API</b>, sao chép API Key rồi dán vào đây:
+                  </p>
+
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                    <div>
+                      <label className="text-xs font-semibold text-slate-300 block mb-1">
+                        AdsPower API Key
+                      </label>
+                      <input
+                        type="text"
+                        value={adsApiKeyInput}
+                        onChange={(e) => setAdsApiKeyInput(e.target.value)}
+                        placeholder="Dán mã API Key của AdsPower..."
+                        className="w-full px-3 py-1.5 text-xs bg-slate-900 border border-slate-700 rounded-lg text-white font-mono focus:border-cyan-400 focus:outline-none"
+                      />
+                    </div>
+                    <div>
+                      <label className="text-xs font-semibold text-slate-300 block mb-1">
+                        Cổng Local API / Base URL
+                      </label>
+                      <input
+                        type="text"
+                        value={adsBaseUrlInput}
+                        onChange={(e) => setAdsBaseUrlInput(e.target.value)}
+                        placeholder="http://127.0.0.1:50325"
+                        className="w-full px-3 py-1.5 text-xs bg-slate-900 border border-slate-700 rounded-lg text-white font-mono focus:border-cyan-400 focus:outline-none"
+                      />
+                    </div>
+                  </div>
+
+                  <div className="flex items-center justify-between pt-1">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        navigator.clipboard.writeText('c9ea96522fba29ee72f2fee511b77868008da729dcdcc201')
+                        setCopiedDefaultKeyFeedback(true)
+                        setTimeout(() => setCopiedDefaultKeyFeedback(false), 2000)
+                      }}
+                      className="text-[11px] text-cyan-400 hover:text-cyan-300 underline cursor-pointer"
+                    >
+                      {copiedDefaultKeyFeedback
+                        ? '✓ Đã copy key mặc định!'
+                        : '📋 Copy key mặc định hệ thống (để dán vào AdsPower)'}
+                    </button>
+                    <div className="flex items-center space-x-2">
+                      {adsConfigSavedFeedback && (
+                        <span className="text-[11px] text-emerald-400 font-semibold animate-pulse">
+                          ✓ Đã lưu!
+                        </span>
+                      )}
+                      <button
+                        type="button"
+                        disabled={isSavingAdsConfig}
+                        onClick={() => handleSaveAdsConfig()}
+                        className="px-3 py-1 bg-cyan-700 hover:bg-cyan-600 text-white text-xs font-semibold rounded-lg flex items-center space-x-1 shadow transition-all cursor-pointer"
+                      >
+                        <Save className="w-3.5 h-3.5" />
+                        <span>{isSavingAdsConfig ? 'Đang lưu...' : 'Lưu Key AdsPower'}</span>
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              </div>
             </div>
 
             {/* Modal Footer */}
@@ -5397,6 +5526,84 @@ export function TtsBotView() {
                                   <div className="mt-2.5 p-2 rounded-lg bg-slate-900/90 border border-slate-800/80 text-[11px] text-slate-400 flex items-start space-x-1.5">
                                     <span className="text-amber-400 shrink-0 font-bold">💡 Hướng dẫn máy mới:</span>
                                     <span>{check.fixGuide}</span>
+                                  </div>
+                                )}
+
+                                {/* Dedicated AdsPower Local API Key Configuration Box */}
+                                {check.id === 'adspower' && (
+                                  <div className="mt-3 p-3.5 rounded-xl bg-slate-900 border border-cyan-500/30 space-y-2.5">
+                                    <div className="flex items-center justify-between">
+                                      <div className="flex items-center space-x-1.5 text-cyan-400">
+                                        <Key className="w-3.5 h-3.5" />
+                                        <span className="text-xs font-bold">Cấu Hình AdsPower Local API Key</span>
+                                      </div>
+                                      <span className="text-[10px] text-slate-400 font-mono">
+                                        {check.detail?.base || adsBaseUrlInput || 'http://127.0.0.1:50325'}
+                                      </span>
+                                    </div>
+
+                                    <div className="grid grid-cols-1 md:grid-cols-2 gap-2.5">
+                                      <div>
+                                        <label className="text-[10px] text-slate-300 font-medium block mb-1">
+                                          API Key (Lấy từ AdsPower ➜ Settings ➜ Local API)
+                                        </label>
+                                        <input
+                                          type="text"
+                                          value={adsApiKeyInput}
+                                          onChange={(e) => setAdsApiKeyInput(e.target.value)}
+                                          placeholder="Dán API Key của AdsPower tại đây..."
+                                          className="w-full px-2.5 py-1.5 text-xs bg-slate-950 border border-slate-700 rounded-lg text-white font-mono focus:border-cyan-400 focus:outline-none"
+                                        />
+                                      </div>
+                                      <div>
+                                        <label className="text-[10px] text-slate-300 font-medium block mb-1">
+                                          Base URL / Cổng Local API
+                                        </label>
+                                        <input
+                                          type="text"
+                                          value={adsBaseUrlInput}
+                                          onChange={(e) => setAdsBaseUrlInput(e.target.value)}
+                                          placeholder="http://127.0.0.1:50325"
+                                          className="w-full px-2.5 py-1.5 text-xs bg-slate-950 border border-slate-700 rounded-lg text-white font-mono focus:border-cyan-400 focus:outline-none"
+                                        />
+                                      </div>
+                                    </div>
+
+                                    <div className="flex items-center justify-between pt-1">
+                                      <button
+                                        type="button"
+                                        onClick={() => {
+                                          navigator.clipboard.writeText('c9ea96522fba29ee72f2fee511b77868008da729dcdcc201')
+                                          setCopiedDefaultKeyFeedback(true)
+                                          setTimeout(() => setCopiedDefaultKeyFeedback(false), 2000)
+                                        }}
+                                        className="text-[11px] text-cyan-400 hover:text-cyan-300 underline cursor-pointer"
+                                      >
+                                        {copiedDefaultKeyFeedback
+                                          ? '✓ Đã copy key mặc định!'
+                                          : '📋 Copy key mặc định hệ thống (để dán vào AdsPower)'}
+                                      </button>
+
+                                      <div className="flex items-center space-x-2">
+                                        {adsConfigSavedFeedback && (
+                                          <span className="text-[11px] text-emerald-400 font-semibold animate-pulse">
+                                            ✓ Đã lưu!
+                                          </span>
+                                        )}
+                                        <button
+                                          type="button"
+                                          disabled={isSavingAdsConfig}
+                                          onClick={async () => {
+                                            await handleSaveAdsConfig()
+                                            handleRunPreflight()
+                                          }}
+                                          className="px-3 py-1 bg-cyan-600 hover:bg-cyan-500 text-white text-xs font-semibold rounded-lg flex items-center space-x-1.5 shadow transition-all cursor-pointer"
+                                        >
+                                          <Save className="w-3.5 h-3.5" />
+                                          <span>{isSavingAdsConfig ? 'Đang lưu...' : '💾 Lưu Key & Test Lại Ngay'}</span>
+                                        </button>
+                                      </div>
+                                    </div>
                                   </div>
                                 )}
                               </div>

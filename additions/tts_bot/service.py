@@ -39,9 +39,24 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-ADS_API_KEY = "c9ea96522fba29ee72f2fee511b77868008da729dcdcc201"
-ADS_HEADERS = {"Authorization": f"Bearer {ADS_API_KEY}"}
-ADS_BASE = "http://127.0.0.1:50325"
+DEFAULT_ADS_API_KEY = "c9ea96522fba29ee72f2fee511b77868008da729dcdcc201"
+DEFAULT_ADS_BASE = "http://127.0.0.1:50325"
+
+def get_ads_config():
+    api_key = os.getenv("ADS_API_KEY", DEFAULT_ADS_API_KEY)
+    base_url = os.getenv("ADS_BASE", DEFAULT_ADS_BASE)
+    state_file = r"F:\Herd\fox-auto\state\tts_state.json"
+    if os.path.exists(state_file):
+        try:
+            with open(state_file, "r", encoding="utf-8") as f:
+                d = json.load(f)
+                if d.get("adsApiKey"):
+                    api_key = str(d["adsApiKey"]).strip()
+                if d.get("adsBaseUrl"):
+                    base_url = str(d["adsBaseUrl"]).strip()
+        except Exception:
+            pass
+    return api_key, base_url, {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
 HIDEPROXY_BASE = "http://127.0.0.1:10101"
 SHEET_ID = "1wAh6we1CsSuPVbCOD5vRyO3KJqNKBbcdq7LBZVlI268"
 INBOX_DIR = r"G:\RTTS\dotpsd\inbox_submits"
@@ -80,8 +95,9 @@ def get_sheet_token():
 @app.get("/api/status")
 def get_service_status():
     adspower_online = False
+    api_key, ads_base, ads_headers = get_ads_config()
     try:
-        r = requests.get(f"{ADS_BASE}/api/v1/user/list?page=1&page_size=1", headers=ADS_HEADERS, timeout=2).json()
+        r = requests.get(f"{ads_base}/api/v1/user/list?page=1&page_size=1", headers=ads_headers, timeout=2).json()
         adspower_online = (r.get("code") == 0)
     except Exception:
         pass
@@ -95,7 +111,7 @@ def get_service_status():
 
     return {
         "status": "online",
-        "adspower": {"online": adspower_online, "url": ADS_BASE},
+        "adspower": {"online": adspower_online, "url": ads_base, "apiKey": api_key},
         "hideproxy": {"online": hideproxy_online, "url": HIDEPROXY_BASE},
         "presets": list(IPHONE_PRESETS.keys()),
         "time": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")

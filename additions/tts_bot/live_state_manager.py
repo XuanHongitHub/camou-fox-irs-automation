@@ -19,9 +19,24 @@ STATE_FILE = os.path.join(RUNTIME_DIR, "live_state.json")
 ARCHIVE_DIR = os.path.join(RUNTIME_DIR, "archive")
 CSV_PATH = r"G:\RTTS\dotpsd\runtime\sheet_am.csv"
 
-ADS_API_KEY = "c9ea96522fba29ee72f2fee511b77868008da729dcdcc201"
-ADS_HEADERS = {"Authorization": f"Bearer {ADS_API_KEY}", "Content-Type": "application/json"}
-ADS_BASE = "http://127.0.0.1:50325"
+DEFAULT_ADS_API_KEY = "c9ea96522fba29ee72f2fee511b77868008da729dcdcc201"
+DEFAULT_ADS_BASE = "http://127.0.0.1:50325"
+
+def get_ads_config():
+    api_key = os.getenv("ADS_API_KEY", DEFAULT_ADS_API_KEY)
+    base_url = os.getenv("ADS_BASE", DEFAULT_ADS_BASE)
+    state_file = r"F:\Herd\fox-auto\state\tts_state.json"
+    if os.path.exists(state_file):
+        try:
+            with open(state_file, "r", encoding="utf-8") as f:
+                d = json.load(f)
+                if d.get("adsApiKey"):
+                    api_key = str(d["adsApiKey"]).strip()
+                if d.get("adsBaseUrl"):
+                    base_url = str(d["adsBaseUrl"]).strip()
+        except Exception:
+            pass
+    return api_key, base_url, {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
 
 os.makedirs(RUNTIME_DIR, exist_ok=True)
 os.makedirs(ARCHIVE_DIR, exist_ok=True)
@@ -140,8 +155,9 @@ class StateManager:
     @classmethod
     def _terminate_adspower_profile(cls, pid: str):
         try:
+            api_key, ads_base, ads_headers = get_ads_config()
             # Find profile in AdsPower
-            r = requests.get(f"{ADS_BASE}/api/v1/user/list?page=1&page_size=100", headers=ADS_HEADERS, timeout=5).json()
+            r = requests.get(f"{ads_base}/api/v1/user/list?page=1&page_size=100", headers=ads_headers, timeout=5).json()
             users = r.get("data", {}).get("list", [])
             target = next((u for u in users if pid in u.get("name", "")), None)
             if not target:
@@ -152,11 +168,11 @@ class StateManager:
             print(f"[Termination] Closing & Deleting AdsPower profile {target['name']} (UID: {uid})...")
             
             # Close browser first
-            requests.get(f"{ADS_BASE}/api/v1/browser/stop?user_id={uid}", headers=ADS_HEADERS, timeout=5)
+            requests.get(f"{ads_base}/api/v1/browser/stop?user_id={uid}", headers=ads_headers, timeout=5)
             time.sleep(1)
             
             # Delete profile
-            del_res = requests.post(f"{ADS_BASE}/api/v1/user/delete", headers=ADS_HEADERS, json={"user_ids": [uid]}, timeout=5).json()
+            del_res = requests.post(f"{ads_base}/api/v1/user/delete", headers=ads_headers, json={"user_ids": [uid]}, timeout=5).json()
             print(f"[Termination] AdsPower deletion result: {del_res}")
         except Exception as e:
             print(f"[Termination] Error terminating AdsPower profile: {e}")

@@ -114,7 +114,10 @@ const api = {
       list: (groupId?: string) => ipcRenderer.invoke('tts:adspower:list', groupId),
       create: (payload: any) => ipcRenderer.invoke('tts:adspower:create', payload),
       start: (userId: string) => ipcRenderer.invoke('tts:adspower:start', userId),
-      stop: (userId: string) => ipcRenderer.invoke('tts:adspower:stop', userId)
+      stop: (userId: string) => ipcRenderer.invoke('tts:adspower:stop', userId),
+      getConfig: () => ipcRenderer.invoke('tts:adspower:get-config'),
+      setConfig: (payload: { apiKey?: string; baseUrl?: string }) =>
+        ipcRenderer.invoke('tts:adspower:set-config', payload)
     },
     smartSetup: (params: { record: any; autoBuyProxy?: boolean }) =>
       ipcRenderer.invoke('tts:smart:setup', params),

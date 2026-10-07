@@ -4,9 +4,8 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync, readdirSync, statSy
 import { spawn } from 'child_process'
 import tls from 'tls'
 
-const ADS_API_KEY = 'c9ea96522fba29ee72f2fee511b77868008da729dcdcc201'
-const ADS_HEADERS = { Authorization: `Bearer ${ADS_API_KEY}`, 'Content-Type': 'application/json' }
-const ADS_BASE = 'http://127.0.0.1:50325'
+const DEFAULT_ADS_API_KEY = 'c9ea96522fba29ee72f2fee511b77868008da729dcdcc201'
+const DEFAULT_ADS_BASE = 'http://127.0.0.1:50325'
 const HIDEPROXY_BASE = 'http://127.0.0.1:10101'
 const DEFAULT_SHEET_ID = '1wAh6we1CsSuPVbCOD5vRyO3KJqNKBbcdq7LBZVlI268'
 
@@ -302,16 +301,47 @@ export function registerTtsBotHandlers(
   mkdirSync(runtimeDir, { recursive: true })
   mkdirSync(stateDir, { recursive: true })
 
+  // Dynamic AdsPower Local API Configuration Helpers
+  const getAdsApiKey = (): string => {
+    try {
+      if (existsSync(stateFile)) {
+        const stateData = JSON.parse(readFileSync(stateFile, 'utf-8'))
+        if (stateData.adsApiKey && typeof stateData.adsApiKey === 'string' && stateData.adsApiKey.trim()) {
+          return stateData.adsApiKey.trim()
+        }
+      }
+    } catch {}
+    return process.env.ADS_API_KEY || DEFAULT_ADS_API_KEY
+  }
+
+  const getAdsBaseUrl = (): string => {
+    try {
+      if (existsSync(stateFile)) {
+        const stateData = JSON.parse(readFileSync(stateFile, 'utf-8'))
+        if (stateData.adsBaseUrl && typeof stateData.adsBaseUrl === 'string' && stateData.adsBaseUrl.trim()) {
+          return stateData.adsBaseUrl.trim()
+        }
+      }
+    } catch {}
+    return DEFAULT_ADS_BASE
+  }
+
+  const getAdsHeaders = (): Record<string, string> => {
+    const key = getAdsApiKey()
+    return { Authorization: `Bearer ${key}`, 'Content-Type': 'application/json' }
+  }
+
   // 1. Status & Health
   ipcMain.handle('tts:status', async () => {
     let adspowerOnline = false
     let hideproxyOnline = false
 
+    const adsBase = getAdsBaseUrl()
     try {
       const controller = new AbortController()
       const timeout = setTimeout(() => controller.abort(), 2000)
-      const res = await fetch(`${ADS_BASE}/api/v1/user/list?page=1&page_size=1`, {
-        headers: ADS_HEADERS,
+      const res = await fetch(`${adsBase}/api/v1/user/list?page=1&page_size=1`, {
+        headers: getAdsHeaders(),
         signal: controller.signal
       })
       clearTimeout(timeout)
@@ -330,8 +360,41 @@ export function registerTtsBotHandlers(
 
     return {
       ok: true,
-      adspower: { online: adspowerOnline, base: ADS_BASE },
+      adspower: { online: adspowerOnline, base: adsBase, apiKey: getAdsApiKey() },
       hideproxy: { online: hideproxyOnline, base: HIDEPROXY_BASE }
+    }
+  })
+
+  // 1.05 AdsPower Local API Config (Get & Set API Key / Base URL)
+  ipcMain.handle('tts:adspower:get-config', async () => {
+    return {
+      ok: true,
+      apiKey: getAdsApiKey(),
+      baseUrl: getAdsBaseUrl(),
+      defaultApiKey: DEFAULT_ADS_API_KEY
+    }
+  })
+
+  ipcMain.handle('tts:adspower:set-config', async (_event, payload: { apiKey?: string; baseUrl?: string }) => {
+    try {
+      let stateData: any = {}
+      if (existsSync(stateFile)) {
+        try { stateData = JSON.parse(readFileSync(stateFile, 'utf-8')) } catch {}
+      }
+      if (payload.apiKey !== undefined) {
+        stateData.adsApiKey = payload.apiKey.trim()
+      }
+      if (payload.baseUrl !== undefined) {
+        stateData.adsBaseUrl = payload.baseUrl.trim()
+      }
+      writeFileSync(stateFile, JSON.stringify(stateData, null, 2), 'utf-8')
+      return {
+        ok: true,
+        apiKey: getAdsApiKey(),
+        baseUrl: getAdsBaseUrl()
+      }
+    } catch (err: any) {
+      return { ok: false, error: String(err?.message || err) }
     }
   })
 
@@ -844,11 +907,12 @@ function generateValidDl(stateCode: string, lastName: string = ''): string {
   // 4. AdsPower Handlers
   ipcMain.handle('tts:adspower:list', async (_event, groupId?: string) => {
     try {
+      const baseUrl = getAdsBaseUrl()
       const url =
         groupId && groupId !== '0' && groupId !== 'all'
-          ? `${ADS_BASE}/api/v1/user/list?group_id=${groupId}&page_size=100`
-          : `${ADS_BASE}/api/v1/user/list?page_size=100`
-      const res = await fetch(url, { headers: ADS_HEADERS })
+          ? `${baseUrl}/api/v1/user/list?group_id=${groupId}&page_size=100`
+          : `${baseUrl}/api/v1/user/list?page_size=100`
+      const res = await fetch(url, { headers: getAdsHeaders() })
       const data = await res.json()
       return { ok: data.code === 0, data: data.data?.list || [], error: data.msg }
     } catch (err: any) {
@@ -858,6 +922,7 @@ function generateValidDl(stateCode: string, lastName: string = ''): string {
 
   ipcMain.handle('tts:adspower:create', async (_event, payload: any) => {
     try {
+      const baseUrl = getAdsBaseUrl()
       const extensionPath = join(foxAutoRoot, 'additions', 'tts_bot', 'extension')
       const profileData = {
         name: payload.name,
@@ -882,9 +947,9 @@ function generateValidDl(stateCode: string, lastName: string = ''): string {
         ]
       }
 
-      const res = await fetch(`${ADS_BASE}/api/v1/user/create`, {
+      const res = await fetch(`${baseUrl}/api/v1/user/create`, {
         method: 'POST',
-        headers: ADS_HEADERS,
+        headers: getAdsHeaders(),
         body: JSON.stringify(profileData)
       })
       const data = await res.json()
@@ -896,6 +961,7 @@ function generateValidDl(stateCode: string, lastName: string = ''): string {
 
   ipcMain.handle('tts:adspower:start', async (_event, userId: string) => {
     try {
+      const baseUrl = getAdsBaseUrl()
       const extensionPath = join(foxAutoRoot, 'additions', 'tts_bot', 'extension')
       const launchArgs = JSON.stringify([
         `--load-extension=${extensionPath}`,
@@ -905,8 +971,8 @@ function generateValidDl(stateCode: string, lastName: string = ''): string {
         '--force-device-scale-factor=3',
         '--use-mobile-user-agent'
       ])
-      const url = `${ADS_BASE}/api/v1/browser/start?user_id=${userId}&launch_args=${encodeURIComponent(launchArgs)}`
-      const res = await fetch(url)
+      const url = `${baseUrl}/api/v1/browser/start?user_id=${userId}&launch_args=${encodeURIComponent(launchArgs)}`
+      const res = await fetch(url, { headers: getAdsHeaders() })
       const data = await res.json()
       return { ok: data.code === 0, data: data.data, error: data.msg }
     } catch (err: any) {
@@ -916,8 +982,9 @@ function generateValidDl(stateCode: string, lastName: string = ''): string {
 
   ipcMain.handle('tts:adspower:stop', async (_event, userId: string) => {
     try {
-      const url = `${ADS_BASE}/api/v1/browser/stop?user_id=${userId}`
-      const res = await fetch(url)
+      const baseUrl = getAdsBaseUrl()
+      const url = `${baseUrl}/api/v1/browser/stop?user_id=${userId}`
+      const res = await fetch(url, { headers: getAdsHeaders() })
       const data = await res.json()
       return { ok: data.code === 0, error: data.msg }
     } catch (err: any) {
@@ -1114,8 +1181,10 @@ function generateValidDl(stateCode: string, lastName: string = ''): string {
     // --- Step 2: AdsPower Smart Matching & Creation ---
     let adspowerId = record.adspowerId || stateData.profileSetups[record.id]?.adspowerId || ''
     try {
-      const adsListRes = await fetch(`${ADS_BASE}/api/v1/user/list?group_id=0&page_size=100`, {
-        headers: ADS_HEADERS
+      const adsBase = getAdsBaseUrl()
+      const adsHeaders = getAdsHeaders()
+      const adsListRes = await fetch(`${adsBase}/api/v1/user/list?group_id=0&page_size=100`, {
+        headers: adsHeaders
       })
         .then((r) => r.json())
         .catch(() => null)
@@ -1142,9 +1211,9 @@ function generateValidDl(stateCode: string, lastName: string = ''): string {
             }
           : { proxy_soft: 'no_proxy' }
 
-        const createRes = await fetch(`${ADS_BASE}/api/v1/user/create`, {
+        const createRes = await fetch(`${adsBase}/api/v1/user/create`, {
           method: 'POST',
-          headers: ADS_HEADERS,
+          headers: adsHeaders,
           body: JSON.stringify({
             name: `${record.id} - ${record.fullName || 'TTS'}`,
             group_id: '0', // Mặc định Ungrouped (không phân nhóm)
@@ -2033,11 +2102,13 @@ function generateValidDl(stateCode: string, lastName: string = ''): string {
 
     // ─── 3. AdsPower Local API (:50325) ───
     const tAdsStart = Date.now()
+    const currentApiKey = getAdsApiKey()
+    const currentAdsBase = getAdsBaseUrl()
     try {
       const controller = new AbortController()
       const to = setTimeout(() => controller.abort(), 3000)
-      const res = await fetch(`${ADS_BASE}/api/v1/user/list?page=1&page_size=5`, {
-        headers: ADS_HEADERS,
+      const res = await fetch(`${currentAdsBase}/api/v1/user/list?page=1&page_size=5`, {
+        headers: getAdsHeaders(),
         signal: controller.signal
       })
       clearTimeout(to)
@@ -2053,19 +2124,30 @@ function generateValidDl(stateCode: string, lastName: string = ''): string {
           name: 'AdsPower Local API (:50325)',
           status: 'pass',
           latencyMs: tAds,
-          message: `AdsPower kết nối tốt (${totalProfiles} profiles hiện có, Nhóm: Ungrouped)`,
-          detail: { base: ADS_BASE, totalProfiles },
+          message: `AdsPower kết nối tốt (${totalProfiles} profiles hiện có, API Key hợp lệ)`,
+          detail: { base: currentAdsBase, apiKey: currentApiKey, totalProfiles },
           fixGuide: 'AdsPower hoạt động bình thường.'
         })
       } else {
+        const isKeyError =
+          String(data?.msg || '').toLowerCase().includes('api-key') ||
+          String(data?.msg || '').toLowerCase().includes('api key') ||
+          String(data?.msg || '').toLowerCase().includes('mismatch') ||
+          String(data?.msg || '').toLowerCase().includes('require')
+
         checks.push({
           id: 'adspower',
           category: 'Browser Engine',
           name: 'AdsPower Local API (:50325)',
           status: 'warn',
           latencyMs: tAds,
-          message: `AdsPower phản hồi nhưng mã không thành công: ${data?.msg || JSON.stringify(data)}`,
-          fixGuide: 'Kiểm tra API Key trong Settings -> Local API của AdsPower khớp với key cấu hình.'
+          message: isKeyError
+            ? `Lỗi API Key AdsPower: ${data?.msg || 'API Key mismatch'}`
+            : `AdsPower phản hồi nhưng mã không thành công: ${data?.msg || JSON.stringify(data)}`,
+          detail: { base: currentAdsBase, apiKey: currentApiKey, errorMsg: data?.msg, isKeyError },
+          fixGuide: isKeyError
+            ? `Mở AdsPower -> Cài đặt (Settings) -> Local API -> Sao chép API Key dán vào ô bên dưới trong app để lưu (hoặc dán key mặc định ${currentApiKey} vào AdsPower).`
+            : `Kiểm tra API Key trong Settings -> Local API của AdsPower khớp với key hiện tại (${currentApiKey}).`
         })
       }
     } catch (err: any) {
@@ -2076,7 +2158,8 @@ function generateValidDl(stateCode: string, lastName: string = ''): string {
         status: 'fail',
         latencyMs: Date.now() - tAdsStart,
         message: `Không kết nối được AdsPower: ${err?.message || 'Connection refused'}`,
-        fixGuide: 'Mở ứng dụng AdsPower trên máy mới. Vào Settings -> Local API -> Bật Local API ở cổng 50325.'
+        detail: { base: currentAdsBase, apiKey: currentApiKey },
+        fixGuide: `Mở ứng dụng AdsPower trên máy mới. Vào Settings -> Local API -> Bật Local API ở cổng 50325. Key hiện tại: ${currentApiKey}.`
       })
     }
 
