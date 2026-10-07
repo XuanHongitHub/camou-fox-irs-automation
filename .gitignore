@@ -56,5 +56,7 @@ node_modules
 .venv-codex
 bundle/
 tmp/
+scratch/
+state/tts_state.json
 C:Users*
 "C\357\200\272\357\201\234Users*"

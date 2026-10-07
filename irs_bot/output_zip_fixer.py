@@ -127,11 +127,37 @@ def fix_pdf_zip_stream(pdf_bytes: bytes, old_zip: str, new_zip: str) -> Optional
         page = doc[0]
 
         # Method 1 (100% Native Stream Patch): Replaces old ZIP directly in page content stream
+        # and standardizes inverted address blocks into a single top-to-bottom coherent block
         stream_changed = False
+        pattern_addr = re.compile(
+            r'BT/F1\s+9\s+Tf\s+89\.925\s+634\.125\s+TD\s*\((.*?)\)Tj\s*ET\s*'
+            r'BT/F1\s+9\s+Tf\s+89\.925\s+602\.85[\d]*\s+TD\s*\((.*?)\)Tj\s*ET\s*'
+            r'BT/F1\s+9\s+Tf\s+89\.925\s+623\.7\s+TD\s*\((.*?)\)Tj\s*ET\s*'
+            r'BT/F1\s+9\s+Tf\s+89\.925\s+613\.275\s+TD\s*\((.*?)\)Tj\s*ET',
+            re.DOTALL
+        )
+
         for xref in page.get_contents():
             stream_bytes = doc.xref_stream(xref)
             text = stream_bytes.decode("latin1", errors="ignore")
-            if raw_old in text:
+
+            # Check if address block is inverted
+            m_addr = pattern_addr.search(text)
+            if m_addr:
+                line1, street, line2, city_st_zip = m_addr.groups()
+                m_zip = re.search(r'([A-Za-z\s.-]+,\s*[A-Za-z]{2}\s+)\d{4,5}', city_st_zip)
+                if m_zip and raw_new:
+                    city_st_zip = city_st_zip[:m_zip.start()] + m_zip.group(1) + raw_new + city_st_zip[m_zip.end():]
+                new_block = (
+                    f"BT\n/F1 9 Tf\n1 0 0 1 89.925 634.125 Tm\n({line1}) Tj\nET\n"
+                    f"BT\n/F1 9 Tf\n1 0 0 1 89.925 623.70001 Tm\n({line2}) Tj\nET\n"
+                    f"BT\n/F1 9 Tf\n1 0 0 1 89.925 613.27502 Tm\n({street}) Tj\nET\n"
+                    f"BT\n/F1 9 Tf\n1 0 0 1 89.925 602.84998 Tm\n({city_st_zip}) Tj\nET"
+                )
+                text = text[:m_addr.start()] + new_block + text[m_addr.end():]
+                doc.update_stream(xref, text.encode("latin1"))
+                stream_changed = True
+            elif raw_old in text:
                 pattern = re.compile(r"(\([^\)]*?)" + re.escape(raw_old) + r"([^\)]*\)\s*Tj)")
                 new_text = pattern.sub(r"\g<1>" + raw_new + r"\g<2>", text)
                 if new_text != text:
@@ -145,7 +171,7 @@ def fix_pdf_zip_stream(pdf_bytes: bytes, old_zip: str, new_zip: str) -> Optional
                     stream_changed = True
 
         if stream_changed:
-            return doc.tobytes()
+            return doc.tobytes(clean=True, deflate=True)
 
         # Method 2: Visual span replacement (redact + insert)
         dict_data = page.get_text("dict")
@@ -864,6 +890,12 @@ def scan_and_fix_outputs(
 
         if record_changed:
             fixed_records += 1
+            if candidates:
+                cand_path = str(candidates[0])
+                if not row.get("final_pdf_path") or not Path(str(row.get("final_pdf_path"))).exists():
+                    row["final_pdf_path"] = cand_path
+                if not row.get("pdf_path") or not Path(str(row.get("pdf_path"))).exists():
+                    row["pdf_path"] = cand_path
             if new_county:
                 row["step6_county"] = new_county
             if new_zip and old_zip and row.get("step6_physical_location"):
@@ -895,12 +927,14 @@ def scan_and_fix_outputs(
                     cur_r.execute(
                         """
                         UPDATE results
-                        SET step6_county = ?, step6_physical_location = ?
+                        SET step6_county = ?, step6_physical_location = ?, final_pdf_path = ?, pdf_path = ?
                         WHERE (batch_id = ? AND record_id = ?) OR record_id = ?
                         """,
                         (
                             new_county,
                             row.get("step6_physical_location", ""),
+                            row.get("final_pdf_path", ""),
+                            row.get("pdf_path", ""),
                             bid,
                             rid,
                             rid,

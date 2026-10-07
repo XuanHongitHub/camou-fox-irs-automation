@@ -1,0 +1,18 @@
+{
+  "AM-01": {
+    "id": "AM-01",
+    "status": "SETUP_READY",
+    "sub_status": "Port 50007 | Ads k1hp9cy4",
+    "created_at": "2026-10-07 10:27:18",
+    "uploads": [],
+    "attempts": 1,
+    "watchdog": {
+      "active": false,
+      "countdown": 360
+    },
+    "source": "COPILOT_HUB",
+    "updated_at": "2026-10-07 10:48:22",
+    "assigned_port": 50007,
+    "adspower_id": "k1hp9cy4"
+  }
+}

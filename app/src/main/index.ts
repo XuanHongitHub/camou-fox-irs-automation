@@ -10,6 +10,7 @@ import { createSign } from 'crypto'
 import { mkdirSync, existsSync, readFileSync, writeFileSync, unlinkSync, readdirSync } from 'fs'
 import { promises as fs } from 'fs'
 import * as XLSX from 'xlsx-js-style'
+import { registerTtsBotHandlers } from './ttsBotHandlers'
 
 let pythonProcess: ChildProcess | null = null
 let lineBuffer = ''
@@ -208,6 +209,8 @@ async function ensureDevPythonReady() {
   })
   return ensureDevPythonReadyPromise
 }
+
+
 
 function userDataDir() {
   return app.getPath('userData')
@@ -1665,6 +1668,22 @@ async function loadArchivedInputByRecordIds(base: string, recordIds: string[]) {
       }
     }
   }
+  const csvFiles = Array.from(candidateFiles.entries()).map(([fullPath, mtimeMs]) => ({ fullPath, mtimeMs }))
+  csvFiles.sort((a, b) => a.mtimeMs - b.mtimeMs)
+  for (const file of csvFiles) {
+    const raw = await fs.readFile(file.fullPath, 'utf-8')
+    const wb = XLSX.read(raw, { type: 'string' })
+    const sheet = wb.Sheets[wb.SheetNames[0]]
+    const rows = XLSX.utils.sheet_to_json<Record<string, unknown>>(sheet, { defval: '' })
+    for (const row of rows) {
+      const recordId = String(row?.record_id || '').trim()
+      if (!recordId || !wanted.has(recordId)) continue
+      byRecord.set(recordId, Object.fromEntries(
+        Object.entries(row).map(([key, value]) => [key, String(value ?? '').trim()]),
+      ))
+    }
+  }
+
   const queueDbPath = join(base, 'state', 'queue.db')
   if (existsSync(queueDbPath)) {
     try {
@@ -1689,22 +1708,121 @@ async function loadArchivedInputByRecordIds(base: string, recordIds: string[]) {
       // queue db fallback only
     }
   }
-  const csvFiles = Array.from(candidateFiles.entries()).map(([fullPath, mtimeMs]) => ({ fullPath, mtimeMs }))
-  csvFiles.sort((a, b) => a.mtimeMs - b.mtimeMs)
-  for (const file of csvFiles) {
-    const raw = await fs.readFile(file.fullPath, 'utf-8')
-    const wb = XLSX.read(raw, { type: 'string' })
-    const sheet = wb.Sheets[wb.SheetNames[0]]
-    const rows = XLSX.utils.sheet_to_json<Record<string, unknown>>(sheet, { defval: '' })
-    for (const row of rows) {
-      const recordId = String(row?.record_id || '').trim()
-      if (!recordId || !wanted.has(recordId)) continue
-      byRecord.set(recordId, Object.fromEntries(
-        Object.entries(row).map(([key, value]) => [key, String(value ?? '').trim()]),
-      ))
+  return byRecord
+}
+
+type PostalEntry = {
+  primaryZip: string
+  county: string
+  validZips: Set<string>
+}
+let postalDbCache: Map<string, PostalEntry> | null = null
+
+function loadPostalDatabase(): Map<string, PostalEntry> {
+  if (postalDbCache) return postalDbCache
+  postalDbCache = new Map()
+  const candidates = [
+    join(foxAutoRootPath(), 'irs_bot', 'data', 'us_city_zip_county.csv'),
+    join(foxAutoRootPath(), 'data', 'us_city_zip_county.csv'),
+    join(process.resourcesPath, 'data', 'us_city_zip_county.csv'),
+    join(__dirname, '../../../irs_bot/data/us_city_zip_county.csv'),
+    join(__dirname, '../../irs_bot/data/us_city_zip_county.csv'),
+    'F:\\Herd\\fox-auto\\irs_bot\\data\\us_city_zip_county.csv',
+  ]
+  let csvPath = ''
+  for (const p of candidates) {
+    if (existsSync(p)) {
+      csvPath = p
+      break
     }
   }
-  return byRecord
+  if (!csvPath) return postalDbCache
+  try {
+    const content = readFileSync(csvPath, 'utf-8')
+    const lines = content.split('\n')
+    for (let i = 1; i < lines.length; i++) {
+      const line = lines[i].trim()
+      if (!line) continue
+      const parts = line.split(',').map((s) => s.replace(/^"|"$/g, '').trim())
+      if (parts.length < 5) continue
+      const [city, state, primaryZip, county, validZipsStr] = parts
+      const key = `${city.toUpperCase()}|${state.toUpperCase()}`
+      const validZips = new Set(validZipsStr.split(';').map((z) => z.trim()))
+      postalDbCache.set(key, { primaryZip, county, validZips })
+    }
+  } catch (err) {
+    console.warn('Failed to load postal database:', err)
+  }
+  return postalDbCache
+}
+
+const USPS_EXPANSIONS: Record<string, string> = {
+  'PALM BCH GDNS': 'PALM BEACH GARDENS',
+  'PEMBROKE PNES': 'PEMBROKE PINES',
+  'DEERFIELD BCH': 'DEERFIELD BEACH',
+  'POMPANO BCH': 'POMPANO BEACH',
+  'BOYNTON BCH': 'BOYNTON BEACH',
+  'DELRAY BCH': 'DELRAY BEACH',
+  'HALLANDALE BCH': 'HALLANDALE BEACH',
+  'MIAMI BCH': 'MIAMI BEACH',
+  'FT LAUDERDALE': 'FORT LAUDERDALE',
+  'ST PETERSBURG': 'SAINT PETERSBURG',
+  'THE WOODLANDS': 'SPRING',
+  'WOODLANDS': 'SPRING',
+  'DORAL': 'MIAMI',
+  'GLENN HEIGHTS': 'DESOTO',
+  'LAKE WORTH BEACH': 'LAKE WORTH',
+  'LAKE WORTH BCH': 'LAKE WORTH',
+}
+
+function resolveVerifiedZip(city: string, state: string, currentZip: string, row?: any): string {
+  let c = String(city || '').trim().toUpperCase()
+  const s = String(state || '').trim().toUpperCase()
+  const rawZip = String(currentZip || '').trim()
+  const db = loadPostalDatabase()
+  if (!c || !s || !db.size) {
+    return rawZip || String(row?.zip || row?.ZIP || '').trim()
+  }
+
+  let info = db.get(`${c}|${s}`)
+  if (!info && USPS_EXPANSIONS[c]) {
+    info = db.get(`${USPS_EXPANSIONS[c]}|${s}`)
+  }
+  if (!info) {
+    let expanded = c
+    expanded = expanded.replace(/\bBCH\b/g, 'BEACH')
+    expanded = expanded.replace(/\bGDNS\b/g, 'GARDENS')
+    expanded = expanded.replace(/\bPNES\b/g, 'PINES')
+    expanded = expanded.replace(/\bSPGS\b/g, 'SPRINGS')
+    expanded = expanded.replace(/\bHTS\b/g, 'HEIGHTS')
+    expanded = expanded.replace(/\bFT\b/g, 'FORT')
+    expanded = expanded.replace(/\bST\b/g, 'SAINT')
+    expanded = expanded.replace(/\s+/g, ' ').trim()
+    info = db.get(`${expanded}|${s}`)
+  }
+
+  const DISALLOWED = new Set(['33101', '75001', '77001', '90001', '60601', '10001'])
+
+  const loc = String(row?.step6_physical_location || '').trim()
+  const locMatch = loc.match(/\b(\d{5})\b/)
+  const locZip = locMatch ? locMatch[1] : ''
+  const candZips = [locZip, String(row?.zip || row?.ZIP || '').trim(), rawZip]
+
+  for (const cand of candZips) {
+    if (!cand) continue
+    const padded = cand.padStart(5, '0')
+    if (padded.length === 5 && info && info.validZips.has(padded)) {
+      if (!DISALLOWED.has(padded) || c === 'ADDISON') {
+        return padded
+      }
+    }
+  }
+
+  if (info) {
+    return info.primaryZip
+  }
+
+  return rawZip
 }
 
 async function enrichSelectedReportRows(base: string, rows: any[]) {
@@ -1787,14 +1905,14 @@ async function enrichSelectedReportRows(base: string, rows: any[]) {
     const inputAddress = String(input.ADDRESS || '').trim()
     const inputCity = String(input.CITI || '').trim()
     const inputState = String(input.BANG || '').trim()
-    const inputZip = String(input.ZIP || '').trim()
+    const resolvedZip = resolveVerifiedZip(inputCity, inputState, String(input.ZIP || '').trim(), row)
     return {
       NAME: String(input.NAME || row?.name || row?.record_name || '').trim(),
       SSN: String(input.SSN || '').trim(),
       ADDRESS: inputAddress,
       CITI: inputCity,
       BANG: inputState,
-      ZIP: inputZip,
+      ZIP: resolvedZip,
       BOD: formatDobForReport(input.DOB || ''),
       GENDER: String(input.GENDER || '').trim(),
       EIN: String(row?.confirmation_number || row?.step6_ein || '').trim(),
@@ -1802,7 +1920,7 @@ async function enrichSelectedReportRows(base: string, rows: any[]) {
       'ADDRESS LLC': inputAddress,
       'CITI LLC': inputCity,
       'BANG LLC': String(row?.step6_state || inputState || '').trim(),
-      'ZIP LLC': inputZip,
+      'ZIP LLC': resolvedZip,
       PDF: pdfUrls.get(String(row?.record_id || '').trim()) || '',
       FOLDER_URL: chunkFolderUrls.get(String(row?.record_id || '').trim()) || '',
     }
@@ -2300,14 +2418,14 @@ async function buildAndUploadDriveBundle(input: {
     const inputAddress = String(source.ADDRESS || '').trim()
     const inputCity = String(source.CITI || '').trim()
     const inputState = String(source.BANG || '').trim()
-    const inputZip = String(source.ZIP || '').trim()
+    const resolvedZip = resolveVerifiedZip(inputCity, inputState, String(source.ZIP || '').trim(), row)
     reportRows.push({
       NAME: String(source.NAME || row?.name || row?.record_name || '').trim(),
       SSN: String(source.SSN || '').trim(),
       ADDRESS: inputAddress,
       CITI: inputCity,
       BANG: inputState,
-      ZIP: inputZip,
+      ZIP: resolvedZip,
       BOD: formatDobForReport(source.DOB || ''),
       GENDER: String(source.GENDER || '').trim(),
       EIN: String(row?.confirmation_number || row?.step6_ein || '').trim(),
@@ -2315,7 +2433,7 @@ async function buildAndUploadDriveBundle(input: {
       'ADDRESS LLC': inputAddress,
       'CITI LLC': inputCity,
       'BANG LLC': String(row?.step6_state || inputState || '').trim(),
-      'ZIP LLC': inputZip,
+      'ZIP LLC': resolvedZip,
       PDF: pdfUrl,
       FOLDER_URL: driveFolderUrl,
     })
@@ -3007,6 +3125,7 @@ function createWindow(): BrowserWindow {
 app.whenReady().then(async () => {
   electronApp.setAppUserModelId('com.foxauto.irsbot')
   await ensureRuntimeConfig()
+  registerTtsBotHandlers(ipcMain, foxAutoRootPath(), pythonDevLaunch)
 
   if (process.platform === 'darwin' && app.dock) {
     app.dock.setIcon(icon)
@@ -4044,7 +4163,15 @@ app.whenReady().then(async () => {
   ipcMain.handle('irs:open-path', async (_event, payload) => {
     try {
       const rawTarget = (typeof payload === 'string' ? payload : String(payload?.path || '')).trim()
-      if (!rawTarget) return { ok: false, error: 'Missing path' }
+      const driveUrl = (typeof payload === 'object' && payload?.driveUrl ? String(payload.driveUrl) : '').trim()
+
+      if (!rawTarget) {
+        if (driveUrl && (driveUrl.startsWith('http://') || driveUrl.startsWith('https://'))) {
+          await shell.openExternal(driveUrl)
+          return { ok: true, fallback: driveUrl }
+        }
+        return { ok: false, error: 'Missing path' }
+      }
 
       if (rawTarget.startsWith('http://') || rawTarget.startsWith('https://')) {
         await shell.openExternal(rawTarget)
@@ -4105,6 +4232,11 @@ app.whenReady().then(async () => {
           await shell.openPath(d)
           return { ok: true, fallbackDir: d }
         }
+      }
+
+      if (driveUrl && (driveUrl.startsWith('http://') || driveUrl.startsWith('https://'))) {
+        await shell.openExternal(driveUrl)
+        return { ok: true, fallback: driveUrl }
       }
 
       return { ok: false, error: `File not found: ${rawTarget}` }

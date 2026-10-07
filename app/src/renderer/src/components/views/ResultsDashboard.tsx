@@ -146,10 +146,10 @@ function getDurationSeconds(row: ResultRow): number | undefined {
     return undefined
 }
 
-function openPath(path: string, reveal = false) {
+function openPath(path: string, reveal = false, driveUrl?: string) {
     const ipc = window.electron?.ipcRenderer
-    if (!ipc || !path) return
-    ipc.invoke('irs:open-path', { path, reveal }).catch(() => {
+    if (!ipc || (!path && !driveUrl)) return
+    ipc.invoke('irs:open-path', { path, reveal, driveUrl }).catch(() => {
         // no-op
     })
 }
@@ -234,7 +234,7 @@ function ResultRowDetail({ row }: { row: ResultRow }) {
                                 {effectivePdf && (
                                     <button
                                         className="text-success hover:underline font-mono inline-flex items-center gap-1 font-semibold cursor-pointer"
-                                        onClick={() => openPath(effectivePdf)}
+                                        onClick={() => openPath(effectivePdf, false, effectiveDrive)}
                                         title="Mở file thông báo PDF"
                                     >
                                         <FileText className="w-3 h-3" /> Open PDF

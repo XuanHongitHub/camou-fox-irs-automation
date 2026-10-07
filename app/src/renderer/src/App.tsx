@@ -8,6 +8,7 @@ import { ResultsDashboard } from './components/views/ResultsDashboard'
 import type { ResultRow } from './components/views/ResultsDashboard'
 import { I18nProvider } from './i18n/I18nProvider'
 import type { UILanguage } from './i18n/dictionaries'
+import { TtsBotView } from './components/views/TtsBotView'
 import {
   Zap, FlaskConical, Workflow, Settings,
   Play, Square, RefreshCw, TerminalSquare,
@@ -16,7 +17,8 @@ import {
   FileText,
   AlertTriangle, Copy, Filter, Inbox, BarChart2,
   Globe, RotateCw, Hash, BookOpen, ShieldAlert, Shield,
-  Check, AlertCircle, X, LayoutDashboard, ArrowDownToLine, Monitor, Ghost, Users
+  Check, AlertCircle, X, LayoutDashboard, ArrowDownToLine, Monitor, Ghost, Users,
+  ShoppingBag
 } from 'lucide-react'
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -24,7 +26,7 @@ import {
 type FlowMode = 'manual' | 'sandbox' | 'full' | 'observe'
 type BrowserMode = 'silent' | 'browser'
 type JobStatus = 'pending' | 'running' | 'done' | 'failed'
-type WorkspacePage = 'work' | 'proxy_manager' | 'settings'
+type WorkspacePage = 'work' | 'proxy_manager' | 'tts_bot' | 'settings'
 
 // Mirrors automation steps in runner.py
 type AutoStep = 'init' | 'proxy_rotate' | 'loaded' | 'filled' | 'review' | 'submitted' | 'confirmed' | 'exception'
@@ -487,7 +489,21 @@ function AppContent({
   const JOBS_STORAGE_KEY = 'fox_jobs_v1'
   const RESULTS_STORAGE_KEY = 'fox_results_v1'
   const [activeFlow, setActiveFlow] = useState<FlowMode>('full')
-  const [workspacePage, setWorkspacePage] = useState<WorkspacePage>('work')
+  const [workspacePage, setWorkspacePageRaw] = useState<WorkspacePage>(() => {
+    try {
+      const saved = localStorage.getItem('fox_workspace_page') as WorkspacePage | null
+      if (saved && ['tts_bot', 'work', 'proxy_manager', 'settings'].includes(saved)) {
+        return saved
+      }
+    } catch {}
+    return 'tts_bot'
+  })
+  const setWorkspacePage = useCallback((page: WorkspacePage) => {
+    setWorkspacePageRaw(page)
+    try {
+      localStorage.setItem('fox_workspace_page', page)
+    } catch {}
+  }, [])
   const [workerRunning, setWorkerRunning] = useState(false)
   const [workerStarting, setWorkerStarting] = useState(false)
   const [workerStopping, setWorkerStopping] = useState(false)
@@ -1793,11 +1809,18 @@ function AppContent({
         <SidebarPrimary
           topItems={[
             {
+              id: 'tts_bot',
+              icon: <ShoppingBag className="w-3.5 h-3.5" />,
+              tooltip: 'TTS Bot (TikTok Shop Sole Prop & Studio)',
+              isActive: workspacePage === 'tts_bot',
+              onClick: () => setWorkspacePage('tts_bot')
+            },
+            {
               id: 'work',
               icon: <LayoutDashboard className="w-3.5 h-3.5" />,
-              tooltip: 'Workspace',
+              tooltip: 'Workspace (IRS Auto)',
               isActive: workspacePage === 'work',
-              onClick: () => setWorkspacePage('work'),
+              onClick: () => setWorkspacePage('work')
             },
             {
               id: 'proxy_manager',
@@ -1827,8 +1850,9 @@ function AppContent({
         {/* Main */}
         <div className="flex-1 flex flex-col min-w-0 h-full overflow-hidden">
 
-          {/* Header bar */}
-          <div className="flex items-center gap-2 px-3 h-[46px] border-b border-border bg-panel shrink-0 min-w-0">
+          {/* Header bar (IRS Workspace Only) */}
+          {workspacePage !== 'tts_bot' && (
+            <div className="flex items-center gap-2 px-3 h-[46px] border-b border-border bg-panel shrink-0 min-w-0">
             {/* Left section: Title & Flow Mode */}
             <div className="flex items-center gap-1.5 shrink-0">
               <span className="text-muted/40 text-[11px] hidden sm:inline">IRS Auto</span>
@@ -2057,9 +2081,15 @@ function AppContent({
               </Button>
             </div>
           </div>
+          )}
 
-          {workspacePage !== 'work' ? (
-            <div className="flex-1 min-h-0 overflow-auto p-4">
+          {/* TTS Bot Workspace (Keep-Alive, 0ms tab switch) */}
+          <div className={workspacePage === 'tts_bot' ? 'flex-1 min-h-0 overflow-hidden w-full h-full' : 'hidden'}>
+            <TtsBotView />
+          </div>
+
+          {/* Proxy Manager & System Settings Workspace (Keep-Alive) */}
+          <div className={workspacePage === 'proxy_manager' || workspacePage === 'settings' ? 'flex-1 min-h-0 overflow-auto p-4' : 'hidden'}>
               {workspacePage === 'proxy_manager' ? (
                 <div className="rounded-2xl border border-border bg-panel p-4">
                   <div className="flex items-center gap-2 mb-4">
@@ -2393,8 +2423,9 @@ function AppContent({
                 </div>
               )}
             </div>
-          ) : (
-          <>
+
+          {/* IRS Work Workspace (Keep-Alive, 0ms tab switch) */}
+          <div className={workspacePage === 'work' ? 'flex-1 min-h-0 flex flex-col overflow-hidden w-full h-full' : 'hidden'}>
           {/* Compact Stats Bar */}
           <div className="flex items-center gap-6 px-4 py-2 border-b border-border bg-base/10 shrink-0 select-none">
             <div className="flex items-center gap-1.5">
@@ -2819,8 +2850,7 @@ function AppContent({
             <span className="ml-auto opacity-60">{uiLanguage === 'en' ? 'Output: artifact folder (PDF + step6 + result)' : 'Output: thư mục artifact (PDF + step6 + result)'}</span>
             {!canRun && <span className="flex items-center gap-1.5 text-warning"><AlarmClock className="w-3 h-3" /> {uiLanguage === 'en' ? 'Opens' : 'Mở lúc'} {String(queueStartHour).padStart(2, '0')}:00</span>}
           </div>
-          </>
-          )}
+          </div>
         </div>
       </AppShell>
 
@@ -2933,7 +2963,7 @@ function AppContent({
           ))}
         </div>
       )}
-      {!miniQueueEmpty && (
+      {!miniQueueEmpty && workspacePage !== 'tts_bot' && (
       <div className="fixed right-4 bottom-6 z-[90] pointer-events-none">
         <div className="pointer-events-auto rounded-xl border border-border/80 bg-panel/95 backdrop-blur-md shadow-lg p-2.5 min-w-[250px] max-w-[320px]">
           {/* Header */}

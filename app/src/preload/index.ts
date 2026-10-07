@@ -96,6 +96,61 @@ const api = {
   },
   queue: {
     health: () => ipcRenderer.invoke('queue:health')
+  },
+  tts: {
+    status: () => ipcRenderer.invoke('tts:status'),
+    fetchSheet: (params?: { sheetId?: string; tabName?: string }) =>
+      ipcRenderer.invoke('tts:sheet:fetch', params),
+    hideproxy: {
+      ports: () => ipcRenderer.invoke('tts:hideproxy:ports'),
+      portInfo: () => ipcRenderer.invoke('tts:hideproxy:port-info'),
+      forward: (params: { id: string; port: number }) => ipcRenderer.invoke('tts:hideproxy:forward', params),
+      states: (country?: string) => ipcRenderer.invoke('tts:hideproxy:states', country),
+      cities: (state: string) => ipcRenderer.invoke('tts:hideproxy:cities', state),
+      buy: (params: { country?: string; state?: string; city?: string; isp?: string; port?: number }) =>
+        ipcRenderer.invoke('tts:hideproxy:buy', params)
+    },
+    adspower: {
+      list: (groupId?: string) => ipcRenderer.invoke('tts:adspower:list', groupId),
+      create: (payload: any) => ipcRenderer.invoke('tts:adspower:create', payload),
+      start: (userId: string) => ipcRenderer.invoke('tts:adspower:start', userId),
+      stop: (userId: string) => ipcRenderer.invoke('tts:adspower:stop', userId)
+    },
+    smartSetup: (params: { record: any; autoBuyProxy?: boolean }) =>
+      ipcRenderer.invoke('tts:smart:setup', params),
+    batchSmartSetup: (params: { records: any[]; autoBuyProxy?: boolean }) =>
+      ipcRenderer.invoke('tts:smart:batch-setup', params),
+    inbox: {
+      list: () => ipcRenderer.invoke('tts:inbox:list'),
+      pickImage: () => ipcRenderer.invoke('tts:dialog:pick-image'),
+      pickMultipleImages: () => ipcRenderer.invoke('tts:dialog:pick-multiple-images'),
+      pickFolder: () => ipcRenderer.invoke('tts:dialog:pick-folder')
+    },
+    pool: {
+      autoDetect2Sides: (params: {
+        records: any[]
+        folderPath?: string
+        filePaths?: string[]
+        preset?: string
+      }) => ipcRenderer.invoke('tts:pool:auto-detect-2sides', params),
+      getVariants: (profileId: string) => ipcRenderer.invoke('tts:pool:get-variants', profileId),
+      assignVariant: (params: { profileId: string; frontPath: string; backPath: string; name?: string }) =>
+        ipcRenderer.invoke('tts:pool:assign-variant', params)
+    },
+    image: {
+      readDataUrl: (filePath: string) => ipcRenderer.invoke('tts:image:read-data-url', filePath)
+    },
+    processImage: (params: {
+      inputPath: string
+      preset?: string
+      crop?: boolean
+      profileId?: string
+      side?: string
+    }) => ipcRenderer.invoke('tts:image:process', params),
+    state: {
+      get: () => ipcRenderer.invoke('tts:state:get'),
+      save: (payload: any) => ipcRenderer.invoke('tts:state:save', payload)
+    }
   }
 }
 

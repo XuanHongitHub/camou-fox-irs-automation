@@ -173,6 +173,94 @@ export interface IApi {
   queue: {
     health: () => Promise<ApiResponse<QueueHealthSnapshot>>
   }
+  tts: {
+    status: () => Promise<{
+      ok: boolean
+      adspower: { online: boolean; base: string }
+      hideproxy: { online: boolean; base: string }
+    }>
+    fetchSheet: (params?: {
+      sheetId?: string
+      tabName?: string
+    }) => Promise<{
+      ok: boolean
+      sheetId?: string
+      tabName?: string
+      total?: number
+      records?: any[]
+      error?: string
+    }>
+    hideproxy: {
+      ports: () => Promise<{ ok: boolean; data?: any[]; error?: string }>
+      portInfo: () => Promise<{ ok: boolean; data?: any[]; error?: string }>
+      forward: (params: { id: string; port: number }) => Promise<{ ok: boolean; data?: any; error?: string }>
+      states: (country?: string) => Promise<{ ok: boolean; data?: any[]; error?: string }>
+      cities: (state: string) => Promise<{ ok: boolean; data?: any[]; error?: string }>
+      buy: (params: {
+        country?: string
+        state?: string
+        city?: string
+        isp?: string
+        port?: number
+      }) => Promise<{ ok: boolean; data?: any; error?: string }>
+    }
+    adspower: {
+      list: (groupId?: string) => Promise<{ ok: boolean; data?: any[]; error?: string }>
+      create: (payload: any) => Promise<{ ok: boolean; data?: any; error?: string }>
+      start: (userId: string) => Promise<{ ok: boolean; data?: any; error?: string }>
+      stop: (userId: string) => Promise<{ ok: boolean; error?: string }>
+    }
+    smartSetup: (params: {
+      record: any
+      autoBuyProxy?: boolean
+    }) => Promise<{ ok: boolean; record?: any; error?: string }>
+    batchSmartSetup: (params: {
+      records: any[]
+      autoBuyProxy?: boolean
+    }) => Promise<{ ok: boolean; total?: number; records?: any[]; error?: string }>
+    inbox: {
+      list: () => Promise<{
+        ok: boolean
+        files: Array<{ name: string; fullPath: string; size: number; mtime: number; folder: string }>
+        error?: string
+      }>
+      pickImage: () => Promise<{ ok: boolean; cancelled?: boolean; filePath?: string; error?: string }>
+      pickMultipleImages: () => Promise<{ ok: boolean; cancelled?: boolean; filePaths?: string[]; error?: string }>
+      pickFolder: () => Promise<{ ok: boolean; cancelled?: boolean; folderPath?: string; error?: string }>
+    }
+    pool: {
+      autoDetect2Sides: (params: {
+        records: any[]
+        folderPath?: string
+        filePaths?: string[]
+        preset?: string
+      }) => Promise<{
+        ok: boolean
+        matchedCount?: number
+        totalChecked?: number
+        results?: Array<{ id: string; front: string; back: string }>
+        updatedRecords?: any[]
+        error?: string
+      }>
+      getVariants: (profileId: string) => Promise<{ ok: boolean; variants?: any[]; error?: string }>
+      assignVariant: (params: { profileId: string; frontPath: string; backPath: string; name?: string }) =>
+        Promise<{ ok: boolean; error?: string }>
+    }
+    image: {
+      readDataUrl: (filePath: string) => Promise<{ ok: boolean; dataUrl?: string; error?: string }>
+    }
+    processImage: (params: {
+      inputPath: string
+      preset?: string
+      crop?: boolean
+      profileId?: string
+      side?: string
+    }) => Promise<{ ok: boolean; output?: string; exif?: any; error?: string }>
+    state: {
+      get: () => Promise<{ ok: boolean; data?: any; error?: string }>
+      save: (payload: any) => Promise<{ ok: boolean; error?: string }>
+    }
+  }
 }
 
 declare global {

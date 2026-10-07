@@ -11,11 +11,20 @@ files:
   - "!{.eslintignore,.eslintrc.cjs,.prettierignore,.prettierrc.yaml,dev-app-update.yml,CHANGELOG.md,README.md}"
   - "!{.env,.env.*,.editorconfig,.run/*}"
   - "!**/{tsconfig.json,tsconfig.node.json,tsconfig.web.json}"
+  - "!*.js"
+  - "!*.jsonl"
 
-# Bundling the standalone Python Executable
+# Bundling the standalone Python Executable and TTS Bot additions
 extraResources:
   - from: "../irs_bot/dist/irs_bot_server.exe"  # Assuming PyInstaller output
     to: "irs_bot_server.exe"
+  - from: "../irs_bot/data/us_city_zip_county.csv"
+    to: "data/us_city_zip_county.csv"
+  - from: "../additions"
+    to: "additions"
+  - from: "../start_tts_service.bat"
+    to: "start_tts_service.bat"
+
 
 win:
   executableName: IRS_Bot

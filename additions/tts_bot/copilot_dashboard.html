@@ -1,0 +1,641 @@
+<!DOCTYPE html>
+<html lang="vi" class="dark">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Fox-Auto Copilot Hub | Real-Time Live State</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = {
+      darkMode: 'class',
+      theme: {
+        extend: {
+          colors: {
+            brand: { 500: '#3b82f6', 600: '#2563eb' },
+            dark: { 900: '#0b0f19', 800: '#111827', 700: '#1f2937', 600: '#374151' }
+          }
+        }
+      }
+    }
+  </script>
+  <style>
+    @keyframes pulse-fast {
+      0%, 100% { opacity: 1; transform: scale(1); }
+      50% { opacity: 0.5; transform: scale(0.98); }
+    }
+    .live-pulse { animation: pulse-fast 1.5s cubic-bezier(0.4, 0, 0.6, 1) infinite; }
+  </style>
+</head>
+<body class="bg-[#090d16] text-slate-100 min-h-screen font-sans antialiased selection:bg-blue-600 selection:text-white">
+
+  <!-- TOP HEADER -->
+  <header class="border-b border-slate-800/80 bg-[#0d1322]/90 backdrop-blur sticky top-0 z-50 px-6 py-4">
+    <div class="max-w-7xl mx-auto flex items-center justify-between">
+      <div class="flex items-center space-x-4">
+        <div class="w-10 h-10 rounded-xl bg-gradient-to-tr from-blue-600 to-indigo-500 flex items-center justify-center font-bold text-lg shadow-lg shadow-blue-500/20">
+          ⚡
+        </div>
+        <div>
+          <div class="flex items-center space-x-2">
+            <h1 class="text-xl font-bold tracking-tight text-white">Fox-Auto Copilot Hub</h1>
+            <span class="px-2 py-0.5 rounded-full text-xs font-semibold bg-blue-500/10 text-blue-400 border border-blue-500/20">v2.0 Live Bus</span>
+          </div>
+          <p class="text-xs text-slate-400 mt-0.5">Real-Time Single Source of Truth • 0ms Desync Engine</p>
+        </div>
+      </div>
+
+      <!-- Actions & Live Bus Indicator -->
+      <div class="flex items-center space-x-4">
+        <button onclick="openBulkSetupModal()" class="px-3 py-1.5 text-xs font-bold bg-gradient-to-r from-amber-500 to-cyan-500 hover:from-amber-400 hover:to-cyan-400 text-slate-950 rounded-lg shadow transition-all flex items-center space-x-1.5 cursor-pointer">
+          <span>🚀 Bulk Setup Profiles</span>
+        </button>
+        <div class="flex items-center space-x-2 bg-slate-800/60 border border-slate-700/60 px-3 py-1.5 rounded-lg text-xs">
+          <span id="sse-dot" class="w-2.5 h-2.5 rounded-full bg-emerald-500 live-pulse"></span>
+          <span id="sse-text" class="text-slate-300 font-medium">SSE Live Stream: Connected</span>
+        </div>
+        <div class="text-right">
+          <div class="text-xs font-mono text-slate-400" id="live-clock">--:--:--</div>
+          <div class="text-[10px] text-slate-500 uppercase tracking-wider">Local Host :8787</div>
+        </div>
+      </div>
+    </div>
+  </header>
+
+  <!-- MAIN CONTAINER -->
+  <main class="max-w-7xl mx-auto px-6 py-8">
+    
+    <!-- STATS OVERVIEW CARDS -->
+    <div class="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-6 gap-4 mb-8">
+      <div class="bg-[#111827]/70 border border-slate-800 rounded-xl p-4 shadow-sm">
+        <div class="text-xs text-slate-400 uppercase tracking-wider font-medium">Tổng Profiles</div>
+        <div class="text-2xl font-bold mt-1 text-white" id="stat-total">16</div>
+      </div>
+      <div class="bg-[#111827]/70 border border-slate-800 rounded-xl p-4 shadow-sm">
+        <div class="text-xs text-blue-400 uppercase tracking-wider font-medium">Đang Điền / Fill</div>
+        <div class="text-2xl font-bold mt-1 text-blue-400" id="stat-filling">0</div>
+      </div>
+      <div class="bg-[#111827]/70 border border-slate-800 rounded-xl p-4 shadow-sm">
+        <div class="text-xs text-amber-400 uppercase tracking-wider font-medium">Watchdog 6P</div>
+        <div class="text-2xl font-bold mt-1 text-amber-400" id="stat-watchdog">0</div>
+      </div>
+      <div class="bg-[#111827]/70 border border-slate-800 rounded-xl p-4 shadow-sm">
+        <div class="text-xs text-emerald-400 uppercase tracking-wider font-medium">Edit / Resubmit</div>
+        <div class="text-2xl font-bold mt-1 text-emerald-400" id="stat-edit">0</div>
+      </div>
+      <div class="bg-[#111827]/70 border border-slate-800 rounded-xl p-4 shadow-sm">
+        <div class="text-xs text-purple-400 uppercase tracking-wider font-medium">Approved / Active</div>
+        <div class="text-2xl font-bold mt-1 text-purple-400" id="stat-approved">0</div>
+      </div>
+      <div class="bg-[#111827]/70 border border-slate-800 rounded-xl p-4 shadow-sm">
+        <div class="text-xs text-rose-400 uppercase tracking-wider font-medium">Dead / Appeal</div>
+        <div class="text-2xl font-bold mt-1 text-rose-400" id="stat-dead">0</div>
+      </div>
+    </div>
+
+    <!-- PROFILE GRID -->
+    <div class="flex items-center justify-between mb-4">
+      <h2 class="text-base font-semibold text-white flex items-center space-x-2">
+        <span>Bảng Trạng Thái Tức Thời Chuẩn Xác (Live Profile Matrix)</span>
+      </h2>
+      <div class="text-xs text-slate-400">
+        Tự động đồng bộ mỗi khi Extension hoặc TikTok đổi trạng thái
+      </div>
+    </div>
+
+    <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4" id="profiles-grid">
+      <!-- Loading skeleton -->
+      <div class="col-span-full py-12 text-center text-slate-500">
+        Đang tải dữ liệu thời gian thực từ Sheet & State Bus...
+      </div>
+    </div>
+
+    <!-- SETUP MODAL (SINGLE & BULK WITH TELEMETRY) -->
+    <div id="setup-modal" class="fixed inset-0 z-50 hidden items-center justify-center bg-black/80 backdrop-blur-md p-4 animate-in fade-in duration-200">
+      <div class="w-full max-w-5xl bg-[#0f172a] border border-slate-800 rounded-2xl shadow-2xl flex flex-col max-h-[92vh] overflow-hidden text-slate-100">
+        <!-- Header -->
+        <div class="flex items-center justify-between px-6 py-4 bg-[#090d16] border-b border-slate-800 shrink-0">
+          <div class="flex items-center space-x-3">
+            <div class="p-2.5 bg-gradient-to-tr from-amber-500/20 to-cyan-500/20 border border-cyan-500/30 rounded-xl text-cyan-400 font-bold text-lg">
+              ⚡
+            </div>
+            <div>
+              <div class="flex items-center space-x-2">
+                <h3 id="modal-title" class="text-base font-bold text-white tracking-wide">THIẾT LẬP MÔI TRƯỜNG PROFILE</h3>
+                <span id="modal-badge" class="font-mono text-xs px-2 py-0.5 rounded bg-cyan-950 text-cyan-300 border border-cyan-800">AM-01</span>
+              </div>
+              <p id="modal-desc" class="text-xs text-slate-400 mt-0.5">Cấu hình Profile AdsPower iOS 390x844 & Gán Proxy chuẩn Bang</p>
+            </div>
+          </div>
+          <button onclick="closeSetupModal()" class="p-1.5 text-slate-400 hover:text-white hover:bg-slate-800 rounded-lg transition-all cursor-pointer">
+            ✕
+          </button>
+        </div>
+
+        <!-- Content Body -->
+        <div id="modal-body" class="flex-1 overflow-y-auto p-6 space-y-6">
+          <!-- Injected via JavaScript dynamically -->
+        </div>
+
+        <!-- Footer -->
+        <div class="flex items-center justify-between px-6 py-4 bg-[#090d16] border-t border-slate-800 shrink-0">
+          <div class="text-xs text-slate-400" id="modal-footer-info">
+            Tất cả thay đổi được đồng bộ tức thời qua SSOT Live Bus (:8787)
+          </div>
+          <div class="flex items-center space-x-2.5" id="modal-actions">
+            <!-- Injected via JavaScript -->
+          </div>
+        </div>
+      </div>
+    </div>
+  </main>
+
+  <script>
+    // Live Clock
+    setInterval(() => {
+      document.getElementById('live-clock').innerText = new Date().toLocaleTimeString('vi-VN');
+    }, 1000);
+
+    let profilesData = [];
+    let liveStates = {};
+
+    function getBadge(status) {
+      status = (status || 'IDLE').toUpperCase();
+      if (status.includes('APPEAL') || status.includes('DEAD') || status.includes('REJECTED')) {
+        return { label: '🛑 DEAD - APPEAL', color: 'bg-rose-500/10 text-rose-400 border-rose-500/30' };
+      }
+      if (status.includes('EDIT') || status.includes('RESUBMIT') || status.includes('INFO')) {
+        return { label: '🔄 EDIT AVAILABLE', color: 'bg-emerald-500/10 text-emerald-400 border-emerald-500/30' };
+      }
+      if (status.includes('WATCHDOG') || status.includes('REVIEW') || status.includes('SUBMITTED')) {
+        return { label: '⏱️ 6M WATCHDOG', color: 'bg-amber-500/10 text-amber-400 border-amber-500/30 live-pulse' };
+      }
+      if (status.includes('FILL') || status.includes('ACTIVE')) {
+        return { label: '⚡ FILLING FORM', color: 'bg-blue-500/10 text-blue-400 border-blue-500/30' };
+      }
+      if (status.includes('APPROVED')) {
+        return { label: '🎉 APPROVED', color: 'bg-purple-500/10 text-purple-400 border-purple-500/30' };
+      }
+      if (status.includes('SETUP') || status.includes('READY')) {
+        return { label: '🟢 99% READY', color: 'bg-cyan-500/10 text-cyan-400 border-cyan-500/30' };
+      }
+      return { label: '⚪ SẴN SÀNG', color: 'bg-slate-700/30 text-slate-400 border-slate-700/50' };
+    }
+
+    async function fetchProfiles() {
+      try {
+        const res = await fetch('/api/copilot/profiles');
+        const json = await res.json();
+        if (json.code === 200) {
+          profilesData = json.profiles;
+          render();
+        }
+      } catch (e) {
+        console.error('Fetch profiles error:', e);
+      }
+    }
+
+    function render() {
+      const grid = document.getElementById('profiles-grid');
+      let stats = { total: profilesData.length, filling: 0, watchdog: 0, edit: 0, approved: 0, dead: 0 };
+
+      grid.innerHTML = profilesData.map(p => {
+        const live = liveStates[p.id] || {};
+        const status = live.status || p.status || 'IDLE';
+        const badge = getBadge(status);
+        const subStatus = live.sub_status || p.sub_status || 'Ready';
+        const uploads = (live.uploads || []).length || p.uploads_count || 0;
+        const watchdog = live.watchdog || p.watchdog || {};
+
+        if (status.includes('APPEAL') || status.includes('DEAD')) stats.dead++;
+        else if (status.includes('EDIT')) stats.edit++;
+        else if (status.includes('WATCHDOG') || status.includes('REVIEW')) stats.watchdog++;
+        else if (status.includes('FILL')) stats.filling++;
+        else if (status.includes('APPROVED')) stats.approved++;
+
+        return `
+          <div class="bg-[#111827]/80 border border-slate-800/80 hover:border-slate-700 rounded-xl p-5 shadow-lg flex flex-col justify-between transition-all">
+            <div>
+              <div class="flex items-center justify-between mb-3">
+                <div class="flex items-center space-x-2">
+                  <span class="font-mono font-bold text-sm bg-slate-800 text-blue-400 px-2 py-0.5 rounded border border-slate-700/60">${p.id}</span>
+                  <span class="text-xs font-semibold px-2 py-0.5 rounded bg-slate-800/60 text-slate-300 border border-slate-700/40">${p.state}</span>
+                </div>
+                <span class="px-2.5 py-1 rounded-full text-xs font-bold border ${badge.color}">${badge.label}</span>
+              </div>
+
+              <h3 class="text-base font-semibold text-white mb-1 truncate">${p.name}</h3>
+              <p class="text-xs text-slate-400 truncate mb-3">${p.email || 'Chưa có email'}</p>
+
+              <div class="bg-slate-900/60 rounded-lg p-2.5 mb-3 border border-slate-800/60 space-y-1.5 text-xs font-mono">
+                <div class="flex justify-between text-slate-300">
+                  <span class="text-slate-500">Tiến độ:</span>
+                  <span class="text-slate-200 font-medium">${subStatus}</span>
+                </div>
+                <div class="flex justify-between text-slate-300">
+                  <span class="text-slate-500">Cập nhật:</span>
+                  <span class="text-slate-400">${p.updated_at ? p.updated_at.split(' ')[1] : '--'}</span>
+                </div>
+                <div class="flex justify-between text-slate-300">
+                  <span class="text-slate-500">File đã lưu:</span>
+                  <span class="text-emerald-400 font-medium">${uploads} tệp</span>
+                </div>
+              </div>
+            </div>
+
+            <div class="flex items-center justify-between pt-2 border-t border-slate-800/60 mt-2">
+              <span class="text-[11px] text-slate-500">SĐT: ${p.phone ? p.phone.slice(-4) : 'N/A'}</span>
+              <div class="flex space-x-1.5">
+                <button onclick="openSetupModal('${p.id}')" class="px-2.5 py-1 text-xs font-semibold bg-cyan-950 hover:bg-cyan-900 text-cyan-300 rounded border border-cyan-800 transition cursor-pointer">
+                  ⚡ Setup
+                </button>
+                <button onclick="fetchOtp('${p.id}')" class="px-2.5 py-1 text-xs font-medium bg-slate-800 hover:bg-slate-700 text-slate-200 rounded border border-slate-700 transition cursor-pointer">
+                  🔑 OTP
+                </button>
+              </div>
+            </div>
+          </div>
+        `;
+      }).join('');
+
+      // Update counters
+      document.getElementById('stat-total').innerText = stats.total;
+      document.getElementById('stat-filling').innerText = stats.filling;
+      document.getElementById('stat-watchdog').innerText = stats.watchdog;
+      document.getElementById('stat-edit').innerText = stats.edit;
+      document.getElementById('stat-approved').innerText = stats.approved;
+      document.getElementById('stat-dead').innerText = stats.dead;
+    }
+
+    async function fetchOtp(pid) {
+      const btn = event.target;
+      const oldText = btn.innerText;
+      btn.innerText = 'Đang lấy...';
+      try {
+        const r = await fetch(`/api/copilot/otp/${pid}`);
+        const j = await r.json();
+        alert(`[${pid}] OTP Mail: ${j.mail_otp || 'Chưa có'} | OTP SMS: ${j.sms_otp || 'Chưa có'}`);
+      } catch (e) {
+        alert('Lỗi lấy OTP: ' + e);
+      } finally {
+        btn.innerText = oldText;
+      }
+    }
+
+    // Connect SSE Stream
+    function initSSE() {
+      const es = new EventSource('/api/copilot/stream');
+      es.onopen = () => {
+        document.getElementById('sse-dot').className = 'w-2.5 h-2.5 rounded-full bg-emerald-500 live-pulse';
+        document.getElementById('sse-text').innerText = 'SSE Live Stream: Connected';
+      };
+      es.onmessage = (e) => {
+        try {
+          const payload = JSON.parse(e.data);
+          if (payload.type === 'STATE_UPDATE') {
+            liveStates = payload.states;
+            render();
+          }
+        } catch (err) {}
+      };
+      es.onerror = () => {
+        document.getElementById('sse-dot').className = 'w-2.5 h-2.5 rounded-full bg-rose-500';
+        document.getElementById('sse-text').innerText = 'SSE: Reconnecting...';
+      };
+    }
+
+    // =========================================================================
+    // MODAL LOGIC (SINGLE & BULK SETUP WITH REAL-TIME TELEMETRY)
+    // =========================================================================
+    let activePorts = [];
+
+    async function fetchProxyPorts() {
+      try {
+        const res = await fetch('/api/copilot/proxy_ports');
+        const j = await res.json();
+        if (j.code === 200 && Array.isArray(j.data)) {
+          activePorts = j.data.filter(p => p.online);
+        }
+      } catch (e) {
+        console.error('Fetch proxy ports error:', e);
+      }
+    }
+
+    function closeSetupModal() {
+      const modal = document.getElementById('setup-modal');
+      modal.classList.add('hidden');
+      modal.classList.remove('flex');
+    }
+
+    async function openSetupModal(pid) {
+      const modal = document.getElementById('setup-modal');
+      modal.classList.remove('hidden');
+      modal.classList.add('flex');
+
+      document.getElementById('modal-title').innerText = `THIẾT LẬP MÔI TRƯỜNG HỒ SƠ [${pid}]`;
+      document.getElementById('modal-badge').innerText = `Profile: ${pid}`;
+      document.getElementById('modal-desc').innerText = `Cấu hình Profile AdsPower iOS 390x844, Nạp Extension Copilot MV3 & Gán Proxy`;
+      document.getElementById('modal-body').innerHTML = '<div class="py-12 text-center text-slate-400 font-medium">Đang tải thông số telemetry Proxy & Profile...</div>';
+      document.getElementById('modal-actions').innerHTML = '';
+
+      await fetchProxyPorts();
+      const p = profilesData.find(x => x.id === pid) || {};
+      const live = liveStates[pid] || {};
+
+      const targetState = (p.state || 'FL').toUpperCase();
+      let matchedPort = activePorts.find(x => (x.state || '').toUpperCase().includes(targetState) || (x.country || '').includes(targetState));
+      let selectedPortNum = matchedPort ? matchedPort.port : (activePorts[0]?.port || 50007);
+      let selectedPortObj = activePorts.find(x => x.port === selectedPortNum) || { port: selectedPortNum, public_ip: '127.0.0.1', state: targetState, isp: 'Starlink / Charter', online: true };
+
+      const isMatch = selectedPortObj.online && ((selectedPortObj.state || '').toUpperCase().includes(targetState) || targetState.includes((selectedPortObj.state || '').toUpperCase()));
+
+      document.getElementById('modal-body').innerHTML = `
+        <div class="grid grid-cols-1 lg:grid-cols-2 gap-5">
+          <!-- CARD 1: AdsPower iOS Environment -->
+          <div class="bg-slate-950/80 border border-slate-800 rounded-xl p-5 space-y-4">
+            <div class="flex items-center justify-between pb-3 border-b border-slate-800/80">
+              <div class="flex items-center space-x-2 text-cyan-400 font-semibold text-xs uppercase tracking-wider">
+                <span>📱 1. Môi Trường AdsPower (Mobile iOS)</span>
+              </div>
+              <span class="text-[10px] px-2 py-0.5 rounded bg-cyan-950 text-cyan-300 border border-cyan-800 font-mono">
+                Group 10716270
+              </span>
+            </div>
+            <div class="space-y-2.5 text-xs">
+              <div class="flex justify-between items-center">
+                <span class="text-slate-400">Tên Hồ Sơ:</span>
+                <span class="font-mono text-white font-semibold">${p.id} - ${p.name || 'TTS'}</span>
+              </div>
+              <div class="flex justify-between items-center">
+                <span class="text-slate-400">Bang Hồ Sơ:</span>
+                <span class="font-mono text-cyan-300 font-bold">${p.state || 'FL'}</span>
+              </div>
+              <div class="flex justify-between items-center">
+                <span class="text-slate-400">Thiết Bị / OS:</span>
+                <span class="text-slate-200">Apple iPhone 15 Pro (iOS 17.5.1)</span>
+              </div>
+              <div class="flex justify-between items-center">
+                <span class="text-slate-400">Độ Phân Giải:</span>
+                <span class="font-mono text-emerald-400 font-medium">390 x 844 (Mobile Viewport)</span>
+              </div>
+              <div class="flex justify-between items-center">
+                <span class="text-slate-400">Tiện Ích Copilot:</span>
+                <span class="text-emerald-400 font-semibold flex items-center space-x-1">
+                  <span>🟢 Tự động nạp (--load-extension)</span>
+                </span>
+              </div>
+              <div class="flex justify-between items-center">
+                <span class="text-slate-400">AdsPower ID:</span>
+                <span class="font-mono font-bold text-amber-400">${live.extra?.adspower_id || 'Chưa khởi tạo'}</span>
+              </div>
+            </div>
+          </div>
+
+          <!-- CARD 2: HideProxy Live Telemetry -->
+          <div class="bg-slate-950/80 border border-slate-800 rounded-xl p-5 space-y-4">
+            <div class="flex items-center justify-between pb-3 border-b border-slate-800/80">
+              <div class="flex items-center space-x-2 text-amber-400 font-semibold text-xs uppercase tracking-wider">
+                <span>🌐 2. Thông Số Proxy & Hạ Tầng Mạng</span>
+              </div>
+              <span class="text-[10px] px-2 py-0.5 rounded font-mono ${selectedPortObj.online ? 'bg-emerald-950 text-emerald-300 border border-emerald-800' : 'bg-rose-950 text-rose-300 border border-rose-800'}">
+                ${selectedPortObj.online ? '🟢 Online' : '🔴 Offline'}
+              </span>
+            </div>
+            <div class="space-y-2.5 text-xs">
+              <div class="flex justify-between items-center">
+                <span class="text-slate-400">Chọn Cổng (Port):</span>
+                <select id="modal-port-select" onchange="onModalPortChange('${pid}')" class="px-2 py-1 bg-slate-900 border border-slate-700 rounded text-cyan-300 font-mono font-bold text-xs">
+                  ${activePorts.map(x => `<option value="${x.port}" ${x.port === selectedPortNum ? 'selected' : ''}>Port ${x.port} - ${x.public_ip || 'IP'} (${x.state || 'US'})</option>`).join('')}
+                  ${!activePorts.some(x => x.port === selectedPortNum) ? `<option value="${selectedPortNum}" selected>Port ${selectedPortNum}</option>` : ''}
+                </select>
+              </div>
+              <div class="flex justify-between items-center">
+                <span class="text-slate-400">Giao Thức:</span>
+                <span class="font-mono text-slate-300">HTTP / 127.0.0.1:${selectedPortNum}</span>
+              </div>
+              <div class="flex justify-between items-center">
+                <span class="text-slate-400">Exit Public IP:</span>
+                <span class="font-mono font-bold text-white text-sm" id="modal-ip-text">${selectedPortObj.public_ip || '127.0.0.1'}</span>
+              </div>
+              <div class="flex justify-between items-center">
+                <span class="text-slate-400">Vị Trí Địa Lý:</span>
+                <span class="font-medium text-slate-200" id="modal-loc-text">${selectedPortObj.city ? selectedPortObj.city + ', ' : ''}${selectedPortObj.state || 'US'}</span>
+              </div>
+              <div class="flex justify-between items-center">
+                <span class="text-slate-400">Nhà Mạng / ISP:</span>
+                <span class="font-medium text-slate-300 truncate max-w-[220px]" id="modal-isp-text">${selectedPortObj.isp || 'Comcast / Starlink'}</span>
+              </div>
+            </div>
+
+            <!-- Geo Match Pill -->
+            <div class="p-3 rounded-lg border text-xs flex items-center space-x-2.5 ${isMatch ? 'bg-emerald-950/60 border-emerald-500/40 text-emerald-300' : 'bg-amber-950/60 border-amber-500/40 text-amber-300'}">
+              <div>
+                <div class="font-semibold">${isMatch ? '🟢 TRÙNG KHỚP BANG TUYỆT ĐỐI' : '⚠️ CẢNH BÁO LỆCH BANG'}</div>
+                <div class="text-[11px] opacity-90 mt-0.5">${isMatch ? 'Proxy và hồ sơ đồng nhất bang ' + p.state : 'Proxy thuộc ' + (selectedPortObj.state || 'khác') + ', hồ sơ bang ' + p.state}</div>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div id="modal-status-ticker" class="hidden p-3 bg-slate-950 border border-cyan-800 rounded-xl text-xs text-cyan-300"></div>
+      `;
+
+      document.getElementById('modal-actions').innerHTML = `
+        <button onclick="closeSetupModal()" class="px-3 py-1.5 text-xs text-slate-400 hover:text-white bg-slate-800 hover:bg-slate-700 rounded-lg transition cursor-pointer">Đóng</button>
+        <button onclick="executeSingleSetup('${pid}')" id="btn-exec-setup" class="px-4 py-1.5 text-xs font-bold bg-gradient-to-r from-amber-500 to-cyan-500 hover:from-amber-400 hover:to-cyan-400 text-slate-950 rounded-lg shadow transition cursor-pointer">
+          🚀 Xác Nhận & Kích Hoạt Thiết Lập 99%
+        </button>
+      `;
+    }
+
+    function onModalPortChange(pid) {
+      const portSelect = document.getElementById('modal-port-select');
+      const chosenPort = Number(portSelect.value);
+      const portObj = activePorts.find(x => x.port === chosenPort);
+      if (portObj) {
+        document.getElementById('modal-ip-text').innerText = portObj.public_ip || 'N/A';
+        document.getElementById('modal-loc-text').innerText = `${portObj.city ? portObj.city + ', ' : ''}${portObj.state || 'US'}`;
+        document.getElementById('modal-isp-text').innerText = portObj.isp || 'N/A';
+      }
+    }
+
+    async function executeSingleSetup(pid) {
+      const btn = document.getElementById('btn-exec-setup');
+      const ticker = document.getElementById('modal-status-ticker');
+      const portSelect = document.getElementById('modal-port-select');
+      const targetPort = portSelect ? Number(portSelect.value) : 50007;
+
+      btn.disabled = true;
+      btn.innerText = 'Đang thiết lập...';
+      ticker.classList.remove('hidden');
+      ticker.innerText = `Đang kết nối Port ${targetPort} và tạo AdsPower Profile cho ${pid}...`;
+
+      try {
+        const res = await fetch('/api/copilot/setup_profile', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ record_id: pid, target_port: targetPort })
+        });
+        const j = await res.json();
+        if (j.code === 200) {
+          ticker.innerText = `🟢 Thiết lập thành công cho ${pid}! Port: ${j.port}, AdsPower: ${j.adspower_id || 'Created'}`;
+          btn.innerText = '✅ Hoàn Tất 99% Ready';
+        } else {
+          ticker.innerText = `🔴 Lỗi: ${j.detail || 'Không thành công'}`;
+          btn.disabled = false;
+          btn.innerText = 'Thử Lại';
+        }
+      } catch (err) {
+        ticker.innerText = `🔴 Lỗi mạng: ${err}`;
+        btn.disabled = false;
+        btn.innerText = 'Thử Lại';
+      }
+    }
+
+    async function openBulkSetupModal() {
+      const modal = document.getElementById('setup-modal');
+      modal.classList.remove('hidden');
+      modal.classList.add('flex');
+
+      document.getElementById('modal-title').innerText = `THIẾT LẬP MÔI TRƯỜNG HÀNG LOẠT (${profilesData.length} PROFILES)`;
+      document.getElementById('modal-badge').innerText = `${profilesData.length} Profiles`;
+      document.getElementById('modal-desc').innerText = `Tự động phân bổ Port HideProxy theo bang và khởi tạo Profile AdsPower cho toàn bộ danh sách`;
+      document.getElementById('modal-body').innerHTML = '<div class="py-12 text-center text-slate-400 font-medium">Đang chuẩn bị bảng phân bổ Proxy & Profiles...</div>';
+
+      await fetchProxyPorts();
+
+      document.getElementById('modal-body').innerHTML = `
+        <div class="space-y-5">
+          <div class="grid grid-cols-1 sm:grid-cols-3 gap-3">
+            <div class="bg-slate-950 p-3.5 rounded-xl border border-slate-800">
+              <div class="text-[11px] text-slate-400 uppercase font-semibold">Tổng Hồ Sơ</div>
+              <div class="text-xl font-bold font-mono text-white mt-1">${profilesData.length} Profiles</div>
+            </div>
+            <div class="bg-slate-950 p-3.5 rounded-xl border border-slate-800">
+              <div class="text-[11px] text-slate-400 uppercase font-semibold">Cổng Proxy Online</div>
+              <div class="text-xl font-bold font-mono text-emerald-400 mt-1">${activePorts.length} Ports</div>
+            </div>
+            <div class="bg-slate-950 p-3.5 rounded-xl border border-slate-800">
+              <div class="text-[11px] text-slate-400 uppercase font-semibold">Trạng Thái Sẵn Sàng</div>
+              <div class="text-xl font-bold font-mono text-cyan-400 mt-1">100% Cấu Hình iOS</div>
+            </div>
+          </div>
+
+          <div id="bulk-progress-bar" class="hidden bg-slate-950 p-4 rounded-xl border border-cyan-800 space-y-2">
+            <div class="flex justify-between text-xs">
+              <span id="bulk-progress-text" class="text-cyan-300 font-semibold">Đang chuẩn bị...</span>
+              <span id="bulk-progress-pct" class="font-mono text-white font-bold">0%</span>
+            </div>
+            <div class="w-full bg-slate-800 rounded-full h-2 overflow-hidden">
+              <div id="bulk-progress-fill" class="bg-gradient-to-r from-amber-500 to-cyan-500 h-2 transition-all duration-300" style="width: 0%"></div>
+            </div>
+          </div>
+
+          <div class="border border-slate-800 rounded-xl overflow-hidden bg-slate-950">
+            <div class="max-h-[360px] overflow-y-auto">
+              <table class="w-full text-left text-xs border-collapse">
+                <thead class="sticky top-0 bg-slate-900 border-b border-slate-800 text-[10px] text-slate-400 uppercase font-semibold">
+                  <tr>
+                    <th class="py-2.5 px-3">Hồ Sơ</th>
+                    <th class="py-2.5 px-2 text-center">Bang</th>
+                    <th class="py-2.5 px-2 text-center">Port</th>
+                    <th class="py-2.5 px-3">Exit Public IP</th>
+                    <th class="py-2.5 px-3">Vị Trí Proxy</th>
+                    <th class="py-2.5 px-3">ISP / Nhà Mạng</th>
+                    <th class="py-2.5 px-2 text-center">Khớp Bang</th>
+                    <th class="py-2.5 px-3 text-right">Trạng Thái</th>
+                  </tr>
+                </thead>
+                <tbody class="divide-y divide-slate-800/60 font-mono">
+                  ${profilesData.map((p, idx) => {
+                    const st = (p.state || 'FL').toUpperCase();
+                    const portObj = activePorts.find(x => (x.state || '').toUpperCase().includes(st)) || activePorts[idx % (activePorts.length || 1)] || { port: 50007, public_ip: '127.0.0.1', state: 'FL', isp: 'Starlink' };
+                    const isMatch = (portObj.state || '').toUpperCase().includes(st);
+                    return `
+                      <tr class="hover:bg-slate-900/60 transition-colors">
+                        <td class="py-2 px-3 font-semibold text-white">
+                          <span class="text-cyan-400 mr-1.5">${p.id}</span>
+                          <span class="font-sans font-normal text-slate-300">${p.name}</span>
+                        </td>
+                        <td class="py-2 px-2 text-center text-cyan-300 font-bold">${p.state}</td>
+                        <td class="py-2 px-2 text-center text-amber-300">${portObj.port || 50007}</td>
+                        <td class="py-2 px-3 text-slate-200">${portObj.public_ip || '127.0.0.1'}</td>
+                        <td class="py-2 px-3 font-sans text-slate-300">${portObj.city ? portObj.city + ', ' : ''}${portObj.state || 'US'}</td>
+                        <td class="py-2 px-3 font-sans text-slate-400 truncate max-w-[160px]">${portObj.isp || 'Charter / Comcast'}</td>
+                        <td class="py-2 px-2 text-center">
+                          <span class="px-1.5 py-0.5 rounded text-[10px] ${isMatch ? 'bg-emerald-950 text-emerald-400 border border-emerald-800' : 'bg-amber-950 text-amber-400 border border-amber-800'} font-sans">
+                            ${isMatch ? '🟢 Khớp' : '🟡 Khác'}
+                          </span>
+                        </td>
+                        <td class="py-2 px-3 text-right">
+                          <span class="px-2 py-0.5 rounded text-[10px] bg-slate-800 text-slate-400 border border-slate-700 font-sans" id="bulk-row-status-${p.id}">
+                            Chờ setup
+                          </span>
+                        </td>
+                      </tr>
+                    `;
+                  }).join('')}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      `;
+
+      document.getElementById('modal-actions').innerHTML = `
+        <button onclick="closeSetupModal()" class="px-3 py-1.5 text-xs text-slate-400 hover:text-white bg-slate-800 hover:bg-slate-700 rounded-lg transition cursor-pointer">Đóng</button>
+        <button onclick="executeBulkSetup()" id="btn-exec-bulk" class="px-4 py-1.5 text-xs font-bold bg-gradient-to-r from-amber-500 to-cyan-500 hover:from-amber-400 hover:to-cyan-400 text-slate-950 rounded-lg shadow transition cursor-pointer">
+          🚀 Bắt Đầu Thiết Lập Hàng Loạt (${profilesData.length} Profiles)
+        </button>
+      `;
+    }
+
+    async function executeBulkSetup() {
+      const btn = document.getElementById('btn-exec-bulk');
+      const bar = document.getElementById('bulk-progress-bar');
+      const fill = document.getElementById('bulk-progress-fill');
+      const pct = document.getElementById('bulk-progress-pct');
+      const txt = document.getElementById('bulk-progress-text');
+
+      btn.disabled = true;
+      bar.classList.remove('hidden');
+
+      for (let i = 0; i < profilesData.length; i++) {
+        const p = profilesData[i];
+        const percent = Math.round((i / profilesData.length) * 100);
+        pct.innerText = percent + '%';
+        fill.style.width = percent + '%';
+        txt.innerText = `Đang thiết lập ${p.id} (${p.name})...`;
+
+        const rowStatus = document.getElementById(`bulk-row-status-${p.id}`);
+        if (rowStatus) {
+          rowStatus.className = 'px-2 py-0.5 rounded text-[10px] bg-amber-950 text-amber-300 border border-amber-800 font-sans';
+          rowStatus.innerText = 'Đang xử lý...';
+        }
+
+        try {
+          await fetch('/api/copilot/setup_profile', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ record_id: p.id })
+          });
+          if (rowStatus) {
+            rowStatus.className = 'px-2 py-0.5 rounded text-[10px] bg-cyan-950 text-cyan-300 border border-cyan-800 font-sans font-semibold';
+            rowStatus.innerText = '99% Ready';
+          }
+        } catch (e) {
+          if (rowStatus) {
+            rowStatus.className = 'px-2 py-0.5 rounded text-[10px] bg-rose-950 text-rose-300 border border-rose-800 font-sans';
+            rowStatus.innerText = 'Lỗi';
+          }
+        }
+      }
+
+      pct.innerText = '100%';
+      fill.style.width = '100%';
+      txt.innerText = `Đã hoàn tất toàn bộ ${profilesData.length} hồ sơ!`;
+      btn.innerText = '✅ Hoàn Tất';
+    }
+
+    fetchProfiles().then(initSSE);
+  </script>
+</body>
+</html>
