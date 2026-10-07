@@ -1727,6 +1727,91 @@ function generateValidDl(stateCode: string, lastName: string = ''): string {
     }
   })
 
+  // 7.1 Auto-Rotate Variant Pool (Chống trùng form, đảo mặt đúng side, tránh file reject)
+  ipcMain.handle('tts:pool:auto-rotate-variant', async (_event, profileId: string) => {
+    try {
+      let stateData: any = { assignments: {}, harvestedUploads: {} }
+      if (existsSync(stateFile)) {
+        try { stateData = JSON.parse(readFileSync(stateFile, 'utf-8')) } catch {}
+      }
+
+      const currentAssign = stateData.assignments?.[profileId] || {}
+      const harvestedList: Array<{ fileName: string }> = stateData.harvestedUploads?.[profileId] || []
+      const harvestedFileNames = new Set(harvestedList.map((h) => h.fileName.toLowerCase()))
+
+      const candidateMockups = [
+        join(foxAutoRoot, 'additions', 'tts_bot', 'runtime', 'mockups'),
+        'G:\\RTTS\\dotpsd\\outputs\\clean_camera_mockups',
+        join(foxAutoRoot, '..', 'dotpsd', 'outputs', 'clean_camera_mockups'),
+        'D:\\Download'
+      ]
+      const mockupsDir = candidateMockups.find((p) => existsSync(p)) || join(foxAutoRoot, 'additions', 'tts_bot', 'runtime', 'mockups')
+      const downloadDir = existsSync('D:\\Download') ? 'D:\\Download' : mockupsDir
+
+      const mapping: Record<string, { fBase: string; bBase: string }> = {
+        'AM-01': { fBase: 'IMG_0497', bBase: 'IMG_0498' },
+        'AM-02': { fBase: 'FL_FRONT_AM-02_LISBETH_BADILLA', bBase: 'FL_BACK_AM-02_LISBETH_BADILLA' },
+        'AM-03': { fBase: 'IMG_0493', bBase: 'IMG_0494' },
+        'AM-04': { fBase: 'IMG_0495', bBase: 'IMG_0496' },
+        'AM-05': { fBase: 'IMG_0491', bBase: 'IMG_0492' },
+        'AM-06': { fBase: 'IMG_0489', bBase: 'IMG_0490' }
+      }
+
+      const pair = mapping[profileId]
+      const availableVariants: Array<{ id: string; name: string; frontPath: string; backPath: string }> = []
+
+      if (pair) {
+        const v1F = profileId === 'AM-02' ? join(downloadDir, `${pair.fBase}.jpg`) : join(mockupsDir, `${pair.fBase}.JPG`)
+        const v1B = profileId === 'AM-02' ? join(downloadDir, `${pair.bBase}.jpg`) : join(mockupsDir, `${pair.bBase}.JPG`)
+        if (existsSync(v1F) && existsSync(v1B)) {
+          availableVariants.push({ id: 'v1_original', name: 'Biến thể 1: Ảnh Chụp Thật Gốc', frontPath: v1F, backPath: v1B })
+        }
+        const v2F = profileId === 'AM-02' ? join(downloadDir, `${pair.fBase}_v2.jpg`) : join(mockupsDir, `${pair.fBase}_crop_v2.JPG`)
+        const v2B = profileId === 'AM-02' ? join(downloadDir, `${pair.bBase}_v2.jpg`) : join(mockupsDir, `${pair.bBase}_crop_v2.JPG`)
+        if (existsSync(v2F) && existsSync(v2B)) {
+          availableVariants.push({ id: 'v2_crop', name: 'Biến thể 2: Góc Nghiêng Tự Nhiên & Re-scaled', frontPath: v2F, backPath: v2B })
+        }
+        const v3F = profileId === 'AM-02' ? join(downloadDir, `${pair.fBase}_v3.jpg`) : join(mockupsDir, `${pair.fBase}_v3.JPG`)
+        const v3B = profileId === 'AM-02' ? join(downloadDir, `${pair.bBase}_v3.jpg`) : join(mockupsDir, `${pair.bBase}_v3.JPG`)
+        if (existsSync(v3F) && existsSync(v3B)) {
+          availableVariants.push({ id: 'v3_gold', name: 'Biến thể 3: Gold Standard EXIF', frontPath: v3F, backPath: v3B })
+        }
+      }
+
+      // Check which variant has NOT been submitted yet
+      let chosen = availableVariants.find((v) => {
+        const fName = basename(v.frontPath).toLowerCase()
+        const bName = basename(v.backPath).toLowerCase()
+        // Rule: strictly different files
+        if (fName === bName) return false
+        // Rule: not already harvested/rejected
+        return !harvestedFileNames.has(fName) && !harvestedFileNames.has(bName)
+      })
+
+      // If all were used, cycle to the next one different from current active assignment
+      if (!chosen && availableVariants.length > 0) {
+        chosen = availableVariants.find((v) => v.frontPath !== currentAssign.frontProcessed) || availableVariants[0]
+      }
+
+      if (chosen) {
+        stateData.assignments = stateData.assignments || {}
+        stateData.assignments[profileId] = {
+          ...(stateData.assignments[profileId] || {}),
+          frontProcessed: chosen.frontPath,
+          backProcessed: chosen.backPath,
+          variantName: chosen.name,
+          updatedAt: Date.now()
+        }
+        writeFileSync(stateFile, JSON.stringify(stateData, null, 2), 'utf-8')
+        return { ok: true, rotated: true, variant: chosen }
+      }
+
+      return { ok: false, error: 'Không tìm thấy biến thể ảnh khả dụng trong pool' }
+    } catch (err: any) {
+      return { ok: false, error: String(err?.message || err) }
+    }
+  })
+
   // 8. State Persistence (TTS Bot Task Runs & Photo Assignments)
   ipcMain.handle('tts:state:get', async () => {
     try {
