@@ -2,6 +2,7 @@ import { IpcMain, dialog } from 'electron'
 import { join, basename, extname } from 'path'
 import { existsSync, mkdirSync, readFileSync, writeFileSync, readdirSync, statSync } from 'fs'
 import { spawn } from 'child_process'
+import tls from 'tls'
 
 const ADS_API_KEY = 'c9ea96522fba29ee72f2fee511b77868008da729dcdcc201'
 const ADS_HEADERS = { Authorization: `Bearer ${ADS_API_KEY}`, 'Content-Type': 'application/json' }
@@ -57,6 +58,238 @@ function parseCsv(text: string): string[][] {
   return rows
 }
 
+function decodeMimeWords(str: string): string {
+  return str.replace(/=\?([^?]+)\?([BQbq])\?([^?]+)\?=/g, (_, charset, encoding, text) => {
+    try {
+      if (encoding.toUpperCase() === 'B') {
+        return Buffer.from(text, 'base64').toString(charset.toLowerCase() === 'utf-8' ? 'utf8' : 'latin1')
+      } else if (encoding.toUpperCase() === 'Q') {
+        return text.replace(/=([0-9A-Fa-f]{2})/g, (__, hex) => String.fromCharCode(parseInt(hex, 16))).replace(/_/g, ' ')
+      }
+    } catch {}
+    return text
+  })
+}
+
+export interface MailCheckResult {
+  ok: boolean
+  email: string
+  count: number
+  latestSubject?: string
+  otp?: string | null
+  status: 'not_registered' | 'has_otp' | 'incomplete_onboarding' | 'under_review' | 'rejected_need_resubmit' | 'approved' | 'has_mail' | 'error'
+  label: string
+  detail?: string
+  error?: string
+  checkedAt: number
+}
+
+export async function checkMailInbox(email: string, pass?: string, twoFactor?: string): Promise<MailCheckResult> {
+  const DEFAULT_MS_CLIENT_ID = '9e5f94bc-e8a4-4e73-b8be-63364c29d753'
+
+  let refreshTok = ''
+  let customCid = ''
+  if (twoFactor && twoFactor.startsWith('M.')) {
+    refreshTok = twoFactor
+  } else if (pass && pass.startsWith('M.')) {
+    refreshTok = pass
+  }
+
+  if (twoFactor && twoFactor.includes('|')) {
+    const parts = twoFactor.split('|')
+    refreshTok = parts.find((p) => p.startsWith('M.')) || parts[0]
+    customCid = parts.find((p) => p.includes('-') && p.length === 36) || ''
+  }
+
+  if (!refreshTok) {
+    return {
+      ok: false,
+      email,
+      count: 0,
+      status: 'error',
+      label: 'Chưa có Token OAuth (2FA)',
+      checkedAt: Date.now()
+    }
+  }
+
+  try {
+    const res = await fetch('https://login.live.com/oauth20_token.srf', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({
+        client_id: customCid || DEFAULT_MS_CLIENT_ID,
+        grant_type: 'refresh_token',
+        refresh_token: refreshTok
+      })
+    })
+
+    const tokenData = await res.json()
+    if (!tokenData.access_token) {
+      return {
+        ok: false,
+        email,
+        count: 0,
+        status: 'error',
+        label: 'Token hết hạn / Lỗi Auth',
+        error: tokenData.error_description || tokenData.error,
+        checkedAt: Date.now()
+      }
+    }
+
+    const accTok = tokenData.access_token
+    const authString = Buffer.from(`user=${email}\x01auth=Bearer ${accTok}\x01\x01`).toString('base64')
+
+    return new Promise<MailCheckResult>((resolve) => {
+      const socket = tls.connect({ host: 'outlook.office365.com', port: 993 })
+      socket.setEncoding('utf8')
+      let buffer = ''
+      let state = 'CONNECTED'
+      let msgCount = 0
+      const timeout = setTimeout(() => {
+        socket.destroy()
+        resolve({
+          ok: false,
+          email,
+          count: 0,
+          status: 'error',
+          label: 'Timeout kết nối mail (8s)',
+          checkedAt: Date.now()
+        })
+      }, 8000)
+
+      socket.on('data', (chunk) => {
+        buffer += chunk
+        if (state === 'CONNECTED' && buffer.includes('* OK')) {
+          buffer = ''
+          state = 'AUTH'
+          socket.write(`A01 AUTHENTICATE XOAUTH2 ${authString}\r\n`)
+        } else if (state === 'AUTH' && buffer.includes('A01 OK')) {
+          buffer = ''
+          state = 'SELECT'
+          socket.write('A02 SELECT INBOX\r\n')
+        } else if (state === 'AUTH' && (buffer.includes('A01 NO') || buffer.includes('A01 BAD'))) {
+          clearTimeout(timeout)
+          socket.end()
+          resolve({
+            ok: false,
+            email,
+            count: 0,
+            status: 'error',
+            label: 'Lỗi xác thực XOAUTH2',
+            checkedAt: Date.now()
+          })
+        } else if (state === 'SELECT' && buffer.includes('A02 OK')) {
+          const matchExists = buffer.match(/\*\s+(\d+)\s+EXISTS/i)
+          msgCount = matchExists ? parseInt(matchExists[1], 10) : 0
+          buffer = ''
+          if (msgCount === 0) {
+            clearTimeout(timeout)
+            socket.write('A03 LOGOUT\r\n')
+            socket.end()
+            resolve({
+              ok: true,
+              email,
+              count: 0,
+              status: 'not_registered',
+              label: '⚪ Chưa có thư (Chưa reg)',
+              checkedAt: Date.now()
+            })
+            return
+          }
+          state = 'SEARCH'
+          socket.write('A03 SEARCH ALL\r\n')
+        } else if (state === 'SEARCH' && buffer.includes('A03 OK')) {
+          const uids = (buffer.match(/\*\s+SEARCH\s+([\d\s]+)/i)?.[1] || '').trim().split(/\s+/).filter(Boolean)
+          buffer = ''
+          if (uids.length === 0) {
+            clearTimeout(timeout)
+            socket.write('A04 LOGOUT\r\n')
+            socket.end()
+            resolve({
+              ok: true,
+              email,
+              count: 0,
+              status: 'not_registered',
+              label: '⚪ Chưa có thư (Chưa reg)',
+              checkedAt: Date.now()
+            })
+            return
+          }
+          const lastUid = uids[uids.length - 1]
+          state = 'FETCH'
+          socket.write(`A04 FETCH ${lastUid} (BODY.PEEK[HEADER.FIELDS (SUBJECT FROM DATE)] BODY.PEEK[TEXT]<0.1000>)\r\n`)
+        } else if (state === 'FETCH' && buffer.includes('A04 OK')) {
+          clearTimeout(timeout)
+          const raw = buffer
+          socket.write('A05 LOGOUT\r\n')
+          socket.end()
+
+          const subjMatch = raw.match(/Subject:\s*(.*?)\r?\n/i)
+          const subject = subjMatch ? decodeMimeWords(subjMatch[1].trim()) : ''
+          const otpMatch = raw.match(/\b\d{6}\b/)
+          const otp = otpMatch ? otpMatch[0] : null
+
+          let status: MailCheckResult['status'] = 'has_mail'
+          let label = `📩 ${subject.slice(0, 32)}`
+          const lower = (subject + ' ' + raw).toLowerCase()
+
+          if (lower.includes('tiktok')) {
+            if (lower.includes('verification') || lower.includes('code') || otp) {
+              status = 'has_otp'
+              label = `🔑 OTP: ${otp || 'Có mã'}`
+            } else if (lower.includes('close to opening your shop') || lower.includes('complete your registration')) {
+              status = 'incomplete_onboarding'
+              label = '🟡 Đang mở shop dở (Chờ submit)'
+            } else if (lower.includes('under review') || lower.includes('submitted')) {
+              status = 'under_review'
+              label = '⏱️ TikTok Đang Review'
+            } else if (lower.includes('update') || lower.includes('action required') || lower.includes('identity')) {
+              status = 'rejected_need_resubmit'
+              label = '⚠️ Yêu cầu sửa ID'
+            } else if (lower.includes('welcome') || lower.includes('approved') || lower.includes('congratulations')) {
+              status = 'approved'
+              label = '🟢 TikTok Approved!'
+            }
+          }
+
+          resolve({
+            ok: true,
+            email,
+            count: msgCount,
+            latestSubject: subject,
+            otp,
+            status,
+            label,
+            checkedAt: Date.now()
+          })
+        }
+      })
+
+      socket.on('error', (err) => {
+        clearTimeout(timeout)
+        resolve({
+          ok: false,
+          email,
+          count: 0,
+          status: 'error',
+          label: `Lỗi kết nối: ${err.message}`,
+          checkedAt: Date.now()
+        })
+      })
+    })
+  } catch (err: any) {
+    return {
+      ok: false,
+      email,
+      count: 0,
+      status: 'error',
+      label: `Lỗi: ${err.message || err}`,
+      checkedAt: Date.now()
+    }
+  }
+}
+
+
 export function registerTtsBotHandlers(
   ipcMain: IpcMain,
   foxAutoRoot: string,
@@ -102,7 +335,66 @@ export function registerTtsBotHandlers(
     }
   })
 
+  // 1.1 Mail Checker & Auto-Trigger (Lightweight Native XOAUTH2 / IMAP)
+  ipcMain.handle('tts:mail:check', async (_event, { email, pass, twoFactor }: { email: string; pass?: string; twoFactor?: string }) => {
+    return await checkMailInbox(email, pass, twoFactor)
+  })
+
+  ipcMain.handle('tts:mail:batch-check', async (_event, records: Array<{ id: string; email: string; pass?: string; twoFactor?: string }>) => {
+    const results: Record<string, MailCheckResult> = {}
+    for (let i = 0; i < records.length; i += 3) {
+      const chunk = records.slice(i, i + 3)
+      await Promise.all(
+        chunk.map(async (rec) => {
+          if (!rec.email) return
+          results[rec.id] = await checkMailInbox(rec.email, rec.pass, rec.twoFactor)
+        })
+      )
+    }
+    return { ok: true, results }
+  })
+
+  // 1.2 Upload Harvester (Auto-records files uploaded on TikTok forms)
+  ipcMain.handle('tts:upload:harvest', async (_event, payload: {
+    recordId: string
+    fileName: string
+    fileSize?: number
+    side?: string
+    timestamp?: number
+  }) => {
+    try {
+      let stateData: any = {}
+      if (existsSync(stateFile)) {
+        try { stateData = JSON.parse(readFileSync(stateFile, 'utf-8')) } catch {}
+      }
+      if (!stateData.harvestedUploads) stateData.harvestedUploads = {}
+      if (!stateData.harvestedUploads[payload.recordId]) stateData.harvestedUploads[payload.recordId] = []
+      stateData.harvestedUploads[payload.recordId].push({
+        fileName: payload.fileName,
+        fileSize: payload.fileSize,
+        side: payload.side || 'unknown',
+        uploadedAt: payload.timestamp || Date.now()
+      })
+      writeFileSync(stateFile, JSON.stringify(stateData, null, 2), 'utf-8')
+      return { ok: true, list: stateData.harvestedUploads[payload.recordId] }
+    } catch (err: any) {
+      return { ok: false, error: err.message }
+    }
+  })
+
+  ipcMain.handle('tts:upload:get-harvested', async (_event, recordId: string) => {
+    try {
+      if (!existsSync(stateFile)) return { ok: true, list: [] }
+      const stateData = JSON.parse(readFileSync(stateFile, 'utf-8'))
+      const list = (stateData.harvestedUploads && stateData.harvestedUploads[recordId]) || []
+      return { ok: true, list }
+    } catch (err: any) {
+      return { ok: false, list: [], error: err.message }
+    }
+  })
+
 const US_STATES_LIST = [
+
   { code: 'AL', name: 'Alabama' },
   { code: 'AK', name: 'Alaska' },
   { code: 'AZ', name: 'Arizona' },

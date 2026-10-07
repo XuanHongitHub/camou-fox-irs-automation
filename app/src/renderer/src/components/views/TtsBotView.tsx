@@ -34,7 +34,8 @@ import {
   History,
   Stethoscope,
   XCircle,
-  CheckCheck
+  CheckCheck,
+  Play
 } from 'lucide-react'
 
 export interface RecordItem {
@@ -284,8 +285,25 @@ const ttsIpc = {
     if ((window.api?.tts as any)?.preflight) return await (window.api.tts as any).preflight()
     if (window.electron?.ipcRenderer) return await window.electron.ipcRenderer.invoke('tts:system:preflight')
     return { ok: false, error: 'IPC unavailable' }
+  },
+  mailCheck: async (params: { email: string; pass?: string; twoFactor?: string }) => {
+    if (window.electron?.ipcRenderer) return await window.electron.ipcRenderer.invoke('tts:mail:check', params)
+    return { ok: false, error: 'IPC unavailable' }
+  },
+  mailBatchCheck: async (records: any[]) => {
+    if (window.electron?.ipcRenderer) return await window.electron.ipcRenderer.invoke('tts:mail:batch-check', records)
+    return { ok: false, error: 'IPC unavailable' }
+  },
+  uploadHarvest: async (payload: any) => {
+    if (window.electron?.ipcRenderer) return await window.electron.ipcRenderer.invoke('tts:upload:harvest', payload)
+    return { ok: false, error: 'IPC unavailable' }
+  },
+  uploadGetHarvested: async (recordId: string) => {
+    if (window.electron?.ipcRenderer) return await window.electron.ipcRenderer.invoke('tts:upload:get-harvested', recordId)
+    return { ok: false, list: [] }
   }
 }
+
 
 export function TtsBotView() {
   // Navigation Tabs
@@ -318,7 +336,6 @@ export function TtsBotView() {
 
   // Filters & Search
   const [searchTerm, setSearchTerm] = useState('')
-  const [filterReadiness, setFilterReadiness] = useState<'all' | '100_ready' | '99_ready' | 'pending'>('all')
   const [filterState, setFilterState] = useState<string>('all')
 
   // Smart Setup States
@@ -404,6 +421,23 @@ export function TtsBotView() {
   const [selectedVariantId, setSelectedVariantId] = useState<string>('')
   const [poolFeedback, setPoolFeedback] = useState<string>('')
 
+  // Mail Checker State & Live Sync
+  const [mailStatuses, setMailStatuses] = useState<Record<string, any>>({})
+  const [isCheckingAllMails, setIsCheckingAllMails] = useState(false)
+  const [checkingMailId, setCheckingMailId] = useState<string | null>(null)
+
+  // Harvested Uploads (Auto-recorded from TikTok forms)
+  const [harvestedUploads, setHarvestedUploads] = useState<Record<string, Array<{ fileName: string; side?: string; uploadedAt: number }>>>({})
+
+  // Watchdog Timers (6 minutes per record)
+  const [activeWatchdogs, setActiveWatchdogs] = useState<Record<string, { remaining: number; startedAt: number; intervalId?: any }>>({})
+
+  // Pipeline Filter (Replaces old '99_ready', '100_ready')
+  const [pipelineFilter, setPipelineFilter] = useState<'all' | 'not_registered' | 'otp_or_pending' | 'under_review' | 'rejected' | 'approved'>('all')
+
+  // Pool folder path
+  const [poolFolderPath, setPoolFolderPath] = useState<string>('outputs/clean_camera_mockups')
+
   // 1. Check API Status
   const refreshStatus = useCallback(async () => {
     setIsCheckingStatus(true)
@@ -432,6 +466,9 @@ export function TtsBotView() {
         if (res.data.activeRuns) setActiveRuns(res.data.activeRuns)
         if (res.data.consumedRecords) setConsumedRecords(res.data.consumedRecords)
         if (res.data.activeTab) setSelectedSheetTab(res.data.activeTab)
+        if (res.data.harvestedUploads) setHarvestedUploads(res.data.harvestedUploads)
+        if (res.data.mailStatuses) setMailStatuses(res.data.mailStatuses)
+        if (res.data.poolFolderPath) setPoolFolderPath(res.data.poolFolderPath)
       }
     } catch (err) {
       console.error('Failed to load state:', err)
@@ -442,20 +479,26 @@ export function TtsBotView() {
   const persistState = useCallback(async (
     newAssignments?: Record<string, PhotoAssignment>,
     newActiveRuns?: RecordItem[],
-    newConsumed?: Record<string, { consumedAt: number; fromTab: string }>
+    newConsumed?: Record<string, { consumedAt: number; fromTab: string }>,
+    newHarvested?: Record<string, any>,
+    newMailStatuses?: Record<string, any>
   ) => {
     try {
       await ttsIpc.stateSave({
         assignments: newAssignments ?? assignments,
         activeRuns: newActiveRuns ?? activeRuns,
         consumedRecords: newConsumed ?? consumedRecords,
+        harvestedUploads: newHarvested ?? harvestedUploads,
+        mailStatuses: newMailStatuses ?? mailStatuses,
+        poolFolderPath,
         activeTab: selectedSheetTab,
         updatedAt: Date.now()
       })
     } catch (err) {
       console.error('Failed to save state:', err)
     }
-  }, [assignments, activeRuns, consumedRecords, selectedSheetTab])
+  }, [assignments, activeRuns, consumedRecords, harvestedUploads, mailStatuses, poolFolderPath, selectedSheetTab])
+
 
   // State Normalization helper
   const normalizeState = (input: string): string => {
@@ -481,6 +524,157 @@ export function TtsBotView() {
       progress: undefined
     })
   }
+
+  // ─── Mail Checking Handlers (Auto-Trigger & Lightweight Native XOAUTH2) ───
+  const handleCheckSingleMail = async (record: RecordItem) => {
+    if (!record.email) return
+    setCheckingMailId(record.id)
+    try {
+      const res = await ttsIpc.mailCheck({
+        email: record.email,
+        pass: record.mailPass,
+        twoFactor: record.twoFactor
+      })
+      if (res && res.ok) {
+        setMailStatuses((prev) => {
+          const updated = { ...prev, [record.id]: res }
+          persistState(undefined, undefined, undefined, undefined, updated)
+          return updated
+        })
+      } else {
+        setMailStatuses((prev) => ({
+          ...prev,
+          [record.id]: {
+            ok: false,
+            email: record.email,
+            count: 0,
+            status: 'error',
+            label: res?.label || res?.error || 'Lỗi đọc mail',
+            checkedAt: Date.now()
+          }
+        }))
+      }
+    } catch (e: any) {
+      console.error('Mail check failed:', e)
+    } finally {
+      setCheckingMailId(null)
+    }
+  }
+
+  const handleAutoCheckAllMails = async (targetList?: RecordItem[]) => {
+    const list = (targetList || records).filter((r) => r.email)
+    if (list.length === 0) return
+    setIsCheckingAllMails(true)
+    try {
+      const payload = list.map((r) => ({
+        id: r.id,
+        email: r.email,
+        pass: r.mailPass,
+        twoFactor: r.twoFactor
+      }))
+      const res = await ttsIpc.mailBatchCheck(payload)
+      if (res && res.ok && res.results) {
+        setMailStatuses((prev) => {
+          const updated = { ...prev, ...res.results }
+          persistState(undefined, undefined, undefined, undefined, updated)
+          return updated
+        })
+      }
+    } catch (e) {
+      console.error('Batch mail check error:', e)
+    } finally {
+      setIsCheckingAllMails(false)
+    }
+  }
+
+  // ─── 6-Minute Watchdog Trigger ───
+  const start6MinWatchdog = (record: RecordItem) => {
+    const recId = record.id
+    if (activeWatchdogs[recId]) return
+
+    const totalSeconds = 360 // 6 minutes
+    const startedAt = Date.now()
+
+    const intervalId = setInterval(() => {
+      setActiveWatchdogs((prev) => {
+        const current = prev[recId]
+        if (!current) return prev
+        const remaining = Math.max(0, current.remaining - 1)
+
+        // Poll mail every 30 seconds
+        if (remaining % 30 === 0 || remaining === 0) {
+          handleCheckSingleMail(record)
+        }
+
+        if (remaining <= 0) {
+          clearInterval(current.intervalId)
+          const updated = { ...prev }
+          delete updated[recId]
+          return updated
+        }
+
+        return { ...prev, [recId]: { ...current, remaining } }
+      })
+    }, 1000)
+
+    setActiveWatchdogs((prev) => ({
+      ...prev,
+      [recId]: { remaining: totalSeconds, startedAt, intervalId }
+    }))
+
+    // Immediate check
+    handleCheckSingleMail(record)
+  }
+
+  const formatTimer = (seconds: number) => {
+    const m = Math.floor(seconds / 60)
+    const s = seconds % 60
+    return `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`
+  }
+
+  const stopWatchdog = (recId: string) => {
+    setActiveWatchdogs((prev) => {
+      const current = prev[recId]
+      if (current?.intervalId) clearInterval(current.intervalId)
+      const updated = { ...prev }
+      delete updated[recId]
+      return updated
+    })
+  }
+
+  const [launchingProfileId, setLaunchingProfileId] = useState<string | null>(null)
+
+  const handleLaunchAdsPower = async (record: RecordItem) => {
+    const adsProfile = adspowerProfiles.find((p) => p.name === record.id || p.user_id === record.adspowerId)
+    const userId = record.adspowerId || adsProfile?.user_id
+    if (!userId) {
+      handleSmartSetup(record)
+      return
+    }
+    setLaunchingProfileId(record.id)
+    try {
+      const res = await ttsIpc.adspowerStart(userId)
+      if (res?.ok) {
+        setSetupFeedback(`Đã mở AdsPower profile: ${record.id}`)
+      } else {
+        setSetupFeedback(`Không thể mở AdsPower: ${res?.error || 'Lỗi không xác định'}`)
+      }
+    } catch (err: any) {
+      setSetupFeedback(`Lỗi mở AdsPower: ${err?.message || err}`)
+    } finally {
+      setLaunchingProfileId(null)
+    }
+  }
+
+  // Clean up active watchdogs on unmount
+  useEffect(() => {
+    return () => {
+      Object.values(activeWatchdogs).forEach((w) => {
+        if (w.intervalId) clearInterval(w.intervalId)
+      })
+    }
+  }, [activeWatchdogs])
+
 
   // Open Bulk Setup Modal
   const openBulkSetupModal = () => {
@@ -847,6 +1041,7 @@ export function TtsBotView() {
       if (activeRuns.length > 0 && !selectedRecordId) {
         setSelectedRecordId(activeRuns[0].id)
       }
+      handleAutoCheckAllMails(activeRuns)
       return
     }
 
@@ -863,6 +1058,7 @@ export function TtsBotView() {
         if (res.records.length > 0 && !selectedRecordId) {
           setSelectedRecordId(res.records[0].id)
         }
+        handleAutoCheckAllMails(res.records)
       } else {
         setSheetError(res?.error || 'Không tải được dữ liệu Sheet')
       }
@@ -871,7 +1067,8 @@ export function TtsBotView() {
     } finally {
       setIsLoadingSheet(false)
     }
-  }, [sheetId, selectedSheetTab, isCustomTab, customTabInput, selectedRecordId, activeRuns])
+  }, [sheetId, selectedSheetTab, isCustomTab, customTabInput, selectedRecordId, activeRuns, handleAutoCheckAllMails])
+
 
   // 5. Fetch Inbox Files for Studio
   const refreshInboxFiles = useCallback(async () => {
@@ -941,6 +1138,34 @@ export function TtsBotView() {
     return PROTECTED_TABS.has(selectedSheetTab.trim().toLowerCase())
   }, [selectedSheetTab])
 
+  // Pipeline Stage Counts
+  const pipelineCounts = useMemo(() => {
+    let notRegistered = 0
+    let otpOrPending = 0
+    let underReview = 0
+    let rejected = 0
+    let approved = 0
+
+    records.forEach((r) => {
+      const mailSt = mailStatuses[r.id]?.status
+      const sheetSt = (r.status || '').toLowerCase()
+
+      if (mailSt === 'approved' || sheetSt.includes('approved') || sheetSt.includes('verified') || sheetSt.includes('active')) {
+        approved++
+      } else if (mailSt === 'rejected_need_resubmit' || sheetSt.includes('information') || sheetSt.includes('lỗi') || sheetSt.includes('reject')) {
+        rejected++
+      } else if (mailSt === 'under_review' || sheetSt.includes('under review')) {
+        underReview++
+      } else if (mailSt === 'has_otp' || mailSt === 'incomplete_onboarding') {
+        otpOrPending++
+      } else {
+        notRegistered++
+      }
+    })
+
+    return { notRegistered, otpOrPending, underReview, rejected, approved }
+  }, [records, mailStatuses])
+
   // Filtered Records
   const filteredRecords = useMemo(() => {
     return records.filter((r) => {
@@ -971,14 +1196,31 @@ export function TtsBotView() {
         return false
       }
 
-      // Readiness match
-      if (filterReadiness === '100_ready' && r.readyStatus !== '100_ready') return false
-      if (filterReadiness === '99_ready' && r.readyStatus !== '99_ready') return false
-      if (filterReadiness === 'pending' && (r.readyStatus === '100_ready' || r.readyStatus === '99_ready')) return false
+      // Pipeline Filter match
+      if (pipelineFilter !== 'all') {
+        const mailSt = mailStatuses[r.id]?.status
+        const sheetSt = (r.status || '').toLowerCase()
+        if (pipelineFilter === 'not_registered') {
+          return mailSt === 'not_registered' || (!sheetSt && !mailSt)
+        }
+        if (pipelineFilter === 'otp_or_pending') {
+          return mailSt === 'has_otp' || mailSt === 'incomplete_onboarding'
+        }
+        if (pipelineFilter === 'under_review') {
+          return mailSt === 'under_review' || sheetSt.includes('under review')
+        }
+        if (pipelineFilter === 'rejected') {
+          return mailSt === 'rejected_need_resubmit' || sheetSt.includes('information') || sheetSt.includes('lỗi') || sheetSt.includes('reject')
+        }
+        if (pipelineFilter === 'approved') {
+          return mailSt === 'approved' || sheetSt.includes('approved') || sheetSt.includes('active') || sheetSt.includes('verified')
+        }
+      }
 
       return true
     })
-  }, [records, searchTerm, filterState, filterReadiness, assignments, hideConsumed, consumedRecords])
+  }, [records, searchTerm, filterState, pipelineFilter, mailStatuses, hideConsumed, consumedRecords])
+
 
   // Current Selected Record
   const currentRecord = useMemo(() => {
@@ -1553,13 +1795,14 @@ export function TtsBotView() {
                 )}
               </div>
 
-              {/* Status Filter Chips & Copy Sheet */}
+              {/* Pipeline Stage Tabs & Quick Action Tools */}
               <div className="flex items-center space-x-2 shrink-0">
+                {/* 5-Stage Pipeline Filters */}
                 <div className="flex items-center space-x-1 bg-slate-950 p-0.5 rounded-lg border border-slate-800">
                   <button
-                    onClick={() => setFilterReadiness('all')}
+                    onClick={() => setPipelineFilter('all')}
                     className={`px-2 py-1 text-xs rounded transition-all ${
-                      filterReadiness === 'all'
+                      pipelineFilter === 'all'
                         ? 'bg-slate-800 text-white font-medium'
                         : 'text-slate-400 hover:text-slate-200'
                     }`}
@@ -1567,38 +1810,87 @@ export function TtsBotView() {
                     Tất cả ({records.length})
                   </button>
                   <button
-                    onClick={() => setFilterReadiness('99_ready')}
+                    onClick={() => setPipelineFilter('not_registered')}
                     className={`flex items-center space-x-1 px-2 py-1 text-xs rounded transition-all ${
-                      filterReadiness === '99_ready'
-                        ? 'bg-cyan-950 text-cyan-300 font-semibold border border-cyan-800/50'
-                        : 'text-slate-400 hover:text-cyan-200'
+                      pipelineFilter === 'not_registered'
+                        ? 'bg-slate-800 text-slate-200 font-semibold border border-slate-700'
+                        : 'text-slate-400 hover:text-slate-200'
                     }`}
+                    title="Chưa đăng ký trên TikTok hoặc mail chưa có thư TikTok"
                   >
-                    <Zap className="w-3 h-3 text-cyan-400" />
-                    <span>99% Ready</span>
+                    <span className="w-1.5 h-1.5 rounded-full bg-slate-400"></span>
+                    <span>Chưa Reg ({pipelineCounts.notRegistered})</span>
                   </button>
                   <button
-                    onClick={() => setFilterReadiness('100_ready')}
+                    onClick={() => setPipelineFilter('otp_or_pending')}
                     className={`flex items-center space-x-1 px-2 py-1 text-xs rounded transition-all ${
-                      filterReadiness === '100_ready'
-                        ? 'bg-emerald-950 text-emerald-300 font-semibold border border-emerald-800/50'
+                      pipelineFilter === 'otp_or_pending'
+                        ? 'bg-amber-950 text-amber-300 font-semibold border border-amber-800/60'
+                        : 'text-slate-400 hover:text-amber-200'
+                    }`}
+                    title="Đã nhận mã OTP hoặc đang nộp dở bước Onboarding"
+                  >
+                    <Zap className="w-3 h-3 text-amber-400" />
+                    <span>Chờ OTP/Nộp ({pipelineCounts.otpOrPending})</span>
+                  </button>
+                  <button
+                    onClick={() => setPipelineFilter('under_review')}
+                    className={`flex items-center space-x-1 px-2 py-1 text-xs rounded transition-all ${
+                      pipelineFilter === 'under_review'
+                        ? 'bg-purple-950 text-purple-300 font-semibold border border-purple-800/60'
+                        : 'text-slate-400 hover:text-purple-200'
+                    }`}
+                    title="Đang trong quá trình TikTok duyệt (Under Review - Canh 6 phút)"
+                  >
+                    <Clock className="w-3 h-3 text-purple-400" />
+                    <span>Reviewing ({pipelineCounts.underReview})</span>
+                  </button>
+                  <button
+                    onClick={() => setPipelineFilter('rejected')}
+                    className={`flex items-center space-x-1 px-2 py-1 text-xs rounded transition-all ${
+                      pipelineFilter === 'rejected'
+                        ? 'bg-rose-950 text-rose-300 font-semibold border border-rose-800/60'
+                        : 'text-slate-400 hover:text-rose-200'
+                    }`}
+                    title="Bị cờ đỏ ID hoặc yêu cầu nộp lại ảnh (Modifications detected)"
+                  >
+                    <AlertTriangle className="w-3 h-3 text-rose-400" />
+                    <span>Lỗi ID ({pipelineCounts.rejected})</span>
+                  </button>
+                  <button
+                    onClick={() => setPipelineFilter('approved')}
+                    className={`flex items-center space-x-1 px-2 py-1 text-xs rounded transition-all ${
+                      pipelineFilter === 'approved'
+                        ? 'bg-emerald-950 text-emerald-300 font-semibold border border-emerald-800/60'
                         : 'text-slate-400 hover:text-emerald-200'
                     }`}
+                    title="Đã được TikTok Shop xét duyệt thành công"
                   >
                     <CheckCircle2 className="w-3 h-3 text-emerald-400" />
-                    <span>100% Full</span>
-                  </button>
-                  <button
-                    onClick={() => setFilterReadiness('pending')}
-                    className={`px-2 py-1 text-xs rounded transition-all ${
-                      filterReadiness === 'pending'
-                        ? 'bg-slate-800 text-slate-300 font-medium'
-                        : 'text-slate-500 hover:text-slate-300'
-                    }`}
-                  >
-                    Chờ Setup
+                    <span>Approved ({pipelineCounts.approved})</span>
                   </button>
                 </div>
+
+                {/* Auto Check All Mails Button */}
+                <button
+                  onClick={() => handleAutoCheckAllMails()}
+                  disabled={isCheckingAllMails}
+                  className="flex items-center space-x-1.5 px-2.5 py-1 text-xs bg-indigo-950/80 hover:bg-indigo-900 text-indigo-300 border border-indigo-700/60 rounded-lg transition-all font-semibold shadow-sm disabled:opacity-50"
+                  title="Quét trạng thái hòm thư & bắt mã OTP tự động cho tất cả hồ sơ"
+                >
+                  <RefreshCw className={`w-3.5 h-3.5 text-indigo-400 ${isCheckingAllMails ? 'animate-spin' : ''}`} />
+                  <span>{isCheckingAllMails ? 'Đang quét mail...' : 'Quét Hòm Thư'}</span>
+                </button>
+
+                {/* Photo Pool Manager Button */}
+                <button
+                  onClick={() => handleAutoDetect2Sides('pick_folder')}
+                  className="flex items-center space-x-1 px-2.5 py-1 text-xs bg-slate-900 hover:bg-slate-800 text-emerald-300 border border-emerald-800/60 rounded-lg transition-all font-medium shadow-sm"
+                  title="Chọn thư mục chứa kho ảnh thẻ mockup và tự động bắt cặp"
+                >
+                  <Camera className="w-3.5 h-3.5 text-emerald-400" />
+                  <span>Kho Ảnh</span>
+                </button>
 
                 {/* Copy Sheet Button */}
                 <button
@@ -1628,7 +1920,7 @@ export function TtsBotView() {
                 <thead className="sticky top-0 bg-slate-900/95 border-b border-slate-800 text-slate-400 uppercase tracking-wider text-[10px] font-semibold backdrop-blur z-10">
                   <tr>
                     {isCurrentTabProtected && (
-                      <th className="py-2 px-3 w-10 text-center">
+                      <th className="py-2.5 px-3 w-10 text-center">
                         <button
                           onClick={() => {
                             if (selectedRowIds.size > 0) setSelectedRowIds(new Set())
@@ -1641,21 +1933,17 @@ export function TtsBotView() {
                         </button>
                       </th>
                     )}
-                    <th className="py-2 px-3 w-20">MÃ</th>
-                    <th className="py-2 px-3 min-w-[220px]">CHỦ SỞ HỮU & ĐỊA CHỈ</th>
-                    <th className="py-2 px-2 w-16 text-center">BANG</th>
-                    <th className="py-2 px-3 w-36 whitespace-nowrap">EIN / SSN</th>
-                    <th className="py-2 px-3 w-36 whitespace-nowrap">STATUS TIKTOK</th>
-                    <th className="py-2 px-3 w-40 whitespace-nowrap">ĐỘ SẴN SÀNG</th>
-                    <th className="py-2 px-2 w-24 text-center">CHỨNG TỪ</th>
-                    <th className="py-2 px-3 w-40 whitespace-nowrap">PROXY / ADS</th>
-                    <th className="py-2 px-3 text-right w-48 whitespace-nowrap">THAO TÁC</th>
+                    <th className="py-2.5 px-3 min-w-[200px]">HỒ SƠ & THIẾT BỊ</th>
+                    <th className="py-2.5 px-3 min-w-[240px]">HÒM THƯ (AUTO-CHECK)</th>
+                    <th className="py-2.5 px-3 min-w-[180px]">TIẾN ĐỘ & CANH 6M</th>
+                    <th className="py-2.5 px-3 min-w-[200px]">KHO ẢNH & FILE ĐÃ NỘP</th>
+                    <th className="py-2.5 px-3 text-right min-w-[170px]">HÀNH ĐỘNG COPILOT</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-800/60">
                   {filteredRecords.length === 0 ? (
                     <tr>
-                      <td colSpan={isCurrentTabProtected ? 10 : 9} className="py-12 text-center text-slate-500">
+                      <td colSpan={isCurrentTabProtected ? 6 : 5} className="py-12 text-center text-slate-500">
                         {isLoadingSheet ? (
                           <div className="flex flex-col items-center justify-center space-y-2">
                             <RefreshCw className="w-5 h-5 animate-spin text-emerald-400" />
@@ -1676,14 +1964,18 @@ export function TtsBotView() {
                     </tr>
                   ) : (
                     filteredRecords.map((r) => {
-                      const assigned = assignments[r.id]
-                      const hasFront = !!(assigned?.frontProcessed || assigned?.frontOriginal)
-                      const hasBack = !!(assigned?.backProcessed || assigned?.backOriginal)
-                      const isReady = hasFront && hasBack
                       const isSelected = selectedRecordId === r.id
                       const isConsumed = !!consumedRecords[r.id]
                       const isSettingUpThis = isSettingUpId === r.id
                       const adsProfile = adspowerProfiles.find((p) => p.name === r.id || p.user_id === r.adspowerId)
+                      const hasAds = !!(r.adspowerId || adsProfile)
+                      const mailData = mailStatuses[r.id]
+                      const mailStatus = mailData?.status
+                      const otpCode = mailData?.otpCode
+                      const isCheckingThisMail = checkingMailId === r.id
+                      const watchdog = activeWatchdogs[r.id]
+                      const harvested = harvestedUploads[r.id] || []
+                      const is195x = r.is195x
 
                       return (
                         <tr
@@ -1699,7 +1991,7 @@ export function TtsBotView() {
                         >
                           {/* Checkbox for Selection */}
                           {isCurrentTabProtected && (
-                            <td className="py-2.5 px-3 text-center" onClick={(e) => e.stopPropagation()}>
+                            <td className="py-3 px-3 text-center" onClick={(e) => e.stopPropagation()}>
                               <input
                                 type="checkbox"
                                 disabled={isConsumed}
@@ -1715,76 +2007,179 @@ export function TtsBotView() {
                             </td>
                           )}
 
-                          {/* Profile ID */}
-                          <td className="py-2.5 px-3">
-                            <div className="flex items-center space-x-1.5">
+                          {/* Cột 1: HỒ SƠ & THIẾT BỊ */}
+                          <td className="py-3 px-3">
+                            <div className="flex items-center space-x-2">
                               <span className={`font-mono font-bold text-xs ${isConsumed ? 'text-slate-500 line-through' : 'text-emerald-400'}`}>
                                 {r.id}
                               </span>
-                              {isReady && !isConsumed && (
-                                <span title="Đã có đủ 2 mặt ảnh">
-                                  <CheckCircle2 className="w-3 h-3 text-emerald-400" />
-                                </span>
-                              )}
-                            </div>
-                            {isConsumed && (
-                              <span className="inline-block mt-0.5 text-[8px] font-semibold px-1 py-0.2 rounded bg-black text-slate-400 border border-slate-800">
-                                CONSUMED
-                              </span>
-                            )}
-                          </td>
-
-                          {/* Owner & Address (No repetitive name junk) */}
-                          <td className="py-2.5 px-3">
-                            <div className="flex items-center space-x-2">
                               <span className={`font-semibold text-xs ${isConsumed ? 'text-slate-500' : 'text-slate-100'}`}>
                                 {r.fullName || '(Chưa có tên)'}
                               </span>
-                              {r.is195x && (
+                              <span className="px-1.5 py-0.2 rounded text-[10px] font-bold bg-emerald-950/60 text-emerald-300 border border-emerald-800/50">
+                                {r.state || 'N/A'}
+                              </span>
+                              {is195x && (
                                 <span
                                   className="px-1.5 py-0.2 bg-red-950/80 text-red-400 border border-red-800/80 rounded text-[9px] font-bold flex items-center space-x-0.5"
-                                  title={r.ageWarning}
+                                  title={r.ageWarning || 'Năm sinh 195x: Khuyến nghị bỏ qua'}
                                 >
                                   <AlertTriangle className="w-2.5 h-2.5 text-red-400" />
                                   <span>195x SKIP</span>
                                 </span>
                               )}
                             </div>
-                            <div className="text-[11px] text-slate-400 truncate mt-0.5 max-w-xs">
-                              {r.address ? `${r.address}, ${r.city}` : r.city || 'N/A'}
+                            <div className="flex items-center space-x-2 mt-1.5 text-[11px] font-mono">
+                              {r.assignedPort ? (
+                                <span className="text-emerald-400 flex items-center space-x-1" title="HideProxy SOCKS5 Port">
+                                  <Globe className="w-3 h-3 text-emerald-400 shrink-0" />
+                                  <span>:{r.assignedPort} ({r.proxyMeta?.state || r.state})</span>
+                                </span>
+                              ) : (
+                                <span className="text-slate-600 flex items-center space-x-1">
+                                  <Globe className="w-3 h-3 text-slate-600 shrink-0" />
+                                  <span>Chưa gán port</span>
+                                </span>
+                              )}
+                              <span className="text-slate-700">•</span>
+                              {hasAds ? (
+                                <button
+                                  onClick={(e) => {
+                                    e.stopPropagation()
+                                    handleLaunchAdsPower(r)
+                                  }}
+                                  disabled={launchingProfileId === r.id}
+                                  className="flex items-center space-x-1 px-1.5 py-0.5 rounded bg-cyan-950 hover:bg-cyan-900 text-cyan-300 border border-cyan-700/60 text-[10px] font-semibold transition-all"
+                                  title="Mở trình duyệt AdsPower iOS"
+                                >
+                                  <Play className="w-2.5 h-2.5 fill-cyan-400 text-cyan-400" />
+                                  <span>{launchingProfileId === r.id ? 'Đang mở...' : 'Mở Ads (iOS)'}</span>
+                                </button>
+                              ) : (
+                                <button
+                                  onClick={(e) => {
+                                    e.stopPropagation()
+                                    handleSmartSetup(r)
+                                  }}
+                                  disabled={isSettingUpThis}
+                                  className="flex items-center space-x-1 px-1.5 py-0.5 rounded bg-amber-950 hover:bg-amber-900 text-amber-300 border border-amber-700/60 text-[10px] font-semibold transition-all"
+                                  title="Tự động tạo Profile AdsPower iOS 390x844"
+                                >
+                                  <Plus className="w-2.5 h-2.5" />
+                                  <span>{isSettingUpThis ? 'Đang tạo...' : '+ Tạo Ads'}</span>
+                                </button>
+                              )}
                             </div>
                           </td>
 
-                          {/* State Badge */}
-                          <td className="py-2.5 px-2 text-center">
-                            <span className="px-1.5 py-0.5 rounded text-[11px] font-bold bg-emerald-950/60 text-emerald-300 border border-emerald-800/50">
-                              {r.state || 'N/A'}
-                            </span>
+                          {/* Cột 2: HÒM THƯ (AUTO-CHECK) */}
+                          <td className="py-3 px-3">
+                            <div className="flex items-center space-x-1.5">
+                              <span className="font-mono text-slate-300 text-[11px] truncate max-w-[170px]" title={r.email}>
+                                {r.email || '(Chưa có email)'}
+                              </span>
+                              {r.email && (
+                                <button
+                                  onClick={(e) => {
+                                    e.stopPropagation()
+                                    navigator.clipboard.writeText(r.email)
+                                    setSetupFeedback(`Đã copy email: ${r.email}`)
+                                  }}
+                                  className="text-slate-500 hover:text-white p-0.5 rounded transition-colors"
+                                  title="Copy Email"
+                                >
+                                  <Copy className="w-3 h-3" />
+                                </button>
+                              )}
+                              <button
+                                onClick={(e) => {
+                                  e.stopPropagation()
+                                  handleCheckSingleMail(r)
+                                }}
+                                disabled={isCheckingThisMail}
+                                className="text-slate-400 hover:text-indigo-300 p-0.5 rounded transition-colors"
+                                title="Check trạng thái hòm thư & OTP ngay"
+                              >
+                                <RefreshCw className={`w-3 h-3 ${isCheckingThisMail ? 'animate-spin text-indigo-400' : ''}`} />
+                              </button>
+                            </div>
+
+                            {/* Live TikTok Mail Status Badges & OTP */}
+                            <div className="mt-1 flex flex-wrap items-center gap-1.5">
+                              {otpCode ? (
+                                <button
+                                  onClick={(e) => {
+                                    e.stopPropagation()
+                                    navigator.clipboard.writeText(otpCode)
+                                    setSetupFeedback(`Đã copy mã OTP: ${otpCode}`)
+                                  }}
+                                  className="flex items-center space-x-1 px-2 py-0.5 rounded-md bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 border border-amber-500/60 text-[11px] font-mono font-bold transition-all shadow-sm"
+                                  title="Bấm để copy mã OTP 6 số"
+                                >
+                                  <Zap className="w-3 h-3 text-amber-400 animate-bounce shrink-0" />
+                                  <span>OTP: <span className="underline tracking-wider font-extrabold">{otpCode}</span></span>
+                                  <Copy className="w-2.5 h-2.5 ml-0.5 opacity-70 shrink-0" />
+                                </button>
+                              ) : null}
+
+                              {mailStatus === 'approved' ? (
+                                <span className="inline-flex items-center space-x-1 px-1.5 py-0.5 rounded bg-emerald-950 text-emerald-300 border border-emerald-500/50 text-[10px] font-semibold">
+                                  <CheckCircle2 className="w-2.5 h-2.5 text-emerald-400 shrink-0" />
+                                  <span>Shop Approved</span>
+                                </span>
+                              ) : mailStatus === 'under_review' ? (
+                                <span className="inline-flex items-center space-x-1 px-1.5 py-0.5 rounded bg-purple-950 text-purple-300 border border-purple-500/50 text-[10px] font-semibold">
+                                  <Clock className="w-2.5 h-2.5 text-purple-400 shrink-0" />
+                                  <span>Đang xét duyệt</span>
+                                </span>
+                              ) : mailStatus === 'rejected_need_resubmit' ? (
+                                <span className="inline-flex items-center space-x-1 px-1.5 py-0.5 rounded bg-rose-950 text-rose-300 border border-rose-500/50 text-[10px] font-semibold">
+                                  <AlertTriangle className="w-2.5 h-2.5 text-rose-400 shrink-0" />
+                                  <span>Bị cờ đỏ ID</span>
+                                </span>
+                              ) : mailStatus === 'incomplete_onboarding' ? (
+                                <span className="inline-flex items-center space-x-1 px-1.5 py-0.5 rounded bg-sky-950 text-sky-300 border border-sky-500/50 text-[10px] font-semibold">
+                                  <AlertCircle className="w-2.5 h-2.5 text-sky-400 shrink-0" />
+                                  <span>Đang nộp dở</span>
+                                </span>
+                              ) : mailStatus === 'has_otp' && !otpCode ? (
+                                <span className="inline-flex items-center space-x-1 px-1.5 py-0.5 rounded bg-amber-950 text-amber-300 border border-amber-500/50 text-[10px] font-semibold">
+                                  <span>Đã gửi OTP</span>
+                                </span>
+                              ) : mailStatus === 'not_registered' ? (
+                                <span className="inline-flex items-center space-x-1 px-1.5 py-0.5 rounded bg-slate-900 text-slate-400 border border-slate-800 text-[10px]">
+                                  <span>Chưa Reg</span>
+                                </span>
+                              ) : mailData?.error ? (
+                                <span className="inline-flex items-center space-x-1 px-1.5 py-0.5 rounded bg-red-950/60 text-red-400 border border-red-900 text-[10px]" title={mailData.error}>
+                                  <span>Lỗi check mail</span>
+                                </span>
+                              ) : (
+                                <span className="inline-flex items-center space-x-1 px-1.5 py-0.5 rounded bg-slate-900 text-slate-500 border border-slate-800 text-[10px]">
+                                  <span>Chưa check mail</span>
+                                </span>
+                              )}
+                            </div>
                           </td>
 
-                          {/* EIN / SSN */}
-                          <td className="py-2.5 px-3 font-mono text-[11px] whitespace-nowrap">
-                            <div className="text-slate-200">
-                              <span className="text-slate-500 text-[10px] mr-1">EIN:</span>
-                              <span className="font-semibold">{r.ein || '—'}</span>
-                            </div>
-                            <div className="text-slate-400 text-[10px] mt-0.5">
-                              <span className="text-slate-500 mr-1">SSN:</span>
-                              <span>{r.ssn ? `•••-••-${r.ssn.slice(-4)}` : '—'}</span>
-                            </div>
-                          </td>
-
-                          {/* Real-world TikTok Shop Status */}
-                          <td className="py-2.5 px-3 whitespace-nowrap">
-                            {r.status && r.status.toLowerCase().includes('under review') ? (
-                              <div>
-                                <div className="inline-flex items-center space-x-1 px-2 py-0.5 rounded-full text-[10px] font-semibold bg-sky-950 text-sky-300 border border-sky-500/50">
-                                  <Clock className="w-3 h-3 text-sky-400" />
-                                  <span>{r.status.includes('(') ? r.status : `${r.status} (R${r.submissionRound || 1})`}</span>
+                          {/* Cột 3: TIẾN ĐỘ & CANH 6M (WATCHDOG) */}
+                          <td className="py-3 px-3 whitespace-nowrap">
+                            {watchdog ? (
+                              <div className="flex flex-col space-y-1">
+                                <div className="flex items-center space-x-1.5 px-2 py-1 rounded-md bg-purple-950/90 text-purple-300 border border-purple-500/70 font-mono text-[11px] font-bold shadow animate-pulse">
+                                  <Clock className="w-3.5 h-3.5 text-purple-400 shrink-0 animate-spin" />
+                                  <span>⏱️ {formatTimer(watchdog.remaining)}</span>
+                                  <span className="text-[9px] font-normal text-purple-200/70">(Tự check)</span>
                                 </div>
-                                <div className="text-[10px] text-slate-400 mt-0.5 font-mono">
-                                  {r.regDate ? `Ngày: ${r.regDate}` : 'Đang xử lý'}
-                                </div>
+                                <button
+                                  onClick={(e) => {
+                                    e.stopPropagation()
+                                    stopWatchdog(r.id)
+                                  }}
+                                  className="text-[9px] text-slate-400 hover:text-red-400 underline text-left"
+                                >
+                                  Dừng canh thư
+                                </button>
                               </div>
                             ) : r.status && (r.status.toLowerCase().includes('approved') || r.status.toLowerCase().includes('active')) ? (
                               <div>
@@ -1794,167 +2189,156 @@ export function TtsBotView() {
                                 </div>
                                 {r.regDate && <div className="text-[10px] text-emerald-400/80 mt-0.5 font-mono">Ngày: {r.regDate}</div>}
                               </div>
-                            ) : r.status && (r.status.toLowerCase().includes('information') || r.status.toLowerCase().includes('more info') || r.status.toLowerCase().includes('need info') || (r.submissionRound && r.submissionRound >= 5)) ? (
-                              <div title={r.lastError || 'We detected possible modifications to ID'}>
-                                {r.submissionRound && r.submissionRound >= 5 ? (
-                                  <div className="flex flex-col space-y-1">
-                                    <div className="inline-flex items-center space-x-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-rose-950 text-rose-300 border border-rose-500/70 animate-pulse">
-                                      <AlertTriangle className="w-3 h-3 text-rose-400 shrink-0" />
-                                      <span>DỪNG (LƯỢT {r.submissionRound}/5)</span>
-                                    </div>
-                                    <button
-                                      onClick={(e) => {
-                                        e.stopPropagation()
-                                        openPhotoPoolModal(r)
-                                      }}
-                                      className="px-1.5 py-0.5 bg-rose-900/40 hover:bg-rose-800 text-rose-300 text-[9px] font-semibold rounded border border-rose-700/60 text-center transition-all cursor-pointer"
-                                    >
-                                      📷 Nạp ảnh mới
-                                    </button>
-                                  </div>
-                                ) : (
-                                  <div>
-                                    <div className="inline-flex items-center space-x-1 px-2 py-0.5 rounded-full text-[10px] font-semibold bg-amber-950 text-amber-300 border border-amber-500/50">
-                                      <AlertCircle className="w-3 h-3 text-amber-400" />
-                                      <span>Lỗi ID {r.submissionRound ? `(Lượt ${r.submissionRound})` : ''}</span>
-                                    </div>
-                                    <div className="text-[10px] text-red-400/90 mt-0.5 max-w-[140px] truncate">
-                                      {r.lastError ? r.lastError : 'Modifications detected'}
-                                    </div>
-                                  </div>
-                                )}
-                              </div>
-                            ) : r.status && (r.status.toLowerCase().includes('rejected') || r.status.toLowerCase().includes('appeal')) ? (
+                            ) : r.status && (r.status.toLowerCase().includes('information') || r.status.toLowerCase().includes('need info') || (r.submissionRound && r.submissionRound >= 5)) ? (
                               <div>
-                                <div className="inline-flex items-center space-x-1 px-2 py-0.5 rounded-full text-[10px] font-semibold bg-red-950 text-red-300 border border-red-500/50">
-                                  <AlertTriangle className="w-3 h-3 text-red-400" />
-                                  <span>Rejected {r.submissionRound ? `(R${r.submissionRound})` : ''}</span>
+                                <div className="inline-flex items-center space-x-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-rose-950 text-rose-300 border border-rose-500/70">
+                                  <AlertTriangle className="w-3 h-3 text-rose-400 shrink-0" />
+                                  <span>Lỗi ID ({r.submissionRound || 1}/5)</span>
                                 </div>
-                                {r.lastError && <div className="text-[10px] text-red-400 mt-0.5 truncate max-w-[140px]">{r.lastError}</div>}
+                                <div className="text-[10px] text-rose-400/90 mt-0.5 max-w-[140px] truncate" title={r.lastError}>
+                                  {r.lastError ? r.lastError : 'Modifications detected'}
+                                </div>
+                              </div>
+                            ) : r.status && r.status.toLowerCase().includes('under review') ? (
+                              <div className="flex flex-col space-y-1">
+                                <div className="inline-flex items-center space-x-1 px-2 py-0.5 rounded-full text-[10px] font-semibold bg-sky-950 text-sky-300 border border-sky-500/50">
+                                  <Clock className="w-3 h-3 text-sky-400" />
+                                  <span>Under Review</span>
+                                </div>
+                                <button
+                                  onClick={(e) => {
+                                    e.stopPropagation()
+                                    start6MinWatchdog(r)
+                                  }}
+                                  className="flex items-center space-x-1 px-2 py-0.5 rounded bg-purple-950 hover:bg-purple-900 text-purple-300 border border-purple-700/60 text-[10px] font-semibold transition-all w-fit"
+                                  title="Bật đếm ngược 6 phút tự động check hòm thư sau khi nộp"
+                                >
+                                  <Clock className="w-2.5 h-2.5 text-purple-400" />
+                                  <span>⏱️ Canh 6 phút</span>
+                                </button>
                               </div>
                             ) : (
                               <span className="px-2 py-0.5 rounded text-[10px] bg-slate-900 text-slate-500 border border-slate-800">
-                                {r.status || 'Chưa chạy'}
+                                {r.status || 'Chưa nộp đơn'}
                               </span>
                             )}
                           </td>
 
-                          {/* Readiness Score & 2 Sides */}
-                          <td className="py-2.5 px-3 whitespace-nowrap">
-                            {r.readyStatus === '100_ready' ? (
-                              <div className="inline-flex items-center space-x-1 px-2 py-0.5 rounded-full text-[10px] font-semibold bg-emerald-950 text-emerald-300 border border-emerald-500/40">
-                                <CheckCircle2 className="w-3 h-3 text-emerald-400" />
-                                <span>100% Ready</span>
-                              </div>
-                            ) : r.readyStatus === '99_ready' ? (
-                              <div className="inline-flex items-center space-x-1 px-2 py-0.5 rounded-full text-[10px] font-semibold bg-cyan-950 text-cyan-300 border border-cyan-500/40">
-                                <Zap className="w-3 h-3 text-cyan-400" />
-                                <span>99% Ready</span>
+                          {/* Cột 4: KHO ẢNH & FILE ĐÃ NỘP */}
+                          <td className="py-3 px-3">
+                            {/* Auto-Harvested files from form submit */}
+                            {harvested.length > 0 ? (
+                              <div className="flex flex-col space-y-0.5">
+                                <div className="text-[9px] font-semibold text-emerald-400 flex items-center space-x-1">
+                                  <Check className="w-2.5 h-2.5" />
+                                  <span>Đã nộp web ({harvested.length} ảnh):</span>
+                                </div>
+                                <div className="flex flex-wrap gap-1 max-w-[190px]">
+                                  {harvested.map((h, idx) => (
+                                    <span
+                                      key={idx}
+                                      className="px-1.5 py-0.2 rounded bg-slate-800 text-slate-300 border border-slate-700 font-mono text-[9px] truncate max-w-[90px]"
+                                      title={h.fileName}
+                                    >
+                                      {h.side ? `${h.side === 'front' ? 'T' : 'S'}: ` : ''}{h.fileName}
+                                    </span>
+                                  ))}
+                                </div>
                               </div>
                             ) : (
-                              <div>
-                                <div className="inline-flex items-center space-x-1 px-2 py-0.5 rounded text-[10px] bg-slate-900 text-amber-400 border border-amber-900/40">
-                                  <span>⏳ {r.readinessScore || 0}% Chờ setup</span>
-                                </div>
-                                <div className="text-[10px] text-slate-400 mt-0.5">
-                                  {(!r.assignedPort && !r.adspowerId) ? 'Thiếu: Proxy & Ads' : !r.assignedPort ? 'Thiếu: Proxy' : !r.adspowerId ? 'Thiếu: AdsPower' : (!hasFront || !hasBack) ? 'Thiếu: Ảnh 2 mặt' : 'Chờ hoàn tất'}
-                                </div>
+                              <div className="text-slate-500 text-[10px] italic flex items-center space-x-1">
+                                <span>⚪ Tự ghi nhận khi nộp web</span>
                               </div>
                             )}
+
+                            {/* Photo pool variants button */}
                             <button
                               onClick={(e) => {
                                 e.stopPropagation()
                                 openPhotoPoolModal(r)
                               }}
-                              className="flex items-center space-x-1.5 mt-1 px-2 py-0.5 rounded bg-slate-900 hover:bg-slate-800 text-[10px] border border-slate-700/80 transition-all text-emerald-400 group cursor-pointer"
-                              title="Bấm để xem Kho ảnh 2 mặt & Biến thể"
+                              className="flex items-center space-x-1 mt-1.5 px-2 py-0.5 rounded bg-slate-900 hover:bg-slate-800 text-emerald-400 border border-slate-700/80 text-[10px] font-medium transition-all group cursor-pointer"
+                              title="Bấm để xem kho biến thể ảnh hoặc nạp ảnh thay thế"
                             >
                               <Camera className="w-3 h-3 text-emerald-400 group-hover:scale-110 transition-transform" />
-                              <span className={hasFront ? 'text-emerald-300 font-semibold' : 'text-slate-500'}>
-                                Trước: {hasFront ? '✓' : '✗'}
-                              </span>
-                              <span className="text-slate-600">•</span>
-                              <span className={hasBack ? 'text-emerald-300 font-semibold' : 'text-slate-500'}>
-                                Sau: {hasBack ? '✓' : '✗'}
-                              </span>
-                              <span className="text-[9px] text-slate-400 ml-1 underline decoration-slate-600">Kho ảnh</span>
+                              <span>Kho ảnh biến thể</span>
                             </button>
                           </td>
 
-                          {/* Documents Micro-Badges */}
-                          <td className="py-2.5 px-2 text-center whitespace-nowrap">
-                            <div className="flex items-center justify-center space-x-1">
-                              <span
-                                className={`px-1.5 py-0.5 rounded border text-[9px] font-semibold flex items-center space-x-0.5 ${
-                                  r.pdfDoc ? 'bg-indigo-950/60 text-indigo-300 border-indigo-800/60' : 'bg-slate-900/60 text-slate-600 border-slate-800 opacity-50'
-                                }`}
-                                title={r.pdfDoc || 'Chưa có file CP 575'}
-                              >
-                                <FileText className="w-2.5 h-2.5" />
-                                <span>CP575</span>
-                              </span>
-                              <span
-                                className={`px-1.5 py-0.5 rounded border text-[9px] font-semibold flex items-center space-x-0.5 ${
-                                  r.bankStatement ? 'bg-sky-950/60 text-sky-300 border-sky-800/60' : 'bg-slate-900/60 text-slate-600 border-slate-800 opacity-50'
-                                }`}
-                                title={r.bankStatement || 'Chưa có Bank Statement / Bill'}
-                              >
-                                <Building className="w-2.5 h-2.5" />
-                                <span>Bill</span>
-                              </span>
-                            </div>
-                          </td>
-
-                          {/* Proxy & AdsPower Status */}
-                          <td className="py-2.5 px-3 text-[10px] font-mono whitespace-nowrap">
-                            {r.assignedPort ? (
-                              <div className="text-emerald-400 flex items-center space-x-1">
-                                <Globe className="w-2.5 h-2.5 shrink-0" />
-                                <span>:{r.assignedPort} ({r.proxyMeta?.state || r.state})</span>
-                              </div>
-                            ) : (
-                              <div className="text-slate-600 flex items-center space-x-1">
-                                <Globe className="w-2.5 h-2.5 shrink-0 opacity-40" />
-                                <span>Chưa gán port</span>
-                              </div>
-                            )}
-                            {r.adspowerId || adsProfile ? (
-                              <div className="text-cyan-400 flex items-center space-x-1 mt-0.5">
-                                <Smartphone className="w-2.5 h-2.5 shrink-0" />
-                                <span>iOS (390x844)</span>
-                              </div>
-                            ) : (
-                              <div className="text-slate-600 flex items-center space-x-1 mt-0.5">
-                                <Smartphone className="w-2.5 h-2.5 shrink-0 opacity-40" />
-                                <span>Chưa có Ads profile</span>
-                              </div>
-                            )}
-                          </td>
-
-                          {/* Actions */}
-                          <td className="py-2.5 px-3 text-right whitespace-nowrap" onClick={(e) => e.stopPropagation()}>
+                          {/* Cột 5: HÀNH ĐỘNG COPILOT (1-CHẠM) */}
+                          <td className="py-3 px-3 text-right whitespace-nowrap" onClick={(e) => e.stopPropagation()}>
                             <div className="flex items-center justify-end space-x-1.5">
-                              {r.readyStatus !== '100_ready' && r.readyStatus !== '99_ready' && (
+                              {/* 1-Click Action Button */}
+                              {otpCode ? (
+                                <button
+                                  onClick={() => {
+                                    navigator.clipboard.writeText(otpCode)
+                                    setSetupFeedback(`Đã copy mã OTP: ${otpCode}`)
+                                  }}
+                                  className="px-2.5 py-1 text-xs bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold rounded-lg transition-all shadow-md flex items-center space-x-1"
+                                  title="Copy mã OTP để dán vào TikTok"
+                                >
+                                  <Copy className="w-3.5 h-3.5" />
+                                  <span>Copy OTP</span>
+                                </button>
+                              ) : (mailStatus === 'rejected_need_resubmit' || r.status?.toLowerCase().includes('information')) ? (
+                                <button
+                                  onClick={() => openPhotoPoolModal(r)}
+                                  className="px-2.5 py-1 text-xs bg-rose-600 hover:bg-rose-500 text-white font-bold rounded-lg transition-all shadow-md flex items-center space-x-1"
+                                  title="Mở kho ảnh để chọn biến thể V2 nộp lại"
+                                >
+                                  <Camera className="w-3.5 h-3.5" />
+                                  <span>Đổi Ảnh V2</span>
+                                </button>
+                              ) : (mailStatus === 'under_review' || r.status?.toLowerCase().includes('under review')) ? (
+                                watchdog ? (
+                                  <button
+                                    onClick={() => handleCheckSingleMail(r)}
+                                    disabled={isCheckingThisMail}
+                                    className="px-2.5 py-1 text-xs bg-purple-900 hover:bg-purple-800 text-purple-200 font-semibold rounded-lg transition-all flex items-center space-x-1"
+                                    title="Kiểm tra lại hòm thư ngay"
+                                  >
+                                    <RefreshCw className={`w-3 h-3 ${isCheckingThisMail ? 'animate-spin' : ''}`} />
+                                    <span>Check lại</span>
+                                  </button>
+                                ) : (
+                                  <button
+                                    onClick={() => start6MinWatchdog(r)}
+                                    className="px-2.5 py-1 text-xs bg-purple-600 hover:bg-purple-500 text-white font-bold rounded-lg transition-all shadow-md flex items-center space-x-1"
+                                    title="Bật đếm ngược 6 phút tự động check hòm thư sau khi nộp"
+                                  >
+                                    <Clock className="w-3.5 h-3.5" />
+                                    <span>Canh 6 Phút</span>
+                                  </button>
+                                )
+                              ) : (mailStatus === 'approved' || r.status?.toLowerCase().includes('approved')) ? (
+                                <span className="px-2 py-1 text-[10px] bg-emerald-950 text-emerald-300 border border-emerald-800 rounded font-semibold flex items-center space-x-1">
+                                  <CheckCircle2 className="w-3 h-3 text-emerald-400" />
+                                  <span>Hoàn tất</span>
+                                </span>
+                              ) : hasAds ? (
+                                <button
+                                  onClick={() => handleLaunchAdsPower(r)}
+                                  disabled={launchingProfileId === r.id}
+                                  className="px-2.5 py-1 text-xs bg-cyan-600 hover:bg-cyan-500 text-white font-semibold rounded-lg transition-all shadow flex items-center space-x-1"
+                                  title="Khởi động profile AdsPower iOS và điền form TikTok"
+                                >
+                                  <Play className="w-3 h-3 fill-white" />
+                                  <span>Mở Ads (iOS)</span>
+                                </button>
+                              ) : (
                                 <button
                                   onClick={() => handleSmartSetup(r)}
                                   disabled={isSettingUpThis}
-                                  className="px-2.5 py-1 text-[10px] bg-cyan-950 hover:bg-cyan-900 text-cyan-300 border border-cyan-800/60 rounded font-semibold transition-all disabled:opacity-50 flex items-center space-x-1"
-                                  title="Tự động tìm Proxy Florida và tạo Profile AdsPower cho hồ sơ này"
+                                  className="px-2.5 py-1 text-xs bg-emerald-600 hover:bg-emerald-500 text-white font-semibold rounded-lg transition-all shadow flex items-center space-x-1"
+                                  title="Gán Proxy và tạo Profile AdsPower cho hồ sơ này"
                                 >
-                                  <Zap className="w-2.5 h-2.5 inline mr-0.5 text-cyan-400" />
-                                  <span>{isSettingUpThis ? 'Đang tạo...' : 'Gán Proxy & Ads'}</span>
+                                  <Zap className="w-3.5 h-3.5" />
+                                  <span>Setup Ads</span>
                                 </button>
                               )}
-                              <button
-                                onClick={() => {
-                                  setSelectedRecordId(r.id)
-                                  setActiveTab('studio')
-                                }}
-                                className="px-2.5 py-1 text-[10px] bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 rounded transition-all font-medium"
-                                title="Xem kho ảnh 2 mặt (Front & Back), preset camera và chữ ký"
-                              >
-                                Studio 2 Mặt
-                              </button>
+
+                              {/* Drawer button */}
                               <button
                                 onClick={() => {
                                   setSelectedRecordId(r.id)
@@ -1963,7 +2347,7 @@ export function TtsBotView() {
                                 className="p-1 text-slate-400 hover:text-slate-200 hover:bg-slate-800 rounded transition-all"
                                 title="Xem chi tiết hồ sơ & Audit Scorecard"
                               >
-                                <ChevronRight className="w-3.5 h-3.5" />
+                                <ChevronRight className="w-4 h-4" />
                               </button>
                             </div>
                           </td>
