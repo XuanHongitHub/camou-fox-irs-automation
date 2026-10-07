@@ -70,16 +70,16 @@ async function testSmartSetup() {
   }
   console.log('--> TEST 2 PASSED: HideProxy port-info API responding.\n');
 
-  // Test 3: AdsPower API Connectivity & Group
-  console.log('[TEST 3] Testing AdsPower Group 10716270...');
-  const adsRes = await fetch('http://127.0.0.1:50325/api/v1/user/list?group_id=10716270&page_size=5', {
+  // Test 3: AdsPower API Connectivity (Ungrouped / All)
+  console.log('[TEST 3] Testing AdsPower API Connectivity...');
+  const adsRes = await fetch('http://127.0.0.1:50325/api/v1/user/list?page_size=5', {
     headers: {
       'Authorization': 'Bearer c9ea96522fba29ee72f2fee511b77868008da729dcdcc201',
       'Content-Type': 'application/json'
     }
   }).then(r => r.json());
-  console.log(`✓ AdsPower returned ${adsRes.data?.list?.length || 0} profiles in Group 10716270.`);
-  console.log('--> TEST 3 PASSED: AdsPower online and group accessible.\n');
+  console.log(`✓ AdsPower returned ${adsRes.data?.list?.length || 0} profiles.`);
+  console.log('--> TEST 3 PASSED: AdsPower online and profiles accessible.\n');
 
   // Test 4: Readiness Logic Simulation (99% Ready vs 100% Full Ready)
   console.log('[TEST 4] Testing Readiness Scorecard Logic...');

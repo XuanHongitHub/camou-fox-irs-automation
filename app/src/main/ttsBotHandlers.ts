@@ -574,8 +574,8 @@ function generateValidDl(stateCode: string, lastName: string = ''): string {
       const records: any[] = []
       for (let i = 1; i < rows.length; i++) {
         const r = rows[i]
-        const profileId = (colName >= 0 ? r[colName] : r[0]) || `ROW-${i}`
-        if (!profileId.trim()) continue
+        const profileId = ((colName >= 0 ? r[colName] : r[0]) || `ROW-${i}`).trim()
+        if (!profileId) continue
 
         // Parse composite mail if format: email|pass|2fa
         let rawMail = (colMail >= 0 ? r[colMail] : '') || ''
@@ -659,7 +659,11 @@ function generateValidDl(stateCode: string, lastName: string = ''): string {
         }
 
         // Merge saved setup state
-        const savedSetup = stateData.profileSetups?.[profileId] || {}
+        const savedSetup =
+          stateData.profileSetups?.[profileId] ||
+          stateData.profileSetups?.[profileId.toUpperCase()] ||
+          stateData.profileSetups?.[profileId.toLowerCase()] ||
+          {}
         const savedAssignment = stateData.assignments?.[profileId] || {}
         const hasFront = !!(savedAssignment.frontProcessed || savedAssignment.frontOriginal)
         const hasBack = !!(savedAssignment.backProcessed || savedAssignment.backOriginal)
@@ -838,9 +842,12 @@ function generateValidDl(stateCode: string, lastName: string = ''): string {
   )
 
   // 4. AdsPower Handlers
-  ipcMain.handle('tts:adspower:list', async (_event, groupId = '0') => {
+  ipcMain.handle('tts:adspower:list', async (_event, groupId?: string) => {
     try {
-      const url = `${ADS_BASE}/api/v1/user/list?group_id=${groupId}&page_size=100`
+      const url =
+        groupId && groupId !== '0' && groupId !== 'all'
+          ? `${ADS_BASE}/api/v1/user/list?group_id=${groupId}&page_size=100`
+          : `${ADS_BASE}/api/v1/user/list?page_size=100`
       const res = await fetch(url, { headers: ADS_HEADERS })
       const data = await res.json()
       return { ok: data.code === 0, data: data.data?.list || [], error: data.msg }
@@ -935,10 +942,30 @@ function generateValidDl(stateCode: string, lastName: string = ''): string {
     if (!stateData.assignments) stateData.assignments = {}
 
     const stateNorm = normalizeStateCode(record.state || record.stateLlc || '')
-    let assignedPort = record.assignedPort || stateData.profileSetups[record.id]?.assignedPort
+
+    // 1. Collect all ports already assigned to OTHER profiles to strictly prevent port sharing
+    const usedPorts = new Set<number>()
+    Object.entries(stateData.profileSetups || {}).forEach(([recId, setup]: [string, any]) => {
+      if (recId !== record.id && setup?.assignedPort) {
+        usedPorts.add(Number(setup.assignedPort))
+      }
+    })
+
+    const userExplicitPort = record.assignedPort ? Number(record.assignedPort) : undefined
+    let assignedPort = userExplicitPort
+    if (!assignedPort && stateData.profileSetups[record.id]?.assignedPort) {
+      const existing = Number(stateData.profileSetups[record.id].assignedPort)
+      if (!usedPorts.has(existing)) {
+        assignedPort = existing
+      }
+    }
+    // If auto-loaded port was occupied by another profile, discard it to allocate a unique port
+    if (assignedPort && !userExplicitPort && usedPorts.has(Number(assignedPort))) {
+      assignedPort = undefined
+    }
     let assignedProxyMeta = stateData.profileSetups[record.id]?.proxyMeta || null
 
-    // --- Step 1: HideProxy Smart Port Matching ---
+    // --- Step 1: HideProxy Smart Port Matching (Strict Unique Port Per Profile) ---
     try {
       const portInfoRes = await fetch(`${HIDEPROXY_BASE}/api/port/info?port=ALL`)
         .then((r) => r.json())
@@ -946,18 +973,48 @@ function generateValidDl(stateCode: string, lastName: string = ''): string {
       const activePorts: any[] = (portInfoRes && portInfoRes.data) || []
 
       let currentPortAlive = false
-      if (assignedPort) {
+      if (assignedPort && !usedPorts.has(Number(assignedPort))) {
         const matchExisting = activePorts.find((p) => p.port === Number(assignedPort) && p.online)
         if (matchExisting) {
           currentPortAlive = true
           assignedProxyMeta = matchExisting
+          usedPorts.add(Number(assignedPort))
         }
       }
 
-      if (!currentPortAlive) {
-        // Find an active port whose state matches
+      if (userExplicitPort) {
+        // User explicitly specified this port -> HONOR IT! Do not override!
+        assignedPort = userExplicitPort
+        usedPorts.add(userExplicitPort)
+        if (!assignedProxyMeta) {
+          const match = activePorts.find((p) => p.port === userExplicitPort)
+          assignedProxyMeta = match || {
+            port: userExplicitPort,
+            public_ip: '127.0.0.1',
+            state: stateNorm,
+            online: false
+          }
+        }
+        // Best effort: forward history proxy to this port if not alive
+        if (!currentPortAlive) {
+          try {
+            const histRes = await fetch(`${HIDEPROXY_BASE}/api/history/list?limit=50&page=1`)
+              .then((r) => r.json())
+              .catch(() => null)
+            const histItems: any[] = (histRes && histRes.data) || []
+            const matchedHist = histItems.find((h) => normalizeStateCode(h.state || '') === stateNorm) || histItems[0]
+            if (matchedHist) {
+              await fetch(
+                `${HIDEPROXY_BASE}/api/history/last-12-hours/forward?id=${matchedHist.id}&port=${userExplicitPort}`
+              ).catch(() => null)
+            }
+          } catch {}
+        }
+      } else if (!currentPortAlive) {
+        // 1.1 Find an active port whose state matches AND NOT USED by any other profile!
         const matchedPort = activePorts.find((p) => {
           if (!p.online) return false
+          if (usedPorts.has(p.port)) return false // KHÔNG DÙNG CỔNG ĐÃ CÓ PROFILE KHÁC CHIẾM
           const pState = normalizeStateCode(p.state || '')
           return pState === stateNorm
         })
@@ -965,63 +1022,86 @@ function generateValidDl(stateCode: string, lastName: string = ''): string {
         if (matchedPort) {
           assignedPort = matchedPort.port
           assignedProxyMeta = matchedPort
+          usedPorts.add(matchedPort.port)
         } else {
-          // Find a free port between 50000 and 50030
-          let targetPort = 50000
-          for (let p = 50000; p <= 50030; p++) {
-            const inUse = activePorts.some((ap) => ap.port === p && ap.online)
-            if (!inUse) {
-              targetPort = p
-              break
+          // 1.2 Find ANY active port NOT USED by any profile
+          const anyFreeOnlinePort = activePorts.find((p) => p.online && !usedPorts.has(p.port))
+          if (anyFreeOnlinePort) {
+            assignedPort = anyFreeOnlinePort.port
+            assignedProxyMeta = anyFreeOnlinePort
+            usedPorts.add(anyFreeOnlinePort.port)
+          } else {
+            // 1.3 Find a free port between 50001 and 50100 not used
+            let targetPort = assignedPort && !usedPorts.has(Number(assignedPort)) ? Number(assignedPort) : 0
+            if (!targetPort) {
+              for (let p = 50001; p <= 50100; p++) {
+                const inUse = activePorts.some((ap) => ap.port === p && ap.online)
+                if (!inUse && !usedPorts.has(p)) {
+                  targetPort = p
+                  break
+                }
+              }
             }
-          }
+            if (!targetPort) targetPort = 50001
 
-          // Check HideProxy history list
-          const histRes = await fetch(`${HIDEPROXY_BASE}/api/history/list?limit=50&page=1`)
-            .then((r) => r.json())
-            .catch(() => null)
-          const histItems: any[] = (histRes && histRes.data) || []
-          const matchedHist = histItems.find((h) => {
-            const hState = normalizeStateCode(h.state || '')
-            return hState === stateNorm
-          })
-
-          if (matchedHist) {
-            await fetch(
-              `${HIDEPROXY_BASE}/api/history/last-12-hours/forward?id=${matchedHist.id}&port=${targetPort}`
-            )
-            await new Promise((resolve) => setTimeout(resolve, 1500))
-            assignedPort = targetPort
-            assignedProxyMeta = {
-              port: targetPort,
-              public_ip: matchedHist.ip,
-              state: matchedHist.state,
-              city: matchedHist.city,
-              isp: matchedHist.isp,
-              online: true
-            }
-          } else if (autoBuyProxy) {
-            // Buy single proxy for this state
-            const buyRes = await fetch(`${HIDEPROXY_BASE}/api/proxy/buy`, {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({
-                quantity: 1,
-                country: 'us',
-                state: stateNorm,
-                port: targetPort
-              })
-            })
+            // Check HideProxy history list to forward to targetPort
+            const histRes = await fetch(`${HIDEPROXY_BASE}/api/history/list?limit=50&page=1`)
               .then((r) => r.json())
               .catch(() => null)
+            const histItems: any[] = (histRes && histRes.data) || []
+            const matchedHist = histItems.find((h) => {
+              const hState = normalizeStateCode(h.state || '')
+              return hState === stateNorm
+            })
 
-            if (buyRes && buyRes.code === 200) {
-              await new Promise((resolve) => setTimeout(resolve, 2000))
+            if (matchedHist) {
+              await fetch(
+                `${HIDEPROXY_BASE}/api/history/last-12-hours/forward?id=${matchedHist.id}&port=${targetPort}`
+              )
+              await new Promise((resolve) => setTimeout(resolve, 1500))
               assignedPort = targetPort
+              usedPorts.add(targetPort)
+              assignedProxyMeta = {
+                port: targetPort,
+                public_ip: matchedHist.ip,
+                state: matchedHist.state,
+                city: matchedHist.city,
+                isp: matchedHist.isp,
+                online: true
+              }
+            } else if (autoBuyProxy) {
+              // Buy single proxy for this state
+              const buyRes = await fetch(`${HIDEPROXY_BASE}/api/proxy/buy`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                  quantity: 1,
+                  country: 'us',
+                  state: stateNorm,
+                  port: targetPort
+                })
+              })
+                .then((r) => r.json())
+                .catch(() => null)
+
+              if (buyRes && buyRes.code === 200) {
+                await new Promise((resolve) => setTimeout(resolve, 2000))
+                assignedPort = targetPort
+                usedPorts.add(targetPort)
+                assignedProxyMeta = {
+                  port: targetPort,
+                  state: stateNorm,
+                  online: true
+                }
+              }
+            } else {
+              // Allocate unique targetPort
+              assignedPort = targetPort
+              usedPorts.add(targetPort)
               assignedProxyMeta = {
                 port: targetPort,
                 state: stateNorm,
-                online: true
+                online: false
               }
             }
           }
@@ -1067,7 +1147,7 @@ function generateValidDl(stateCode: string, lastName: string = ''): string {
           headers: ADS_HEADERS,
           body: JSON.stringify({
             name: `${record.id} - ${record.fullName || 'TTS'}`,
-            group_id: '10716270',
+            group_id: '0', // Mặc định Ungrouped (không phân nhóm)
             user_proxy_config: proxyConfig,
             fingerprint_config: {
               os: 'iOS',
@@ -1951,7 +2031,7 @@ function generateValidDl(stateCode: string, lastName: string = ''): string {
       })
     }
 
-    // ─── 3. AdsPower Local API (:50325) & Group 10716270 ───
+    // ─── 3. AdsPower Local API (:50325) ───
     const tAdsStart = Date.now()
     try {
       const controller = new AbortController()
@@ -1966,14 +2046,6 @@ function generateValidDl(stateCode: string, lastName: string = ''): string {
 
       if (data && data.code === 0) {
         const totalProfiles = data.data?.total || data.data?.list?.length || 0
-        let groupOk = false
-        try {
-          const gRes = await fetch(`${ADS_BASE}/api/v1/group/list?page=1&page_size=50`, { headers: ADS_HEADERS })
-          const gData = await gRes.json()
-          if (gData && gData.data && Array.isArray(gData.data.list)) {
-            groupOk = gData.data.list.some((g: any) => String(g.group_id) === '10716270')
-          }
-        } catch {}
 
         checks.push({
           id: 'adspower',
@@ -1981,11 +2053,9 @@ function generateValidDl(stateCode: string, lastName: string = ''): string {
           name: 'AdsPower Local API (:50325)',
           status: 'pass',
           latencyMs: tAds,
-          message: `AdsPower kết nối tốt (${totalProfiles} profiles hiện có, Group TTS: ${groupOk ? '🟢 Đã có' : '🟡 Cần tạo'})`,
-          detail: { base: ADS_BASE, totalProfiles, group10716270: groupOk },
-          fixGuide: groupOk
-            ? 'AdsPower hoạt động bình thường.'
-            : 'Vào AdsPower -> Group Management -> Tạo nhóm mới với Group ID 10716270 cho TikTok Shop.'
+          message: `AdsPower kết nối tốt (${totalProfiles} profiles hiện có, Nhóm: Ungrouped)`,
+          detail: { base: ADS_BASE, totalProfiles },
+          fixGuide: 'AdsPower hoạt động bình thường.'
         })
       } else {
         checks.push({
@@ -2141,7 +2211,7 @@ function generateValidDl(stateCode: string, lastName: string = ''): string {
     const simExtArg = `--load-extension=${extDir.replace(/\\/g, '/')}`
     const simPayload = {
       name: `${simProfile} - Preflight Test`,
-      group_id: '10716270',
+      group_id: '0',
       user_proxy_config: { proxy_soft: 'other', proxy_type: 'socks5', proxy_host: '127.0.0.1', proxy_port: simPort },
       fingerprint_config: { os: 'iOS', ua: 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_5_1 like Mac OS X)', screen_resolution: '390_844' },
       launch_args: [simExtArg]

@@ -374,7 +374,7 @@ export function TtsBotView() {
 
   // Sheet State
   const [sheetId] = useState('1wAh6we1CsSuPVbCOD5vRyO3KJqNKBbcdq7LBZVlI268')
-  const [selectedSheetTab, setSelectedSheetTab] = useState('TTS Chạy Thật')
+  const [selectedSheetTab, setSelectedSheetTab] = useState('Automation')
   const [customTabInput, setCustomTabInput] = useState('')
   const [isCustomTab, setIsCustomTab] = useState(false)
   const [records, setRecords] = useState<RecordItem[]>([])
@@ -402,6 +402,7 @@ export function TtsBotView() {
     mode: 'single' | 'bulk'
     records: RecordItem[]
     selectedPort?: number
+    allocatedPorts?: Record<string, number>
     isExecuting?: boolean
     progress?: {
       current: number
@@ -412,7 +413,8 @@ export function TtsBotView() {
   }>({
     isOpen: false,
     mode: 'single',
-    records: []
+    records: [],
+    allocatedPorts: {}
   })
 
   // Full Flow Dry-Run / Preflight Diagnostics State
@@ -518,8 +520,9 @@ export function TtsBotView() {
     try {
       const res = await ttsIpc.stateGet()
       if (res && res.ok && res.data) {
+        const setups = res.data.profileSetups || {}
         if (res.data.assignments) setAssignments(res.data.assignments)
-        if (res.data.profileSetups) setProfileSetups(res.data.profileSetups)
+        if (res.data.profileSetups) setProfileSetups(setups)
         if (res.data.activeRuns) setActiveRuns(res.data.activeRuns)
         if (res.data.consumedRecords) setConsumedRecords(res.data.consumedRecords)
         if (res.data.activeTab) setSelectedSheetTab(res.data.activeTab)
@@ -527,6 +530,23 @@ export function TtsBotView() {
         if (res.data.mailStatuses) setMailStatuses(res.data.mailStatuses)
         if (res.data.poolFolderPath) setPoolFolderPath(res.data.poolFolderPath)
         if (res.data.autoConfig) setAutoConfig((prev) => ({ ...prev, ...res.data.autoConfig }))
+
+        // Hydrate in-memory records with saved setups
+        setRecords((prev) =>
+          prev.map((r) => {
+            const s = setups[r.id]
+            if (!s) return r
+            return {
+              ...r,
+              assignedPort: s.assignedPort || r.assignedPort,
+              proxyMeta: s.proxyMeta || r.proxyMeta,
+              adspowerId: s.adspowerId || r.adspowerId,
+              readyStatus: s.readyStatus || r.readyStatus,
+              readinessScore: s.readinessScore || r.readinessScore,
+              status: s.liveStatus || r.status
+            }
+          })
+        )
       }
     } catch (err) {
       console.error('Failed to load state:', err)
@@ -540,12 +560,14 @@ export function TtsBotView() {
     newConsumed?: Record<string, { consumedAt: number; fromTab: string }>,
     newHarvested?: Record<string, any>,
     newMailStatuses?: Record<string, any>,
-    newAutoConfig?: AutoEngineConfig
+    newAutoConfig?: AutoEngineConfig,
+    newProfileSetups?: Record<string, any>
   ) => {
     try {
       await ttsIpc.stateSave({
         assignments: newAssignments ?? assignments,
         activeRuns: newActiveRuns ?? activeRuns,
+        profileSetups: newProfileSetups ?? profileSetups,
         consumedRecords: newConsumed ?? consumedRecords,
         harvestedUploads: newHarvested ?? harvestedUploads,
         mailStatuses: newMailStatuses ?? mailStatuses,
@@ -557,7 +579,27 @@ export function TtsBotView() {
     } catch (err) {
       console.error('Failed to save state:', err)
     }
-  }, [assignments, activeRuns, consumedRecords, harvestedUploads, mailStatuses, autoConfig, poolFolderPath, selectedSheetTab])
+  }, [assignments, activeRuns, profileSetups, consumedRecords, harvestedUploads, mailStatuses, autoConfig, poolFolderPath, selectedSheetTab])
+
+  // Direct Port Update Handler for Quick Manual Edits
+  const handleDirectPortUpdate = (recordId: string, newPort: number) => {
+    setRecords((prev) =>
+      prev.map((r) => (r.id === recordId ? { ...r, assignedPort: newPort } : r))
+    )
+    setActiveRuns((prev) =>
+      prev.map((r) => (r.id === recordId ? { ...r, assignedPort: newPort } : r))
+    )
+    const updatedSetups = {
+      ...profileSetups,
+      [recordId]: {
+        ...(profileSetups[recordId] || {}),
+        assignedPort: newPort,
+        updatedAt: Date.now()
+      }
+    }
+    setProfileSetups(updatedSetups)
+    persistState(undefined, undefined, undefined, undefined, undefined, undefined, updatedSetups)
+  }
 
   // Handle Auto-Rotate Variant (Chống trùng form, đảo mặt đúng side, tránh file reject)
   const handleAutoRotateVariant = async (record: RecordItem) => {
@@ -587,16 +629,129 @@ export function TtsBotView() {
     return found ? found.code : input.toUpperCase().trim()
   }
 
-  // Open Single Setup Modal
+  // Helper: Allocate strictly unique proxy ports for a list of records
+  const allocateUniquePortsForRecords = (
+    targets: RecordItem[],
+    availablePorts: any[],
+    allRecords: RecordItem[],
+    savedSetups: Record<string, any>
+  ): Record<string, number> => {
+    const allocated: Record<string, number> = {}
+    const usedPorts = new Set<number>()
+
+    // Set of IDs in this target batch
+    const targetIdSet = new Set(targets.map((t) => t.id))
+
+    // 1. Mark ports used by profiles NOT in this batch
+    allRecords.forEach((r) => {
+      if (!targetIdSet.has(r.id)) {
+        const p = r.assignedPort || savedSetups[r.id]?.assignedPort
+        if (p) usedPorts.add(Number(p))
+      }
+    })
+
+    // 2. For records in this batch that already have an assigned port, preserve it IF not duplicated
+    targets.forEach((r) => {
+      const existing = r.assignedPort || savedSetups[r.id]?.assignedPort
+      if (existing && !usedPorts.has(Number(existing))) {
+        allocated[r.id] = Number(existing)
+        usedPorts.add(Number(existing))
+      }
+    })
+
+    // 3. For records that still need a port:
+    targets.forEach((r) => {
+      if (allocated[r.id]) return
+
+      const rStateNorm = normalizeState(r.state || '')
+
+      // 3.1: Try matching an active online port with SAME STATE not yet used
+      const matchedStatePort = availablePorts.find((p) => {
+        if (!p.online || usedPorts.has(p.port)) return false
+        return normalizeState(p.state || '') === rStateNorm
+      })
+
+      if (matchedStatePort) {
+        allocated[r.id] = matchedStatePort.port
+        usedPorts.add(matchedStatePort.port)
+        return
+      }
+
+      // 3.2: Try ANY active online port not yet used
+      const anyFreeOnline = availablePorts.find((p) => p.online && !usedPorts.has(p.port))
+      if (anyFreeOnline) {
+        allocated[r.id] = anyFreeOnline.port
+        usedPorts.add(anyFreeOnline.port)
+        return
+      }
+
+      // 3.3: Allocate unique free port in range 50001 - 50100
+      for (let p = 50001; p <= 50100; p++) {
+        if (!usedPorts.has(p)) {
+          allocated[r.id] = p
+          usedPorts.add(p)
+          break
+        }
+      }
+
+      // Absolute safety fallback
+      if (!allocated[r.id]) {
+        let p = 50001
+        while (usedPorts.has(p)) {
+          p++
+        }
+        allocated[r.id] = p
+        usedPorts.add(p)
+      }
+    })
+
+    return allocated
+  }
+
+  // Open Single Setup Modal (Strict Port Collision Prevention)
   const openSingleSetupModal = (record: RecordItem) => {
     const stateNorm = normalizeState(record.state || '')
-    const matched = hpPorts.find((p) => p.online && normalizeState(p.state || '') === stateNorm)
-    const port = record.assignedPort || (matched ? matched.port : 50007)
+    const usedPorts = new Set<number>()
+    records.forEach((r) => {
+      if (r.id !== record.id) {
+        const p = r.assignedPort || profileSetups[r.id]?.assignedPort
+        if (p) usedPorts.add(Number(p))
+      }
+    })
+
+    let port = record.assignedPort || profileSetups[record.id]?.assignedPort
+    if (port && usedPorts.has(Number(port))) {
+      port = undefined
+    }
+
+    if (!port) {
+      const matched = hpPorts.find(
+        (p) => p.online && !usedPorts.has(p.port) && normalizeState(p.state || '') === stateNorm
+      )
+      if (matched) {
+        port = matched.port
+      } else {
+        const anyOnline = hpPorts.find((p) => p.online && !usedPorts.has(p.port))
+        if (anyOnline) {
+          port = anyOnline.port
+        } else {
+          for (let p = 50001; p <= 50100; p++) {
+            if (!usedPorts.has(p)) {
+              port = p
+              break
+            }
+          }
+        }
+      }
+    }
+    if (!port) port = 50007
+
     setSetupModalConfig({
       isOpen: true,
       mode: 'single',
       records: [record],
       selectedPort: port,
+      allocatedPorts: { [record.id]: port },
       isExecuting: false,
       progress: undefined
     })
@@ -753,7 +908,7 @@ export function TtsBotView() {
   }, [activeWatchdogs])
 
 
-  // Open Bulk Setup Modal
+  // Open Bulk Setup Modal (Strict Unique Port Per Profile)
   const openBulkSetupModal = () => {
     const targetRecords =
       selectedRowIds.size > 0
@@ -765,10 +920,18 @@ export function TtsBotView() {
       return
     }
 
+    const allocatedPorts = allocateUniquePortsForRecords(
+      targetRecords,
+      hpPorts,
+      records,
+      profileSetups
+    )
+
     setSetupModalConfig({
       isOpen: true,
       mode: 'bulk',
       records: targetRecords,
+      allocatedPorts,
       isExecuting: false,
       progress: undefined
     })
@@ -864,19 +1027,23 @@ export function TtsBotView() {
     try {
       for (let i = 0; i < targetRecords.length; i++) {
         const rec = targetRecords[i]
+        const assignedPortForRec = setupModalConfig.allocatedPorts?.[rec.id] || rec.assignedPort
         setSetupModalConfig((prev) => ({
           ...prev,
           progress: {
             current: i,
             total: targetRecords.length,
             currentRecordId: rec.id,
-            currentStatus: `Đang xử lý ${rec.id} (${rec.fullName || ''}) [Bang: ${rec.state}]...`
+            currentStatus: `Đang xử lý ${rec.id} (${rec.fullName || ''}) [Bang: ${rec.state} | Port: ${assignedPortForRec || 'Tự động'}]...`
           }
         }))
 
         try {
           const res = await ttsIpc.smartSetup({
-            record: rec,
+            record: {
+              ...rec,
+              assignedPort: assignedPortForRec
+            },
             autoBuyProxy: false
           })
           if (res && res.ok && res.record) {
@@ -1131,11 +1298,24 @@ export function TtsBotView() {
       })
 
       if (res && res.ok && res.records) {
-        setRecords(res.records)
-        if (res.records.length > 0 && !selectedRecordId) {
-          setSelectedRecordId(res.records[0].id)
+        const merged = res.records.map((r: RecordItem) => {
+          const s = profileSetups[r.id]
+          if (!s) return r
+          return {
+            ...r,
+            assignedPort: s.assignedPort || r.assignedPort,
+            proxyMeta: s.proxyMeta || r.proxyMeta,
+            adspowerId: s.adspowerId || r.adspowerId,
+            readyStatus: s.readyStatus || r.readyStatus,
+            readinessScore: s.readinessScore || r.readinessScore,
+            status: s.liveStatus || r.status
+          }
+        })
+        setRecords(merged)
+        if (merged.length > 0 && !selectedRecordId) {
+          setSelectedRecordId(merged[0].id)
         }
-        handleAutoCheckAllMails(res.records)
+        handleAutoCheckAllMails(merged)
       } else {
         setSheetError(res?.error || 'Không tải được dữ liệu Sheet')
       }
@@ -1144,7 +1324,7 @@ export function TtsBotView() {
     } finally {
       setIsLoadingSheet(false)
     }
-  }, [sheetId, selectedSheetTab, isCustomTab, customTabInput, selectedRecordId, activeRuns, handleAutoCheckAllMails])
+  }, [sheetId, selectedSheetTab, isCustomTab, customTabInput, selectedRecordId, activeRuns, profileSetups, handleAutoCheckAllMails])
 
 
   // 5. Fetch Inbox Files for Studio
@@ -1183,7 +1363,7 @@ export function TtsBotView() {
   const refreshAdsPowerProfiles = useCallback(async () => {
     setIsLoadingAdsProfiles(true)
     try {
-      const res = await ttsIpc.adspowerList('10716270')
+      const res = await ttsIpc.adspowerList()
       if (res && res.ok && res.data) {
         setAdspowerProfiles(res.data)
       }
@@ -1194,10 +1374,12 @@ export function TtsBotView() {
     }
   }, [])
 
-  // Initial Boot
+  // Initial Boot (Automatic load and sheet sync so state is never reset on reload)
   useEffect(() => {
     refreshStatus()
-    loadSavedState()
+    loadSavedState().then(() => {
+      fetchSheetRecords()
+    })
     refreshInboxFiles()
     refreshHideProxyPorts()
     refreshAdsPowerProfiles()
@@ -1526,7 +1708,7 @@ export function TtsBotView() {
     try {
       const res = await ttsIpc.adspowerCreate({
         name: rec.id,
-        groupId: '10716270'
+        groupId: '0'
       })
       if (res && res.ok) {
         setAdspowerFeedback(`Tạo AdsPower profile ${rec.id} (iOS 390x844) thành công!`)
@@ -2054,8 +2236,21 @@ export function TtsBotView() {
                       const isSelected = selectedRecordId === r.id
                       const isConsumed = !!consumedRecords[r.id]
                       const isSettingUpThis = isSettingUpId === r.id
-                      const adsProfile = adspowerProfiles.find((p) => p.name === r.id || p.user_id === r.adspowerId)
-                      const hasAds = !!(r.adspowerId || adsProfile)
+                      const setupMeta = profileSetups[r.id] || {}
+                      const adsProfile = adspowerProfiles.find(
+                        (p) =>
+                          p.name === r.id ||
+                          p.user_id === r.adspowerId ||
+                          (setupMeta.adspowerId && p.user_id === setupMeta.adspowerId)
+                      )
+                      const effectivePort = r.assignedPort || setupMeta.assignedPort
+                      const effectiveAdsId = r.adspowerId || setupMeta.adspowerId || adsProfile?.user_id
+                      const hasAds = !!effectiveAdsId
+                      const effectiveProxyMeta = r.proxyMeta || setupMeta.proxyMeta
+                      const effectiveStatus = setupMeta.liveStatus || r.status
+                      const effectiveRound = setupMeta.submissionRound || r.submissionRound || 0
+                      const effectiveDate = setupMeta.regDate || r.regDate
+                      const effectiveError = setupMeta.lastError || r.lastError
                       const mailData = mailStatuses[r.id]
                       const mailStatus = mailData?.status
                       const otpCode = mailData?.otpCode
@@ -2117,10 +2312,10 @@ export function TtsBotView() {
                               )}
                             </div>
                             <div className="flex items-center space-x-2 mt-1.5 text-[11px] font-mono">
-                              {r.assignedPort ? (
+                              {effectivePort ? (
                                 <span className="text-emerald-400 flex items-center space-x-1" title="HideProxy SOCKS5 Port">
                                   <Globe className="w-3 h-3 text-emerald-400 shrink-0" />
-                                  <span>:{r.assignedPort} ({r.proxyMeta?.state || r.state})</span>
+                                  <span>:{effectivePort} ({effectiveProxyMeta?.state || r.state})</span>
                                 </span>
                               ) : (
                                 <span className="text-slate-600 flex items-center space-x-1">
@@ -2133,20 +2328,20 @@ export function TtsBotView() {
                                 <button
                                   onClick={(e) => {
                                     e.stopPropagation()
-                                    handleLaunchAdsPower(r)
+                                    handleLaunchAdsPower({ ...r, adspowerId: effectiveAdsId, assignedPort: effectivePort })
                                   }}
                                   disabled={launchingProfileId === r.id}
                                   className="flex items-center space-x-1 px-1.5 py-0.5 rounded bg-cyan-950 hover:bg-cyan-900 text-cyan-300 border border-cyan-700/60 text-[10px] font-semibold transition-all"
                                   title="Mở trình duyệt AdsPower iOS"
                                 >
                                   <Play className="w-2.5 h-2.5 fill-cyan-400 text-cyan-400" />
-                                  <span>{launchingProfileId === r.id ? 'Đang mở...' : 'Mở Ads (iOS)'}</span>
+                                  <span>{launchingProfileId === r.id ? 'Đang mở...' : `Ads: ${effectiveAdsId}`}</span>
                                 </button>
                               ) : (
                                 <button
                                   onClick={(e) => {
                                     e.stopPropagation()
-                                    handleSmartSetup(r)
+                                    handleSmartSetup({ ...r, assignedPort: effectivePort })
                                   }}
                                   disabled={isSettingUpThis}
                                   className="flex items-center space-x-1 px-1.5 py-0.5 rounded bg-amber-950 hover:bg-amber-900 text-amber-300 border border-amber-700/60 text-[10px] font-semibold transition-all"
@@ -2268,25 +2463,25 @@ export function TtsBotView() {
                                   Dừng canh thư
                                 </button>
                               </div>
-                            ) : r.status && (r.status.toLowerCase().includes('approved') || r.status.toLowerCase().includes('active')) ? (
+                            ) : effectiveStatus && (effectiveStatus.toLowerCase().includes('approved') || effectiveStatus.toLowerCase().includes('active')) ? (
                               <div>
                                 <div className="inline-flex items-center space-x-1 px-2 py-0.5 rounded-full text-[10px] font-semibold bg-emerald-950 text-emerald-300 border border-emerald-500/50">
                                   <CheckCircle2 className="w-3 h-3 text-emerald-400" />
-                                  <span>Approved {r.submissionRound ? `(R${r.submissionRound})` : ''}</span>
+                                  <span>Approved {effectiveRound ? `(R${effectiveRound})` : ''}</span>
                                 </div>
-                                {r.regDate && <div className="text-[10px] text-emerald-400/80 mt-0.5 font-mono">Ngày: {r.regDate}</div>}
+                                {effectiveDate && <div className="text-[10px] text-emerald-400/80 mt-0.5 font-mono">Ngày: {effectiveDate}</div>}
                               </div>
-                            ) : r.status && (r.status.toLowerCase().includes('information') || r.status.toLowerCase().includes('need info') || (r.submissionRound && r.submissionRound >= 5)) ? (
+                            ) : effectiveStatus && (effectiveStatus.toLowerCase().includes('information') || effectiveStatus.toLowerCase().includes('need info') || (effectiveRound && effectiveRound >= 5)) ? (
                               <div>
                                 <div className="inline-flex items-center space-x-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-rose-950 text-rose-300 border border-rose-500/70">
                                   <AlertTriangle className="w-3 h-3 text-rose-400 shrink-0" />
-                                  <span>Lỗi ID ({r.submissionRound || 1}/5)</span>
+                                  <span>Lỗi ID ({effectiveRound || 1}/5)</span>
                                 </div>
-                                <div className="text-[10px] text-rose-400/90 mt-0.5 max-w-[140px] truncate" title={r.lastError}>
-                                  {r.lastError ? r.lastError : 'Modifications detected'}
+                                <div className="text-[10px] text-rose-400/90 mt-0.5 max-w-[140px] truncate" title={effectiveError}>
+                                  {effectiveError ? effectiveError : 'Modifications detected'}
                                 </div>
                               </div>
-                            ) : r.status && r.status.toLowerCase().includes('under review') ? (
+                            ) : effectiveStatus && effectiveStatus.toLowerCase().includes('under review') ? (
                               <div className="flex flex-col space-y-1">
                                 <div className="inline-flex items-center space-x-1 px-2 py-0.5 rounded-full text-[10px] font-semibold bg-sky-950 text-sky-300 border border-sky-500/50">
                                   <Clock className="w-3 h-3 text-sky-400" />
@@ -2306,7 +2501,7 @@ export function TtsBotView() {
                               </div>
                             ) : (
                               <span className="px-2 py-0.5 rounded text-[10px] bg-slate-900 text-slate-500 border border-slate-800">
-                                {r.status || 'Chưa nộp đơn'}
+                                {effectiveStatus || 'Chưa nộp đơn'}
                               </span>
                             )}
                           </td>
@@ -2867,7 +3062,7 @@ export function TtsBotView() {
                 <div>
                   <h2 className="text-sm font-semibold text-white">AdsPower Mobile CDP Profiles</h2>
                   <p className="text-xs text-slate-400">
-                    Nhóm: <span className="text-emerald-400 font-medium">Team Remote (Thái) [10716270]</span> | Viewport:{' '}
+                    Nhóm: <span className="text-cyan-400 font-medium">Mặc định Ungrouped</span> | Viewport:{' '}
                     <span className="text-slate-200 font-medium">iOS 390x844</span>
                   </p>
                 </div>
@@ -3316,9 +3511,28 @@ export function TtsBotView() {
                 <div className="space-y-2">
                   <div className="flex justify-between items-center">
                     <span className="text-slate-500">Cổng Port Gán Kết:</span>
-                    <span className="text-cyan-300 font-mono font-bold">
-                      {currentRecord.assignedPort ? `Port ${currentRecord.assignedPort}` : 'Chưa gán'}
-                    </span>
+                    <div className="flex items-center space-x-1.5">
+                      <input
+                        type="number"
+                        value={currentRecord.assignedPort || ''}
+                        placeholder="Chưa gán"
+                        onChange={(e) => {
+                          const val = parseInt(e.target.value, 10)
+                          if (!isNaN(val)) {
+                            handleDirectPortUpdate(currentRecord.id, val)
+                          }
+                        }}
+                        className="w-20 px-2 py-0.5 text-center bg-slate-900 border border-slate-700 focus:border-amber-400 focus:ring-1 focus:ring-amber-400 rounded text-amber-300 font-mono font-bold text-xs"
+                        title="Gõ số port trực tiếp để gán cho hồ sơ này"
+                      />
+                      <button
+                        onClick={() => openSingleSetupModal(currentRecord)}
+                        className="p-1 hover:bg-slate-800 text-slate-400 hover:text-cyan-300 rounded"
+                        title="Mở bảng thiết lập port chi tiết"
+                      >
+                        <Zap className="w-3.5 h-3.5 text-amber-400" />
+                      </button>
+                    </div>
                   </div>
                   <div className="flex justify-between items-center">
                     <span className="text-slate-500">IP Công khai:</span>
@@ -3355,7 +3569,7 @@ export function TtsBotView() {
                     <Smartphone className="w-3.5 h-3.5 text-emerald-400" />
                     <span>6. Môi trường AdsPower Profile (Mobile iOS)</span>
                   </h4>
-                  <span className="text-[10px] text-emerald-400 font-medium">Nhóm 10716270</span>
+                  <span className="text-[10px] text-cyan-400 font-medium">Ungrouped</span>
                 </div>
                 <div className="space-y-2">
                   <div className="flex justify-between items-center">
@@ -3364,7 +3578,7 @@ export function TtsBotView() {
                   </div>
                   <div className="flex justify-between items-center">
                     <span className="text-slate-500">Nhóm Profile:</span>
-                    <span className="text-slate-200">Team Remote (Thái)</span>
+                    <span className="text-slate-200">Ungrouped (Không phân nhóm)</span>
                   </div>
                   <div className="flex justify-between items-center">
                     <span className="text-slate-500">Viewport / Màn hình:</span>
@@ -4519,7 +4733,7 @@ export function TtsBotView() {
                               <span>1. Môi Trường AdsPower (Mobile iOS)</span>
                             </div>
                             <span className="text-[10px] px-2 py-0.5 rounded bg-cyan-950 text-cyan-300 border border-cyan-800 font-mono">
-                              Group 10716270
+                              Mặc định Ungrouped
                             </span>
                           </div>
 
@@ -4585,28 +4799,56 @@ export function TtsBotView() {
                           <div className="space-y-2.5 text-xs">
                             <div className="flex justify-between items-center">
                               <span className="text-slate-400">Chọn Cổng (Port):</span>
-                              <select
-                                value={activePort}
-                                onChange={(e) =>
-                                  setSetupModalConfig((prev) => ({
-                                    ...prev,
-                                    selectedPort: Number(e.target.value)
-                                  }))
-                                }
-                                disabled={setupModalConfig.isExecuting}
-                                className="px-2 py-1 bg-slate-900 border border-slate-700 rounded text-cyan-300 font-mono font-bold text-xs"
-                              >
-                                {hpPorts
-                                  .filter((p) => p.online)
-                                  .map((p) => (
-                                    <option key={p.port} value={p.port}>
-                                      Port {p.port} - {p.public_ip || 'IP'} ({p.state || 'US'})
-                                    </option>
-                                  ))}
-                                {!hpPorts.some((p) => p.port === activePort && p.online) && (
-                                  <option value={activePort}>Port {activePort} (Hiện tại)</option>
-                                )}
-                              </select>
+                              <div className="flex items-center space-x-1.5">
+                                <select
+                                  value={activePort}
+                                  onChange={(e) =>
+                                    setSetupModalConfig((prev) => ({
+                                      ...prev,
+                                      selectedPort: Number(e.target.value)
+                                    }))
+                                  }
+                                  disabled={setupModalConfig.isExecuting}
+                                  className="px-2 py-1 bg-slate-900 border border-slate-700 rounded text-cyan-300 font-mono font-bold text-xs"
+                                >
+                                  {hpPorts
+                                    .filter((p) => p.online)
+                                    .map((p) => {
+                                      const occupiedBy = records.find(
+                                        (r) =>
+                                          r.id !== curRec.id &&
+                                          (r.assignedPort === p.port ||
+                                            profileSetups[r.id]?.assignedPort === p.port)
+                                      )
+                                      return (
+                                        <option key={p.port} value={p.port}>
+                                          Port {p.port} - {p.public_ip || 'IP'} ({p.state || 'US'})
+                                          {occupiedBy ? ` [⚠️ Đang gán: ${occupiedBy.id}]` : ''}
+                                        </option>
+                                      )
+                                    })}
+                                  {!hpPorts.some((p) => p.port === activePort && p.online) && (
+                                    <option value={activePort}>Port {activePort}</option>
+                                  )}
+                                </select>
+                                <input
+                                  type="number"
+                                  value={activePort || ''}
+                                  onChange={(e) => {
+                                    const val = parseInt(e.target.value, 10)
+                                    if (!isNaN(val)) {
+                                      setSetupModalConfig((prev) => ({
+                                        ...prev,
+                                        selectedPort: val
+                                      }))
+                                    }
+                                  }}
+                                  placeholder="Port"
+                                  disabled={setupModalConfig.isExecuting}
+                                  className="w-20 px-2 py-1 bg-slate-900 border border-slate-700 focus:border-amber-400 rounded text-amber-300 font-mono font-bold text-xs text-center"
+                                  title="Gõ số port thủ công"
+                                />
+                              </div>
                             </div>
 
                             <div className="flex justify-between items-center">
@@ -4755,6 +4997,53 @@ export function TtsBotView() {
                     </div>
                   )}
 
+                  {/* Bulk Port Management Toolbar */}
+                  <div className="flex flex-wrap items-center justify-between gap-2 p-3 bg-slate-900/90 border border-slate-800 rounded-xl text-xs">
+                    <div className="flex items-center space-x-2 text-slate-300">
+                      <Globe className="w-4 h-4 text-cyan-400 shrink-0" />
+                      <span>Bạn có thể nhập sửa trực tiếp cổng Port cho từng hồ sơ bên dưới:</span>
+                    </div>
+                    <div className="flex items-center space-x-2">
+                      <button
+                        onClick={() => {
+                          const newMap: Record<string, number> = {}
+                          setupModalConfig.records.forEach((r, idx) => {
+                            newMap[r.id] = 50001 + idx
+                          })
+                          setSetupModalConfig((prev) => ({
+                            ...prev,
+                            allocatedPorts: newMap
+                          }))
+                        }}
+                        className="px-2.5 py-1 bg-amber-500/15 hover:bg-amber-500/25 text-amber-300 border border-amber-500/40 rounded-lg font-mono text-xs flex items-center space-x-1 transition-all font-semibold"
+                        title="Tự động gán dải port liên tiếp 50001, 50002, 50003... không bị stuck"
+                      >
+                        <Zap className="w-3.5 h-3.5 text-amber-400" />
+                        <span>⚡ Gán Tuần Tự (50001+)</span>
+                      </button>
+                      <button
+                        onClick={() => {
+                          refreshHideProxyPorts()
+                          const reallocated = allocateUniquePortsForRecords(
+                            setupModalConfig.records,
+                            hpPorts,
+                            records,
+                            profileSetups
+                          )
+                          setSetupModalConfig((prev) => ({
+                            ...prev,
+                            allocatedPorts: reallocated
+                          }))
+                        }}
+                        className="px-2.5 py-1 bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 rounded-lg text-xs flex items-center space-x-1 transition-all"
+                        title="Quét lại HideProxy và tự động phân bổ theo bang"
+                      >
+                        <RefreshCw className="w-3.5 h-3.5 text-cyan-400" />
+                        <span>🔄 Match Lại Bang</span>
+                      </button>
+                    </div>
+                  </div>
+
                   {/* Bulk Preview Table */}
                   <div className="border border-slate-800 rounded-xl overflow-hidden bg-slate-950">
                     <div className="max-h-[380px] overflow-y-auto">
@@ -4763,7 +5052,7 @@ export function TtsBotView() {
                           <tr>
                             <th className="py-2.5 px-3">Hồ Sơ</th>
                             <th className="py-2.5 px-2 text-center">Bang</th>
-                            <th className="py-2.5 px-2 text-center">Port</th>
+                            <th className="py-2.5 px-2 text-center text-amber-300">Port (Sửa thủ công)</th>
                             <th className="py-2.5 px-3">Exit Public IP</th>
                             <th className="py-2.5 px-3">Vị Trí (City, State)</th>
                             <th className="py-2.5 px-3">ISP / Nhà Mạng</th>
@@ -4775,6 +5064,7 @@ export function TtsBotView() {
                           {setupModalConfig.records.map((rec) => {
                             const recStateNorm = normalizeState(rec.state || '')
                             const matchedPort =
+                              setupModalConfig.allocatedPorts?.[rec.id] ||
                               rec.assignedPort ||
                               hpPorts.find(
                                 (p) =>
@@ -4803,18 +5093,34 @@ export function TtsBotView() {
                                 <td className="py-2 px-2 text-center text-cyan-300 font-bold">
                                   {rec.state}
                                 </td>
-                                <td className="py-2 px-2 text-center text-amber-300">
-                                  {matchedPort}
+                                <td className="py-1 px-1.5 text-center" onClick={(e) => e.stopPropagation()}>
+                                  <input
+                                    type="number"
+                                    value={setupModalConfig.allocatedPorts?.[rec.id] ?? matchedPort}
+                                    onChange={(e) => {
+                                      const val = parseInt(e.target.value, 10)
+                                      setSetupModalConfig((prev) => ({
+                                        ...prev,
+                                        allocatedPorts: {
+                                          ...(prev.allocatedPorts || {}),
+                                          [rec.id]: isNaN(val) ? 0 : val
+                                        }
+                                      }))
+                                    }}
+                                    disabled={setupModalConfig.isExecuting}
+                                    className="w-20 px-1.5 py-1 text-center bg-slate-900 border border-slate-700 focus:border-amber-400 focus:ring-1 focus:ring-amber-400 rounded text-amber-300 font-mono font-bold text-xs"
+                                    title="Click để sửa số port thủ công"
+                                  />
                                 </td>
                                 <td className="py-2 px-3 text-slate-200">
-                                  {portInfo?.public_ip || '127.0.0.1'}
+                                  {portInfo?.public_ip || 'Auto / Chờ forward'}
                                 </td>
                                 <td className="py-2 px-3 font-sans text-slate-300 truncate max-w-[160px]">
                                   {portInfo?.city ? `${portInfo.city}, ` : ''}
-                                  {portInfo?.state || 'US'}
+                                  {portInfo?.state || rec.state || 'US'}
                                 </td>
                                 <td className="py-2 px-3 font-sans text-slate-400 truncate max-w-[160px]" title={portInfo?.isp || ''}>
-                                  {portInfo?.isp || 'Charter / Comcast'}
+                                  {portInfo?.isp || (portInfo?.online ? 'HideProxy Network' : 'Tự động cấp IP theo bang')}
                                 </td>
                                 <td className="py-2 px-2 text-center">
                                   {isMatch ? (

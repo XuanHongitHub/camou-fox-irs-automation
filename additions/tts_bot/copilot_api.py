@@ -378,7 +378,7 @@ def setup_profile_endpoint(payload: Dict[str, Any] = Body(...)):
         }
         create_payload = {
             "name": f"{pid} - {prof['name'] or 'TTS'}",
-            "group_id": "10716270",
+            "group_id": "0",  # Ungrouped
             "user_proxy_config": proxy_config,
             "fingerprint_config": {
                 "os": "iOS",
