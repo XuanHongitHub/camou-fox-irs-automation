@@ -101,6 +101,15 @@ const api = {
     status: () => ipcRenderer.invoke('tts:status'),
     fetchSheet: (params?: { sheetId?: string; tabName?: string }) =>
       ipcRenderer.invoke('tts:sheet:fetch', params),
+    importSheetFile: () => ipcRenderer.invoke('tts:sheet:import-file'),
+    importSheetData: (data: string) => ipcRenderer.invoke('tts:sheet:import-data', data),
+    phone: {
+      fetchCode: (params: { phone?: string; phoneCodeUrl?: string }) =>
+        ipcRenderer.invoke('tts:phone:fetch-code', params)
+    },
+    pipeline: {
+      launchProfile: (record: any) => ipcRenderer.invoke('tts:pipeline:launch-profile', record)
+    },
     hideproxy: {
       ports: () => ipcRenderer.invoke('tts:hideproxy:ports'),
       portInfo: () => ipcRenderer.invoke('tts:hideproxy:port-info'),

@@ -3,6 +3,7 @@ import { join, basename, extname } from 'path'
 import { existsSync, mkdirSync, readFileSync, writeFileSync, readdirSync, statSync } from 'fs'
 import { spawn } from 'child_process'
 import tls from 'tls'
+import * as XLSX from 'xlsx-js-style'
 
 const DEFAULT_ADS_API_KEY = 'c9ea96522fba29ee72f2fee511b77868008da729dcdcc201'
 const DEFAULT_ADS_BASE = 'http://127.0.0.1:50325'
@@ -83,211 +84,253 @@ export interface MailCheckResult {
   checkedAt: number
 }
 
-export async function checkMailInbox(email: string, pass?: string, twoFactor?: string): Promise<MailCheckResult> {
-  const DEFAULT_MS_CLIENT_ID = '9e5f94bc-e8a4-4e73-b8be-63364c29d753'
-
-  let refreshTok = ''
-  let customCid = ''
-  if (twoFactor && twoFactor.startsWith('M.')) {
-    refreshTok = twoFactor
-  } else if (pass && pass.startsWith('M.')) {
-    refreshTok = pass
-  }
-
-  if (twoFactor && twoFactor.includes('|')) {
-    const parts = twoFactor.split('|')
-    refreshTok = parts.find((p) => p.startsWith('M.')) || parts[0]
-    customCid = parts.find((p) => p.includes('-') && p.length === 36) || ''
-  }
-
-  if (!refreshTok) {
-    return {
-      ok: false,
-      email,
-      count: 0,
-      status: 'error',
-      label: 'Chưa có Token OAuth (2FA)',
-      checkedAt: Date.now()
-    }
-  }
-
-  try {
-    const res = await fetch('https://login.live.com/oauth20_token.srf', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-      body: new URLSearchParams({
-        client_id: customCid || DEFAULT_MS_CLIENT_ID,
-        grant_type: 'refresh_token',
-        refresh_token: refreshTok
-      })
-    })
-
-    const tokenData = await res.json()
-    if (!tokenData.access_token) {
-      return {
+function executeImapSession(
+  host: string,
+  email: string,
+  authCommand: string
+): Promise<MailCheckResult> {
+  return new Promise<MailCheckResult>((resolve) => {
+    const socket = tls.connect({ host, port: 993 })
+    socket.setEncoding('utf8')
+    let buffer = ''
+    let state = 'CONNECTED'
+    let msgCount = 0
+    const timeout = setTimeout(() => {
+      socket.destroy()
+      resolve({
         ok: false,
         email,
         count: 0,
         status: 'error',
-        label: 'Token hết hạn / Lỗi Auth',
-        error: tokenData.error_description || tokenData.error,
+        label: 'Timeout kết nối mail (8s)',
         checkedAt: Date.now()
-      }
-    }
+      })
+    }, 8000)
 
-    const accTok = tokenData.access_token
-    const authString = Buffer.from(`user=${email}\x01auth=Bearer ${accTok}\x01\x01`).toString('base64')
-
-    return new Promise<MailCheckResult>((resolve) => {
-      const socket = tls.connect({ host: 'outlook.office365.com', port: 993 })
-      socket.setEncoding('utf8')
-      let buffer = ''
-      let state = 'CONNECTED'
-      let msgCount = 0
-      const timeout = setTimeout(() => {
-        socket.destroy()
+    socket.on('data', (chunk) => {
+      buffer += chunk
+      if (state === 'CONNECTED' && buffer.includes('* OK')) {
+        buffer = ''
+        state = 'AUTH'
+        socket.write(authCommand)
+      } else if (state === 'AUTH' && (buffer.includes('A01 NO') || buffer.includes('A01 BAD'))) {
+        clearTimeout(timeout)
+        socket.end()
         resolve({
           ok: false,
           email,
           count: 0,
           status: 'error',
-          label: 'Timeout kết nối mail (8s)',
+          label: 'Lỗi xác thực (Auth failed)',
+          error: buffer.trim(),
           checkedAt: Date.now()
         })
-      }, 8000)
-
-      socket.on('data', (chunk) => {
-        buffer += chunk
-        if (state === 'CONNECTED' && buffer.includes('* OK')) {
-          buffer = ''
-          state = 'AUTH'
-          socket.write(`A01 AUTHENTICATE XOAUTH2 ${authString}\r\n`)
-        } else if (state === 'AUTH' && buffer.includes('A01 OK')) {
-          buffer = ''
-          state = 'SELECT'
-          socket.write('A02 SELECT INBOX\r\n')
-        } else if (state === 'AUTH' && (buffer.includes('A01 NO') || buffer.includes('A01 BAD'))) {
+      } else if (state === 'AUTH' && buffer.includes('A01 OK')) {
+        buffer = ''
+        state = 'SELECT'
+        socket.write('A02 SELECT INBOX\r\n')
+      } else if (state === 'SELECT' && buffer.includes('A02 OK')) {
+        const matchExists = buffer.match(/\*\s+(\d+)\s+EXISTS/i)
+        msgCount = matchExists ? parseInt(matchExists[1], 10) : 0
+        buffer = ''
+        if (msgCount === 0) {
           clearTimeout(timeout)
+          socket.write('A03 LOGOUT\r\n')
           socket.end()
-          resolve({
-            ok: false,
-            email,
-            count: 0,
-            status: 'error',
-            label: 'Lỗi xác thực XOAUTH2',
-            checkedAt: Date.now()
-          })
-        } else if (state === 'SELECT' && buffer.includes('A02 OK')) {
-          const matchExists = buffer.match(/\*\s+(\d+)\s+EXISTS/i)
-          msgCount = matchExists ? parseInt(matchExists[1], 10) : 0
-          buffer = ''
-          if (msgCount === 0) {
-            clearTimeout(timeout)
-            socket.write('A03 LOGOUT\r\n')
-            socket.end()
-            resolve({
-              ok: true,
-              email,
-              count: 0,
-              status: 'not_registered',
-              label: '⚪ Chưa có thư (Chưa reg)',
-              checkedAt: Date.now()
-            })
-            return
-          }
-          state = 'SEARCH'
-          socket.write('A03 SEARCH ALL\r\n')
-        } else if (state === 'SEARCH' && buffer.includes('A03 OK')) {
-          const uids = (buffer.match(/\*\s+SEARCH\s+([\d\s]+)/i)?.[1] || '').trim().split(/\s+/).filter(Boolean)
-          buffer = ''
-          if (uids.length === 0) {
-            clearTimeout(timeout)
-            socket.write('A04 LOGOUT\r\n')
-            socket.end()
-            resolve({
-              ok: true,
-              email,
-              count: 0,
-              status: 'not_registered',
-              label: '⚪ Chưa có thư (Chưa reg)',
-              checkedAt: Date.now()
-            })
-            return
-          }
-          const lastUid = uids[uids.length - 1]
-          state = 'FETCH'
-          socket.write(`A04 FETCH ${lastUid} (BODY.PEEK[HEADER.FIELDS (SUBJECT FROM DATE)] BODY.PEEK[TEXT]<0.1000>)\r\n`)
-        } else if (state === 'FETCH' && buffer.includes('A04 OK')) {
-          clearTimeout(timeout)
-          const raw = buffer
-          socket.write('A05 LOGOUT\r\n')
-          socket.end()
-
-          const subjMatch = raw.match(/Subject:\s*(.*?)\r?\n/i)
-          const subject = subjMatch ? decodeMimeWords(subjMatch[1].trim()) : ''
-          const otpMatch = raw.match(/\b\d{6}\b/)
-          const otp = otpMatch ? otpMatch[0] : null
-
-          let status: MailCheckResult['status'] = 'has_mail'
-          let label = `📩 ${subject.slice(0, 32)}`
-          const lower = (subject + ' ' + raw).toLowerCase()
-
-          if (lower.includes('tiktok')) {
-            if (lower.includes('verification') || lower.includes('code') || otp) {
-              status = 'has_otp'
-              label = `🔑 OTP: ${otp || 'Có mã'}`
-            } else if (lower.includes('close to opening your shop') || lower.includes('complete your registration')) {
-              status = 'incomplete_onboarding'
-              label = '🟡 Đang mở shop dở (Chờ submit)'
-            } else if (lower.includes('under review') || lower.includes('submitted')) {
-              status = 'under_review'
-              label = '⏱️ TikTok Đang Review'
-            } else if (lower.includes('update') || lower.includes('action required') || lower.includes('identity')) {
-              status = 'rejected_need_resubmit'
-              label = '⚠️ Yêu cầu sửa ID'
-            } else if (lower.includes('welcome') || lower.includes('approved') || lower.includes('congratulations')) {
-              status = 'approved'
-              label = '🟢 TikTok Approved!'
-            }
-          }
-
           resolve({
             ok: true,
             email,
-            count: msgCount,
-            latestSubject: subject,
-            otp,
-            status,
-            label,
+            count: 0,
+            status: 'not_registered',
+            label: '⚪ Chưa có thư (Chưa reg)',
             checkedAt: Date.now()
           })
+          return
         }
-      })
-
-      socket.on('error', (err) => {
+        state = 'SEARCH'
+        socket.write('A03 SEARCH ALL\r\n')
+      } else if (state === 'SEARCH' && buffer.includes('A03 OK')) {
+        const uids = (buffer.match(/\*\s+SEARCH\s+([\d\s]+)/i)?.[1] || '').trim().split(/\s+/).filter(Boolean)
+        buffer = ''
+        if (uids.length === 0) {
+          clearTimeout(timeout)
+          socket.write('A04 LOGOUT\r\n')
+          socket.end()
+          resolve({
+            ok: true,
+            email,
+            count: 0,
+            status: 'not_registered',
+            label: '⚪ Chưa có thư (Chưa reg)',
+            checkedAt: Date.now()
+          })
+          return
+        }
+        const lastUid = uids[uids.length - 1]
+        state = 'FETCH'
+        socket.write(`A04 FETCH ${lastUid} (BODY.PEEK[HEADER.FIELDS (SUBJECT FROM DATE)] BODY.PEEK[TEXT]<0.2000>)\r\n`)
+      } else if (state === 'FETCH' && buffer.includes('A04 OK')) {
         clearTimeout(timeout)
+        const raw = buffer
+        socket.write('A05 LOGOUT\r\n')
+        socket.end()
+
+        const subjMatch = raw.match(/Subject:\s*(.*?)\r?\n/i)
+        const subject = subjMatch ? decodeMimeWords(subjMatch[1].trim()) : ''
+
+        // Search for 6-digit OTP code, prioritizing verification code keywords
+        let otp: string | null = null
+        const explicitOtp = raw.match(/(?:verification\s*code|mã\s*xác\s*nhận|code|otp)[^\d]{0,25}(\d{6})/i)
+        if (explicitOtp) {
+          otp = explicitOtp[1]
+        } else {
+          const generalOtp = raw.match(/\b\d{6}\b/)
+          if (generalOtp) otp = generalOtp[0]
+        }
+
+        let status: MailCheckResult['status'] = 'has_mail'
+        let label = `📩 ${subject.slice(0, 32)}`
+        const lower = (subject + ' ' + raw).toLowerCase()
+
+        if (lower.includes('tiktok')) {
+          if (otp || lower.includes('verification') || lower.includes('code')) {
+            status = 'has_otp'
+            label = `🔑 OTP: ${otp || 'Có mã'}`
+          } else if (lower.includes('close to opening your shop') || lower.includes('complete your registration')) {
+            status = 'incomplete_onboarding'
+            label = '🟡 Đang mở shop dở (Chờ submit)'
+          } else if (lower.includes('under review') || lower.includes('submitted')) {
+            status = 'under_review'
+            label = '⏱️ TikTok Đang Review'
+          } else if (lower.includes('update') || lower.includes('action required') || lower.includes('identity')) {
+            status = 'rejected_need_resubmit'
+            label = '⚠️ Yêu cầu sửa ID'
+          } else if (lower.includes('welcome') || lower.includes('approved') || lower.includes('congratulations')) {
+            status = 'approved'
+            label = '🟢 TikTok Approved!'
+          }
+        }
+
         resolve({
-          ok: false,
+          ok: true,
           email,
-          count: 0,
-          status: 'error',
-          label: `Lỗi kết nối: ${err.message}`,
+          count: msgCount,
+          latestSubject: subject,
+          otp,
+          status,
+          label,
           checkedAt: Date.now()
         })
+      }
+    })
+
+    socket.on('error', (err) => {
+      clearTimeout(timeout)
+      resolve({
+        ok: false,
+        email,
+        count: 0,
+        status: 'error',
+        label: `Lỗi kết nối: ${err.message}`,
+        checkedAt: Date.now()
       })
     })
-  } catch (err: any) {
-    return {
-      ok: false,
-      email,
-      count: 0,
-      status: 'error',
-      label: `Lỗi: ${err.message || err}`,
-      checkedAt: Date.now()
-    }
-  }
+  })
 }
 
+export async function checkMailInbox(email: string, pass?: string, twoFactor?: string): Promise<MailCheckResult> {
+  const DEFAULT_MS_CLIENT_ID = '9e5f94bc-e8a4-4e73-b8be-63364c29d753'
+
+  // Extract all parts across parameters
+  const allParts = [
+    ...(email || '').split(/[:|]/),
+    ...(pass || '').split(/[:|]/),
+    ...(twoFactor || '').split(/[:|]/)
+  ].map((p) => p.trim())
+
+  let refreshTok = allParts.find((p) => p.startsWith('M.') || p.startsWith('M_')) || ''
+  let customCid = allParts.find((p) => /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(p)) || ''
+
+  const cleanEmail = email.includes('|')
+    ? email.split('|')[0].trim()
+    : email.includes(':')
+    ? email.split(':')[0].trim()
+    : email.trim()
+
+  let plainPass = pass?.trim() || ''
+  if (!plainPass && email.includes('|')) {
+    plainPass = email.split('|')[1]?.trim() || ''
+  }
+
+  // Determine IMAP host
+  let imapHost = 'outlook.office365.com'
+  if (cleanEmail.toLowerCase().endsWith('@gmail.com')) {
+    imapHost = 'imap.gmail.com'
+  } else if (cleanEmail.toLowerCase().includes('yahoo')) {
+    imapHost = 'imap.mail.yahoo.com'
+  }
+
+  // Path 1: OAuth2 flow
+  if (refreshTok) {
+    try {
+      const res = await fetch('https://login.live.com/oauth20_token.srf', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: new URLSearchParams({
+          client_id: customCid || DEFAULT_MS_CLIENT_ID,
+          grant_type: 'refresh_token',
+          refresh_token: refreshTok
+        })
+      })
+
+      const tokenData = await res.json()
+      if (tokenData.access_token) {
+        const accTok = tokenData.access_token
+        const authString = Buffer.from(`user=${cleanEmail}\x01auth=Bearer ${accTok}\x01\x01`).toString('base64')
+        return await executeImapSession(imapHost, cleanEmail, `A01 AUTHENTICATE XOAUTH2 ${authString}\r\n`)
+      } else {
+        if (plainPass) {
+          return await executeImapSession(imapHost, cleanEmail, `A01 LOGIN "${cleanEmail}" "${plainPass}"\r\n`)
+        }
+        return {
+          ok: false,
+          email: cleanEmail,
+          count: 0,
+          status: 'error',
+          label: 'Token OAuth hết hạn / Lỗi Auth',
+          error: tokenData.error_description || tokenData.error,
+          checkedAt: Date.now()
+        }
+      }
+    } catch (err: any) {
+      if (plainPass) {
+        return await executeImapSession(imapHost, cleanEmail, `A01 LOGIN "${cleanEmail}" "${plainPass}"\r\n`)
+      }
+      return {
+        ok: false,
+        email: cleanEmail,
+        count: 0,
+        status: 'error',
+        label: `Lỗi kết nối OAuth: ${err?.message || err}`,
+        checkedAt: Date.now()
+      }
+    }
+  }
+
+  // Path 2: Plain Password IMAP Login flow
+  if (plainPass) {
+    return await executeImapSession(imapHost, cleanEmail, `A01 LOGIN "${cleanEmail}" "${plainPass}"\r\n`)
+  }
+
+  return {
+    ok: false,
+    email: cleanEmail,
+    count: 0,
+    status: 'error',
+    label: 'Thiếu Password hoặc Token OAuth (2FA)',
+    checkedAt: Date.now()
+  }
+}
 
 export function registerTtsBotHandlers(
   ipcMain: IpcMain,
@@ -557,25 +600,338 @@ function generateValidDl(stateCode: string, lastName: string = ''): string {
   }
 }
 
-  // 2. Fetch Google Sheet Data
+  // Google Sheet OAuth Fallback for Private Sheets
+  async function fetchGoogleSheetOAuth(sheetId: string, tabName: string): Promise<string[][] | null> {
+    const oauthCandidates = [
+      join(foxAutoRoot, 'private', 'google-drive'),
+      join(foxAutoRoot, 'app', 'dist', 'IRS_Bot_Full_Package', 'data', 'bug-auto', 'google-drive'),
+      join(foxAutoRoot, 'data', 'bug-auto', 'google-drive')
+    ]
+    let clientFile = ''
+    let userFile = ''
+    for (const p of oauthCandidates) {
+      const c = join(p, 'oauth-client.json')
+      const u = join(p, 'oauth-user.json')
+      if (existsSync(c) && existsSync(u)) {
+        clientFile = c
+        userFile = u
+        break
+      }
+    }
+    if (!clientFile || !userFile) return null
+
+    try {
+      const clientData = JSON.parse(readFileSync(clientFile, 'utf-8'))
+      const userData = JSON.parse(readFileSync(userFile, 'utf-8'))
+      const clientId = clientData.installed?.client_id || clientData.web?.client_id
+      const clientSecret = clientData.installed?.client_secret || clientData.web?.client_secret
+      const refreshToken = userData.refresh_token
+
+      if (!clientId || !clientSecret || !refreshToken) return null
+
+      const tokenRes = await fetch('https://oauth2.googleapis.com/token', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: new URLSearchParams({
+          client_id: clientId,
+          client_secret: clientSecret,
+          refresh_token: refreshToken,
+          grant_type: 'refresh_token'
+        })
+      })
+      const tokenData = await tokenRes.json()
+      if (!tokenData.access_token) return null
+
+      const apiRes = await fetch(
+        `https://sheets.googleapis.com/v4/spreadsheets/${sheetId}/values/${encodeURIComponent(tabName)}`,
+        { headers: { Authorization: `Bearer ${tokenData.access_token}` } }
+      )
+      const apiData = await apiRes.json()
+      if (apiData.values && Array.isArray(apiData.values)) {
+        return apiData.values
+      }
+    } catch (e) {
+      console.warn('Google Sheet OAuth fallback failed:', e)
+    }
+    return null
+  }
+
+  // Universal Rows to Records Converter
+  function convertRowsToRecords(rows: string[][], stateData: any): any[] {
+    if (!rows || rows.length < 2) return []
+
+    const headers = rows[0].map((h) => String(h || '').toLowerCase().trim())
+    const findColExact = (...exacts: string[]) => {
+      return headers.findIndex((h) => exacts.some((e) => h === e))
+    }
+    const findCol = (...keywords: string[]) => {
+      const exactIdx = findColExact(...keywords)
+      if (exactIdx >= 0) return exactIdx
+      return headers.findIndex((h) => keywords.some((k) => h.includes(k)))
+    }
+
+    const colName = findColExact('profile name', 'profile', 'mã', 'id') !== -1
+      ? findColExact('profile name', 'profile', 'mã', 'id')
+      : findCol('profile')
+    const colStatus = findColExact('status', 'trạng thái')
+    const colRegDate = findColExact('ngày reg', 'reg date')
+    const colIssueDate = findColExact('ngày cấp', 'issue date')
+    const colSeller = findColExact('seller')
+    const colMail = findColExact('mail', 'email')
+    const colTiktokPass = findColExact('pass titkok shop', 'pass tiktok shop', 'pass titkok', 'pass tiktok') !== -1
+      ? findColExact('pass titkok shop', 'pass tiktok shop', 'pass titkok', 'pass tiktok')
+      : findCol('titkok', 'tiktok', 'pass')
+    const col2FA = findColExact('2fa', 'two_factor')
+    const colProxy = findColExact('proxy', 'ip')
+    const colPhoneCode = findColExact('get code phone', 'phone code', 'code phone') !== -1
+      ? findColExact('get code phone', 'phone code', 'code phone')
+      : findCol('get code', 'phone')
+    const colFullName = findColExact('ein name', 'tên', 'full name', 'fullname') !== -1
+      ? findColExact('ein name', 'tên', 'full name', 'fullname')
+      : findCol('ein name', 'full name')
+    const colSsn = findColExact('ssn')
+    const colAddress = findColExact('address', 'địa chỉ')
+    const colCity = findColExact('citi', 'city', 'thành phố')
+    const colState = findColExact('bang', 'state')
+    const colZip = findColExact('zip', 'postal')
+    const colDob = findColExact('dob', 'ngày sinh', 'birth')
+    const colGender = findColExact('gender', 'giới tính')
+    const colEin = findColExact('ein')
+    const colNameLlc = findColExact('name llc', 'llc name', 'tên llc')
+    const colAddressLlc = findColExact('address llc', 'địa chỉ llc')
+    const colCityLlc = findColExact('citi llc', 'city llc')
+    const colStateLlc = findColExact('bang llc', 'state llc')
+    const colZipLlc = findColExact('zip llc')
+    const colPdf = findColExact('pdf', 'irs pdf', 'cp 575', 'cp575', '147c')
+    const colFolderUrl = findColExact('folder_url', 'folder url', 'drive')
+    const colBankStatement = findColExact('bank_statement', 'bank statement', 'utility', 'bill')
+    const colDl = findColExact('dl', 'bằng lái', 'driver')
+
+    const records: any[] = []
+    for (let i = 1; i < rows.length; i++) {
+      const r = rows[i]
+      const profileId = String((colName >= 0 ? r[colName] : r[0]) || `ROW-${i}`).trim()
+      if (!profileId) continue
+
+      // Parse composite mail if format: email|pass|2fa
+      let rawMail = (colMail >= 0 ? r[colMail] : '') || ''
+      let mailEmail = rawMail
+      let mailPass = ''
+      let mail2FA = (col2FA >= 0 ? r[col2FA] : '') || ''
+
+      if (rawMail.includes('|')) {
+        const parts = rawMail.split('|')
+        mailEmail = parts[0]?.trim() || ''
+        if (parts[1]) mailPass = parts[1].trim()
+        if (parts[2]) mail2FA = parts[2].trim()
+      }
+
+      // Parse TikTok pass
+      let tiktokPass = (colTiktokPass >= 0 ? r[colTiktokPass] : '') || ''
+      if (!tiktokPass && mailPass) {
+        tiktokPass = mailPass
+      }
+
+      // Parse Phone and SMS API code URL
+      let rawPhone = (colPhoneCode >= 0 ? r[colPhoneCode] : '') || ''
+      let phone = ''
+      let phoneCodeUrl = ''
+      if (rawPhone.includes('----')) {
+        const parts = rawPhone.split('----')
+        phone = parts[0]?.trim() || ''
+        phoneCodeUrl = parts[1]?.trim() || ''
+      } else if (rawPhone.startsWith('http')) {
+        phoneCodeUrl = rawPhone.trim()
+      } else {
+        phone = rawPhone.trim()
+      }
+
+      const fullName = (colFullName >= 0 ? r[colFullName] : '') || ''
+      const rawState = (colState >= 0 ? r[colState] : '') || ''
+      const state = normalizeStateCode(rawState)
+      const ssn = (colSsn >= 0 ? r[colSsn] : '') || ''
+      const dob = (colDob >= 0 ? r[colDob] : '') || ''
+      const rawAddress = (colAddress >= 0 ? r[colAddress] : '') || ''
+      const rawEin = (colEin >= 0 ? r[colEin] : '') || ''
+      const rawProxy = (colProxy >= 0 ? r[colProxy] : '') || ''
+      const rawRegDate = (colRegDate >= 0 ? r[colRegDate] : '') || ''
+      const pdfDoc = (colPdf >= 0 ? r[colPdf] : '') || ''
+      const bankStatement = (colBankStatement >= 0 ? r[colBankStatement] : '') || ''
+      const folderUrl = (colFolderUrl >= 0 ? r[colFolderUrl] : '') || ''
+
+      const hasSubstantiveData = !!(
+        fullName.trim() ||
+        mailEmail.trim() ||
+        ssn.trim() ||
+        rawAddress.trim() ||
+        rawEin.trim() ||
+        rawProxy.trim() ||
+        pdfDoc.trim() ||
+        bankStatement.trim() ||
+        phone.trim() ||
+        rawRegDate.trim()
+      )
+
+      if (!hasSubstantiveData) {
+        continue
+      }
+
+      const is195x = dob.includes('/195') || dob.includes('-195') || dob.includes(' 195')
+      const ageWarning = is195x
+        ? 'Cảnh báo 195x: Độ tuổi > 65 rất dễ bị từ chối danh tính. Khuyến nghị BỎ QUA (SKIP).'
+        : ''
+
+      let dl = (colDl >= 0 ? r[colDl] : '') || ''
+      if (!dl || dl.replace(/\D/g, '') === ssn.replace(/\D/g, '')) {
+        dl = generateValidDl(state, fullName.split(' ').pop() || '')
+      }
+
+      let nameLlc = (colNameLlc >= 0 ? r[colNameLlc] : '') || ''
+      if (!nameLlc && fullName) {
+        nameLlc = `${fullName} LLC`
+      }
+
+      const savedSetup =
+        stateData.profileSetups?.[profileId] ||
+        stateData.profileSetups?.[profileId.toUpperCase()] ||
+        stateData.profileSetups?.[profileId.toLowerCase()] ||
+        {}
+      const savedAssignment = stateData.assignments?.[profileId] || {}
+      const hasFront = !!(savedAssignment.frontProcessed || savedAssignment.frontOriginal)
+      const hasBack = !!(savedAssignment.backProcessed || savedAssignment.backOriginal)
+      const hasPhotos = hasFront && hasBack
+
+      const hasInfo = !!(fullName && state && rawAddress)
+      const hasTax = !!(ssn && rawEin)
+      const hasDocs = !!(pdfDoc || bankStatement)
+      const hasAuth = !!(mailEmail && (tiktokPass || mailPass))
+      const hasProxy = !!savedSetup.assignedPort
+      const hasBrowser = !!savedSetup.adspowerId
+
+      let readinessScore = 0
+      if (hasInfo) readinessScore += 20
+      if (hasTax) readinessScore += 20
+      if (hasDocs) readinessScore += 20
+      if (hasAuth) readinessScore += 15
+      if (hasProxy && hasBrowser) readinessScore += 24
+      if (hasPhotos) readinessScore += 1
+
+      let readyStatus: '100_ready' | '99_ready' | 'pending' = 'pending'
+      if (hasPhotos && readinessScore >= 95) {
+        readyStatus = '100_ready'
+        readinessScore = 100
+      } else if (!hasPhotos && hasInfo && hasTax && (hasProxy || hasBrowser)) {
+        readyStatus = '99_ready'
+        readinessScore = 99
+      }
+
+      records.push({
+        rowNumber: i + 1,
+        id: profileId,
+        status: savedSetup.liveStatus || (colStatus >= 0 ? r[colStatus] : '') || 'Chưa chạy',
+        regDate: savedSetup.regDate || (colRegDate >= 0 ? r[colRegDate] : '') || '',
+        submissionRound: savedSetup.submissionRound || 0,
+        lastError: savedSetup.lastError || '',
+        issueDate: (colIssueDate >= 0 ? r[colIssueDate] : '') || '',
+        seller: (colSeller >= 0 ? r[colSeller] : '') || '',
+        email: mailEmail,
+        mailPass,
+        twoFactor: mail2FA,
+        proxy: (colProxy >= 0 ? r[colProxy] : '') || '',
+        tiktokPass,
+        phone,
+        phoneCodeUrl,
+        fullName,
+        dob,
+        is195x,
+        ageWarning,
+        gender: (colGender >= 0 ? r[colGender] : '') || '',
+        address: (colAddress >= 0 ? r[colAddress] : '') || '',
+        city: (colCity >= 0 ? r[colCity] : '') || '',
+        state,
+        zipCode: (colZip >= 0 ? r[colZip] : '') || '',
+        dl,
+        ssn,
+        ein: (colEin >= 0 ? r[colEin] : '') || '',
+        nameLlc,
+        addressLlc: (colAddressLlc >= 0 ? r[colAddressLlc] : '') || '',
+        cityLlc: (colCityLlc >= 0 ? r[colCityLlc] : '') || '',
+        stateLlc: (colStateLlc >= 0 ? r[colStateLlc] : '') || state,
+        zipLlc: (colZipLlc >= 0 ? r[colZipLlc] : '') || '',
+        pdfDoc,
+        folderUrl,
+        bankStatement,
+        businessType: 'Sole Proprietorship',
+        businessName: nameLlc,
+        assignedPort: savedSetup.assignedPort,
+        proxyMeta: savedSetup.proxyMeta,
+        adspowerId: savedSetup.adspowerId,
+        readyStatus: savedSetup.readyStatus || readyStatus,
+        readinessScore: savedSetup.readinessScore || readinessScore,
+        checkList: {
+          hasInfo,
+          hasTax,
+          hasDocs,
+          hasAuth,
+          hasProxy,
+          hasBrowser,
+          hasPhotos
+        }
+      })
+    }
+
+    return records
+  }
+
+  // 2. Fetch Google Sheet Data (With Private Sheet Detection & OAuth Fallback)
   ipcMain.handle('tts:sheet:fetch', async (_event, params?: { sheetId?: string; tabName?: string }) => {
     try {
       const sheetId = params?.sheetId?.trim() || DEFAULT_SHEET_ID
       const tabName = params?.tabName?.trim() || 'Automation'
       const url = `https://docs.google.com/spreadsheets/d/${sheetId}/gviz/tq?tqx=out:csv&sheet=${encodeURIComponent(tabName)}`
 
-      const controller = new AbortController()
-      const timeout = setTimeout(() => controller.abort(), 12000)
-      const res = await fetch(url, { signal: controller.signal })
-      clearTimeout(timeout)
+      let rows: string[][] | null = null
+      let isPrivate = false
 
-      if (!res.ok) {
-        return { ok: false, error: `Google Sheet HTTP ${res.status}: ${res.statusText}` }
+      try {
+        const controller = new AbortController()
+        const timeout = setTimeout(() => controller.abort(), 12000)
+        const res = await fetch(url, { signal: controller.signal })
+        clearTimeout(timeout)
+
+        if (res.ok) {
+          const csvText = await res.text()
+          // Check if response redirected to Google Accounts login HTML
+          const isHtml = csvText.trim().startsWith('<!DOCTYPE') || csvText.includes('google.com/ServiceLogin') || csvText.includes('accounts.google.com')
+          if (!isHtml) {
+            rows = parseCsv(csvText)
+          } else {
+            isPrivate = true
+          }
+        } else if (res.status === 401 || res.status === 403 || res.status === 302) {
+          isPrivate = true
+        }
+      } catch {
+        isPrivate = true
       }
 
-      const csvText = await res.text()
-      const rows = parseCsv(csvText)
-      if (rows.length === 0) {
+      // If public fetch failed or returned private login HTML, try Google OAuth fallback
+      if (!rows || rows.length === 0 || isPrivate) {
+        const oauthRows = await fetchGoogleSheetOAuth(sheetId, tabName)
+        if (oauthRows && oauthRows.length > 0) {
+          rows = oauthRows
+          isPrivate = false
+        }
+      }
+
+      if (!rows || rows.length === 0) {
+        if (isPrivate) {
+          return {
+            ok: false,
+            isPrivateSheet: true,
+            error: 'Google Sheet đang ở chế độ Riêng tư (Private). Vui lòng mở quyền "Bất kỳ ai có liên kết" (Viewer) hoặc nạp file Excel (.xlsx / .csv) bằng nút "📂 Nạp File Excel/CSV".'
+          }
+        }
         return { ok: false, error: 'Tệp Sheet rỗng hoặc không có dữ liệu hợp lệ' }
       }
 
@@ -587,230 +943,7 @@ function generateValidDl(stateCode: string, lastName: string = ''): string {
         } catch {}
       }
 
-      const headers = rows[0].map((h) => h.toLowerCase().trim())
-      const findColExact = (...exacts: string[]) => {
-        return headers.findIndex((h) => exacts.some((e) => h === e))
-      }
-      const findCol = (...keywords: string[]) => {
-        const exactIdx = findColExact(...keywords)
-        if (exactIdx >= 0) return exactIdx
-        return headers.findIndex((h) => keywords.some((k) => h.includes(k)))
-      }
-
-      const colName = findColExact('profile name', 'profile', 'mã', 'id') !== -1
-        ? findColExact('profile name', 'profile', 'mã', 'id')
-        : findCol('profile')
-      const colStatus = findColExact('status', 'trạng thái')
-      const colRegDate = findColExact('ngày reg', 'reg date')
-      const colIssueDate = findColExact('ngày cấp', 'issue date')
-      const colSeller = findColExact('seller')
-      const colMail = findColExact('mail', 'email')
-      const colTiktokPass = findColExact('pass titkok shop', 'pass tiktok shop', 'pass titkok', 'pass tiktok') !== -1
-        ? findColExact('pass titkok shop', 'pass tiktok shop', 'pass titkok', 'pass tiktok')
-        : findCol('titkok', 'tiktok', 'pass')
-      const col2FA = findColExact('2fa', 'two_factor')
-      const colProxy = findColExact('proxy', 'ip')
-      const colPhoneCode = findColExact('get code phone', 'phone code', 'code phone') !== -1
-        ? findColExact('get code phone', 'phone code', 'code phone')
-        : findCol('get code', 'phone')
-      const colFullName = findColExact('ein name', 'tên', 'full name', 'fullname') !== -1
-        ? findColExact('ein name', 'tên', 'full name', 'fullname')
-        : findCol('ein name', 'full name')
-      const colSsn = findColExact('ssn')
-      const colAddress = findColExact('address', 'địa chỉ')
-      const colCity = findColExact('citi', 'city', 'thành phố')
-      const colState = findColExact('bang', 'state')
-      const colZip = findColExact('zip', 'postal')
-      const colDob = findColExact('dob', 'ngày sinh', 'birth')
-      const colGender = findColExact('gender', 'giới tính')
-      const colEin = findColExact('ein')
-      const colNameLlc = findColExact('name llc', 'llc name', 'tên llc')
-      const colAddressLlc = findColExact('address llc', 'địa chỉ llc')
-      const colCityLlc = findColExact('citi llc', 'city llc')
-      const colStateLlc = findColExact('bang llc', 'state llc')
-      const colZipLlc = findColExact('zip llc')
-      const colPdf = findColExact('pdf', 'irs pdf', 'cp 575', 'cp575', '147c')
-      const colFolderUrl = findColExact('folder_url', 'folder url', 'drive')
-      const colBankStatement = findColExact('bank_statement', 'bank statement', 'utility', 'bill')
-      const colDl = findColExact('dl', 'bằng lái', 'driver')
-
-      const records: any[] = []
-      for (let i = 1; i < rows.length; i++) {
-        const r = rows[i]
-        const profileId = ((colName >= 0 ? r[colName] : r[0]) || `ROW-${i}`).trim()
-        if (!profileId) continue
-
-        // Parse composite mail if format: email|pass|2fa
-        let rawMail = (colMail >= 0 ? r[colMail] : '') || ''
-        let mailEmail = rawMail
-        let mailPass = ''
-        let mail2FA = (col2FA >= 0 ? r[col2FA] : '') || ''
-
-        if (rawMail.includes('|')) {
-          const parts = rawMail.split('|')
-          mailEmail = parts[0]?.trim() || ''
-          if (parts[1]) mailPass = parts[1].trim()
-          if (parts[2]) mail2FA = parts[2].trim()
-        }
-
-        // Parse TikTok pass
-        let tiktokPass = (colTiktokPass >= 0 ? r[colTiktokPass] : '') || ''
-        if (!tiktokPass && mailPass) {
-          tiktokPass = mailPass
-        }
-
-        // Parse Phone and SMS API code URL
-        let rawPhone = (colPhoneCode >= 0 ? r[colPhoneCode] : '') || ''
-        let phone = ''
-        let phoneCodeUrl = ''
-        if (rawPhone.includes('----')) {
-          const parts = rawPhone.split('----')
-          phone = parts[0]?.trim() || ''
-          phoneCodeUrl = parts[1]?.trim() || ''
-        } else if (rawPhone.startsWith('http')) {
-          phoneCodeUrl = rawPhone.trim()
-        } else {
-          phone = rawPhone.trim()
-        }
-
-        const fullName = (colFullName >= 0 ? r[colFullName] : '') || ''
-        const rawState = (colState >= 0 ? r[colState] : '') || ''
-        const state = normalizeStateCode(rawState)
-        const ssn = (colSsn >= 0 ? r[colSsn] : '') || ''
-        const dob = (colDob >= 0 ? r[colDob] : '') || ''
-        const rawAddress = (colAddress >= 0 ? r[colAddress] : '') || ''
-        const rawEin = (colEin >= 0 ? r[colEin] : '') || ''
-        const rawProxy = (colProxy >= 0 ? r[colProxy] : '') || ''
-        const rawRegDate = (colRegDate >= 0 ? r[colRegDate] : '') || ''
-        const pdfDoc = (colPdf >= 0 ? r[colPdf] : '') || ''
-        const bankStatement = (colBankStatement >= 0 ? r[colBankStatement] : '') || ''
-        const folderUrl = (colFolderUrl >= 0 ? r[colFolderUrl] : '') || ''
-
-        // Auto-detect if row contains actual substantive data (skip blank template rows like AM-07...)
-        const hasSubstantiveData = !!(
-          fullName.trim() ||
-          mailEmail.trim() ||
-          ssn.trim() ||
-          rawAddress.trim() ||
-          rawEin.trim() ||
-          rawProxy.trim() ||
-          pdfDoc.trim() ||
-          bankStatement.trim() ||
-          phone.trim() ||
-          rawRegDate.trim()
-        )
-
-        if (!hasSubstantiveData) {
-          continue
-        }
-
-        // Check Rule 2A: 195x age warning
-        const is195x = dob.includes('/195') || dob.includes('-195') || dob.includes(' 195')
-        const ageWarning = is195x
-          ? 'Cảnh báo 195x: Độ tuổi > 65 rất dễ bị từ chối danh tính. Khuyến nghị BỎ QUA (SKIP).'
-          : ''
-
-        // Rule 2B: REAL ID Act compliance - Never use SSN for DL#
-        let dl = (colDl >= 0 ? r[colDl] : '') || ''
-        if (!dl || dl.replace(/\D/g, '') === ssn.replace(/\D/g, '')) {
-          dl = generateValidDl(state, fullName.split(' ').pop() || '')
-        }
-
-        let nameLlc = (colNameLlc >= 0 ? r[colNameLlc] : '') || ''
-        if (!nameLlc && fullName) {
-          nameLlc = `${fullName} LLC`
-        }
-
-        // Merge saved setup state
-        const savedSetup =
-          stateData.profileSetups?.[profileId] ||
-          stateData.profileSetups?.[profileId.toUpperCase()] ||
-          stateData.profileSetups?.[profileId.toLowerCase()] ||
-          {}
-        const savedAssignment = stateData.assignments?.[profileId] || {}
-        const hasFront = !!(savedAssignment.frontProcessed || savedAssignment.frontOriginal)
-        const hasBack = !!(savedAssignment.backProcessed || savedAssignment.backOriginal)
-        const hasPhotos = hasFront && hasBack
-
-        const hasInfo = !!(fullName && state && rawAddress)
-        const hasTax = !!(ssn && rawEin)
-        const hasDocs = !!(pdfDoc || bankStatement)
-        const hasAuth = !!(mailEmail && (tiktokPass || mailPass))
-        const hasProxy = !!savedSetup.assignedPort
-        const hasBrowser = !!savedSetup.adspowerId
-
-        let readinessScore = 0
-        if (hasInfo) readinessScore += 20
-        if (hasTax) readinessScore += 20
-        if (hasDocs) readinessScore += 20
-        if (hasAuth) readinessScore += 15
-        if (hasProxy && hasBrowser) readinessScore += 24
-        if (hasPhotos) readinessScore += 1
-
-        let readyStatus: '100_ready' | '99_ready' | 'pending' = 'pending'
-        if (hasPhotos && readinessScore >= 95) {
-          readyStatus = '100_ready'
-          readinessScore = 100
-        } else if (!hasPhotos && hasInfo && hasTax && (hasProxy || hasBrowser)) {
-          readyStatus = '99_ready'
-          readinessScore = 99
-        }
-
-        records.push({
-          rowNumber: i + 1,
-          id: profileId,
-          status: savedSetup.liveStatus || (colStatus >= 0 ? r[colStatus] : '') || 'Chưa chạy',
-          regDate: savedSetup.regDate || (colRegDate >= 0 ? r[colRegDate] : '') || '',
-          submissionRound: savedSetup.submissionRound || 0,
-          lastError: savedSetup.lastError || '',
-          issueDate: (colIssueDate >= 0 ? r[colIssueDate] : '') || '',
-          seller: (colSeller >= 0 ? r[colSeller] : '') || '',
-          email: mailEmail,
-          mailPass,
-          twoFactor: mail2FA,
-          proxy: (colProxy >= 0 ? r[colProxy] : '') || '',
-          tiktokPass,
-          phone,
-          phoneCodeUrl,
-          fullName,
-          dob,
-          is195x,
-          ageWarning,
-          gender: (colGender >= 0 ? r[colGender] : '') || '',
-          address: (colAddress >= 0 ? r[colAddress] : '') || '',
-          city: (colCity >= 0 ? r[colCity] : '') || '',
-          state,
-          zipCode: (colZip >= 0 ? r[colZip] : '') || '',
-          dl,
-          ssn,
-          ein: (colEin >= 0 ? r[colEin] : '') || '',
-          nameLlc,
-          addressLlc: (colAddressLlc >= 0 ? r[colAddressLlc] : '') || '',
-          cityLlc: (colCityLlc >= 0 ? r[colCityLlc] : '') || '',
-          stateLlc: (colStateLlc >= 0 ? r[colStateLlc] : '') || state,
-          zipLlc: (colZipLlc >= 0 ? r[colZipLlc] : '') || '',
-          pdfDoc,
-          folderUrl,
-          bankStatement,
-          businessType: 'Sole Proprietorship',
-          businessName: nameLlc,
-          assignedPort: savedSetup.assignedPort,
-          proxyMeta: savedSetup.proxyMeta,
-          adspowerId: savedSetup.adspowerId,
-          readyStatus: savedSetup.readyStatus || readyStatus,
-          readinessScore: savedSetup.readinessScore || readinessScore,
-          checkList: {
-            hasInfo,
-            hasTax,
-            hasDocs,
-            hasAuth,
-            hasProxy,
-            hasBrowser,
-            hasPhotos
-          }
-        })
-      }
-
+      const records = convertRowsToRecords(rows, stateData)
       return {
         ok: true,
         sheetId,
@@ -820,6 +953,148 @@ function generateValidDl(stateCode: string, lastName: string = ''): string {
       }
     } catch (err: any) {
       return { ok: false, error: String(err?.message || err) }
+    }
+  })
+
+  // 2.1 Import Local Sheet File (.xlsx, .xls, .csv)
+  ipcMain.handle('tts:sheet:import-file', async () => {
+    try {
+      const result = await dialog.showOpenDialog({
+        title: 'Chọn Tệp Bảng Tính (Excel / CSV)',
+        filters: [
+          { name: 'Bảng tính (*.xlsx, *.xls, *.csv)', extensions: ['xlsx', 'xls', 'csv'] }
+        ],
+        properties: ['openFile']
+      })
+
+      if (result.canceled || result.filePaths.length === 0) {
+        return { ok: false, canceled: true }
+      }
+
+      const filePath = result.filePaths[0]
+      let rows: string[][] = []
+
+      if (extname(filePath).toLowerCase() === '.csv') {
+        const content = readFileSync(filePath, 'utf-8')
+        rows = parseCsv(content)
+      } else {
+        const workbook = XLSX.readFile(filePath)
+        const sheetName = workbook.SheetNames[0]
+        const worksheet = workbook.Sheets[sheetName]
+        rows = XLSX.utils.sheet_to_json<string[]>(worksheet, { header: 1, defval: '' })
+      }
+
+      if (!rows || rows.length < 2) {
+        return { ok: false, error: 'Tệp rỗng hoặc không có dòng dữ liệu hợp lệ' }
+      }
+
+      let stateData: any = { assignments: {}, profileSetups: {}, consumedRecords: {} }
+      if (existsSync(stateFile)) {
+        try {
+          stateData = JSON.parse(readFileSync(stateFile, 'utf-8'))
+        } catch {}
+      }
+
+      const records = convertRowsToRecords(rows, stateData)
+      return {
+        ok: true,
+        fileName: basename(filePath),
+        total: records.length,
+        records
+      }
+    } catch (err: any) {
+      return { ok: false, error: `Lỗi đọc tệp: ${err?.message || err}` }
+    }
+  })
+
+  // 2.2 Import Raw Sheet Data (Pasted CSV / TSV)
+  ipcMain.handle('tts:sheet:import-data', async (_event, rawData: string) => {
+    try {
+      if (!rawData || !rawData.trim()) return { ok: false, error: 'Dữ liệu trống' }
+      const rows = rawData.includes('\t')
+        ? rawData.split('\n').map((line) => line.split('\t').map((c) => c.trim()))
+        : parseCsv(rawData)
+
+      let stateData: any = { assignments: {}, profileSetups: {}, consumedRecords: {} }
+      if (existsSync(stateFile)) {
+        try {
+          stateData = JSON.parse(readFileSync(stateFile, 'utf-8'))
+        } catch {}
+      }
+
+      const records = convertRowsToRecords(rows, stateData)
+      return { ok: true, total: records.length, records }
+    } catch (err: any) {
+      return { ok: false, error: `Lỗi nạp dữ liệu: ${err?.message || err}` }
+    }
+  })
+
+  // 2.3 Fetch SMS OTP from Phone Code URL
+  ipcMain.handle('tts:phone:fetch-code', async (_event, params: { phone?: string; phoneCodeUrl?: string }) => {
+    const { phone, phoneCodeUrl } = params || {}
+    if (!phoneCodeUrl || !phoneCodeUrl.trim()) {
+      return { ok: false, phone, error: 'Chưa có link lấy mã phone (phoneCodeUrl) trong hồ sơ' }
+    }
+
+    const cleanUrl = phoneCodeUrl.trim()
+    try {
+      const controller = new AbortController()
+      const timeout = setTimeout(() => controller.abort(), 10000)
+      const res = await fetch(cleanUrl, {
+        signal: controller.signal,
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+        }
+      })
+      clearTimeout(timeout)
+
+      const rawText = await res.text()
+      let code: string | null = null
+
+      try {
+        const data = JSON.parse(rawText)
+        code = data.code || data.otp || data.sms_code || data.verification_code || (data.data && (data.data.code || data.data.otp)) || null
+        if (!code && (data.sms || data.text || data.message || data.content)) {
+          const match = String(data.sms || data.text || data.message || data.content).match(/\b(\d{4,6})\b/)
+          if (match) code = match[1]
+        }
+      } catch {}
+
+      if (!code) {
+        const explicitMatch = rawText.match(/(?:code|mã|verification|tiktok)[^\d]*(\d{4,6})/i)
+        if (explicitMatch) {
+          code = explicitMatch[1]
+        } else {
+          const match6 = rawText.match(/\b\d{6}\b/)
+          if (match6) {
+            code = match6[0]
+          } else {
+            const match4 = rawText.match(/\b\d{4}\b/)
+            if (match4) code = match4[0]
+          }
+        }
+      }
+
+      if (code) {
+        return {
+          ok: true,
+          phone,
+          code,
+          raw: rawText.slice(0, 200),
+          message: `Lấy mã thành công: ${code}`
+        }
+      } else {
+        const isWaiting = rawText.toLowerCase().includes('wait') || rawText.toLowerCase().includes('pending') || rawText.length < 50
+        return {
+          ok: false,
+          phone,
+          isWaiting,
+          error: isWaiting ? 'Đang đợi mã SMS từ nhà mạng... (Bấm lại sau vài giây)' : `Chưa tìm thấy mã: ${rawText.slice(0, 100)}`,
+          raw: rawText.slice(0, 200)
+        }
+      }
+    } catch (err: any) {
+      return { ok: false, phone, error: `Lỗi kết nối SMS API: ${err?.message || err}` }
     }
   })
 
@@ -959,34 +1234,144 @@ function generateValidDl(stateCode: string, lastName: string = ''): string {
     }
   })
 
-  ipcMain.handle('tts:adspower:start', async (_event, userId: string) => {
+  async function resolveAdsPowerUserId(targetIdOrName: string): Promise<string | null> {
+    if (!targetIdOrName) return null
+    const clean = targetIdOrName.trim()
+    const adsBase = getAdsBaseUrl()
+    const adsHeaders = getAdsHeaders()
+
+    try {
+      const listRes = await fetch(`${adsBase}/api/v1/user/list?page=1&page_size=100`, { headers: adsHeaders })
+        .then((r) => r.json())
+        .catch(() => null)
+      const list: any[] = (listRes && listRes.data && listRes.data.list) || []
+
+      // 1. Exact user_id
+      const byId = list.find((p) => p.user_id === clean)
+      if (byId) return byId.user_id
+
+      // 2. Exact serial_number
+      const bySerial = list.find((p) => String(p.serial_number) === clean)
+      if (bySerial) return bySerial.user_id
+
+      // 3. Name match
+      const lower = clean.toLowerCase()
+      const byName = list.find((p) => {
+        const pName = (p.name || '').toLowerCase()
+        return pName === lower || pName.startsWith(`${lower} `) || pName.startsWith(`${lower}-`)
+      })
+      if (byName) return byName.user_id
+    } catch {}
+
+    try {
+      if (existsSync(stateFile)) {
+        const stateData = JSON.parse(readFileSync(stateFile, 'utf-8'))
+        const saved = stateData.profileSetups?.[clean]?.adspowerId
+        if (saved) return saved
+      }
+    } catch {}
+
+    return null
+  }
+
+  async function startAdsPowerBrowser(targetId: string, recordId?: string) {
     try {
       const baseUrl = getAdsBaseUrl()
-      const extensionPath = join(foxAutoRoot, 'additions', 'tts_bot', 'extension')
+      const headers = getAdsHeaders()
+      let effectiveUserId = (targetId || '').trim()
+
+      const resolved = await resolveAdsPowerUserId(effectiveUserId)
+      if (resolved) {
+        effectiveUserId = resolved
+      }
+
+      // Check if browser is already active
+      try {
+        const activeRes = await fetch(`${baseUrl}/api/v1/browser/active?user_id=${effectiveUserId}`, { headers })
+          .then((r) => r.json())
+          .catch(() => null)
+        if (activeRes && activeRes.code === 0 && activeRes.data && activeRes.data.status === 'Active') {
+          return { ok: true, data: activeRes.data, adspowerId: effectiveUserId, isAlreadyActive: true }
+        }
+      } catch {}
+
+      const rawExtensionPath = join(foxAutoRoot, 'additions', 'tts_bot', 'extension')
+      const extensionPath = rawExtensionPath.replace(/\\/g, '/')
       const launchArgs = JSON.stringify([
         `--load-extension=${extensionPath}`,
+        `--disable-extensions-except=${extensionPath}`,
         '--window-size=430,932',
         '--touch-events=enabled',
         '--enable-viewport',
         '--force-device-scale-factor=3',
         '--use-mobile-user-agent'
       ])
-      const url = `${baseUrl}/api/v1/browser/start?user_id=${userId}&launch_args=${encodeURIComponent(launchArgs)}`
-      const res = await fetch(url, { headers: getAdsHeaders() })
+
+      const url = `${baseUrl}/api/v1/browser/start?user_id=${effectiveUserId}&launch_args=${encodeURIComponent(launchArgs)}`
+      const res = await fetch(url, { headers })
       const data = await res.json()
-      return { ok: data.code === 0, data: data.data, error: data.msg }
+
+      if (data && data.code === 0) {
+        try {
+          if (existsSync(stateFile)) {
+            const stateData = JSON.parse(readFileSync(stateFile, 'utf-8'))
+            if (!stateData.activeRuns) stateData.activeRuns = []
+            const idToSave = recordId || effectiveUserId
+            if (!stateData.activeRuns.includes(idToSave)) {
+              stateData.activeRuns.push(idToSave)
+              writeFileSync(stateFile, JSON.stringify(stateData, null, 2), 'utf-8')
+            }
+          }
+        } catch {}
+        return { ok: true, data: data.data, adspowerId: effectiveUserId }
+      } else {
+        return { ok: false, error: data?.msg || 'Không thể mở AdsPower' }
+      }
     } catch (err: any) {
       return { ok: false, error: String(err?.message || err) }
     }
+  }
+
+  ipcMain.handle('tts:adspower:start', async (_event, userId: string) => {
+    return await startAdsPowerBrowser(userId)
   })
 
   ipcMain.handle('tts:adspower:stop', async (_event, userId: string) => {
     try {
       const baseUrl = getAdsBaseUrl()
-      const url = `${baseUrl}/api/v1/browser/stop?user_id=${userId}`
+      let effectiveUserId = (userId || '').trim()
+      const resolved = await resolveAdsPowerUserId(effectiveUserId)
+      if (resolved) effectiveUserId = resolved
+
+      const url = `${baseUrl}/api/v1/browser/stop?user_id=${effectiveUserId}`
       const res = await fetch(url, { headers: getAdsHeaders() })
       const data = await res.json()
       return { ok: data.code === 0, error: data.msg }
+    } catch (err: any) {
+      return { ok: false, error: String(err?.message || err) }
+    }
+  })
+
+  // 4.5 Unified 1-Click Pipeline (HideProxy Forward + AdsPower Sync + Browser Launch + Extension)
+  ipcMain.handle('tts:pipeline:launch-profile', async (_event, record: any) => {
+    try {
+      if (!record || !record.id) return { ok: false, error: 'Thiếu thông tin hồ sơ' }
+      const setupRes = await executeSmartSetup(record)
+      if (!setupRes.ok) {
+        return { ok: false, error: setupRes.error || 'Cấu hình proxy / AdsPower thất bại' }
+      }
+      const adspowerId = setupRes.adspowerId || record.adspowerId
+      if (!adspowerId) {
+        return { ok: false, error: 'Không tìm thấy AdsPower ID sau khi setup' }
+      }
+      const startRes = await startAdsPowerBrowser(adspowerId, record.id)
+      return {
+        ok: startRes.ok,
+        adspowerId,
+        assignedPort: setupRes.assignedPort,
+        data: startRes.data,
+        error: startRes.error
+      }
     } catch (err: any) {
       return { ok: false, error: String(err?.message || err) }
     }
@@ -1196,21 +1581,40 @@ function generateValidDl(stateCode: string, lastName: string = ''): string {
         return name === recId || name.startsWith(`${recId} `) || name.startsWith(`${recId}-`)
       })
 
+      const rawExtensionPath = join(foxAutoRoot, 'additions', 'tts_bot', 'extension')
+      const extensionPath = rawExtensionPath.replace(/\\/g, '/')
+      const proxyConfig = assignedPort
+        ? {
+            proxy_soft: 'other',
+            proxy_type: 'http',
+            proxy_host: '127.0.0.1',
+            proxy_port: String(assignedPort),
+            proxy_user: '',
+            proxy_password: ''
+          }
+        : { proxy_soft: 'no_proxy' }
+
       if (existingProfile) {
         adspowerId = existingProfile.user_id
+        // Keep proxy and launch_args synchronized with current assignedPort and extension!
+        await fetch(`${adsBase}/api/v1/user/update`, {
+          method: 'POST',
+          headers: adsHeaders,
+          body: JSON.stringify({
+            profile_id: adspowerId,
+            user_proxy_config: proxyConfig,
+            launch_args: [
+              `--load-extension=${extensionPath}`,
+              `--disable-extensions-except=${extensionPath}`,
+              '--window-size=430,932',
+              '--touch-events=enabled',
+              '--enable-viewport',
+              '--force-device-scale-factor=3',
+              '--use-mobile-user-agent'
+            ]
+          })
+        }).catch(() => null)
       } else {
-        const extensionPath = join(foxAutoRoot, 'additions', 'tts_bot', 'extension')
-        const proxyConfig = assignedPort
-          ? {
-              proxy_soft: 'other',
-              proxy_type: 'http',
-              proxy_host: '127.0.0.1',
-              proxy_port: String(assignedPort),
-              proxy_user: 'minhteo0209',
-              proxy_password: 'minhteo'
-            }
-          : { proxy_soft: 'no_proxy' }
-
         const createRes = await fetch(`${adsBase}/api/v1/user/create`, {
           method: 'POST',
           headers: adsHeaders,
@@ -1227,6 +1631,7 @@ function generateValidDl(stateCode: string, lastName: string = ''): string {
             },
             launch_args: [
               `--load-extension=${extensionPath}`,
+              `--disable-extensions-except=${extensionPath}`,
               '--window-size=430,932',
               '--touch-events=enabled',
               '--enable-viewport',
@@ -1322,6 +1727,8 @@ function generateValidDl(stateCode: string, lastName: string = ''): string {
 
     return {
       ok: true,
+      assignedPort,
+      adspowerId,
       record: {
         ...record,
         assignedPort,

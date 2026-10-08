@@ -39,7 +39,8 @@ import {
   Key,
   Save,
   ListOrdered,
-  ChevronLeft
+  ChevronLeft,
+  Mail
 } from 'lucide-react'
 
 export interface RecordItem {
@@ -178,6 +179,26 @@ const ttsIpc = {
   fetchSheet: async (params?: any) => {
     if (window.api?.tts?.fetchSheet) return await window.api.tts.fetchSheet(params)
     if (window.electron?.ipcRenderer) return await window.electron.ipcRenderer.invoke('tts:sheet:fetch', params)
+    return { ok: false, error: 'IPC unavailable' }
+  },
+  importSheetFile: async () => {
+    if ((window.api?.tts as any)?.importSheetFile) return await (window.api.tts as any).importSheetFile()
+    if (window.electron?.ipcRenderer) return await window.electron.ipcRenderer.invoke('tts:sheet:import-file')
+    return { ok: false, error: 'IPC unavailable' }
+  },
+  importSheetData: async (data: string) => {
+    if ((window.api?.tts as any)?.importSheetData) return await (window.api.tts as any).importSheetData(data)
+    if (window.electron?.ipcRenderer) return await window.electron.ipcRenderer.invoke('tts:sheet:import-data', data)
+    return { ok: false, error: 'IPC unavailable' }
+  },
+  phoneFetchCode: async (params: { phone?: string; phoneCodeUrl?: string }) => {
+    if ((window.api?.tts as any)?.phone?.fetchCode) return await (window.api.tts as any).phone.fetchCode(params)
+    if (window.electron?.ipcRenderer) return await window.electron.ipcRenderer.invoke('tts:phone:fetch-code', params)
+    return { ok: false, error: 'IPC unavailable' }
+  },
+  pipelineLaunchProfile: async (record: any) => {
+    if ((window.api?.tts as any)?.pipeline?.launchProfile) return await (window.api.tts as any).pipeline.launchProfile(record)
+    if (window.electron?.ipcRenderer) return await window.electron.ipcRenderer.invoke('tts:pipeline:launch-profile', record)
     return { ok: false, error: 'IPC unavailable' }
   },
   smartSetup: async (params: { record: any; autoBuyProxy?: boolean }) => {
@@ -966,6 +987,117 @@ export function TtsBotView() {
       setSetupFeedback(`Lỗi mở AdsPower: ${err?.message || err}`)
     } finally {
       setLaunchingProfileId(null)
+    }
+  }
+
+  // ─── Phone OTP Code Fetcher State & Handler ───
+  const [phoneCheckResults, setPhoneCheckResults] = useState<
+    Record<string, { code?: string; isWaiting?: boolean; error?: string; raw?: string; fetchedAt: number }>
+  >({})
+  const [fetchingPhoneId, setFetchingPhoneId] = useState<string | null>(null)
+
+  const handleFetchPhoneCode = async (record: RecordItem) => {
+    if (!record.phoneCodeUrl) {
+      setSetupFeedback(`Hồ sơ ${record.id} chưa có link lấy mã phone (phoneCodeUrl)`)
+      return
+    }
+    setFetchingPhoneId(record.id)
+    try {
+      const res = await ttsIpc.phoneFetchCode({ phone: record.phone, phoneCodeUrl: record.phoneCodeUrl })
+      if (res && res.ok && res.code) {
+        setPhoneCheckResults((prev) => ({
+          ...prev,
+          [record.id]: { code: res.code, raw: res.raw, fetchedAt: Date.now() }
+        }))
+        navigator.clipboard.writeText(res.code)
+        setSetupFeedback(`🎉 Đã lấy mã Phone OTP: ${res.code} (Đã tự động copy vào clipboard)`)
+      } else {
+        setPhoneCheckResults((prev) => ({
+          ...prev,
+          [record.id]: {
+            error: res?.error || 'Chưa có mã',
+            isWaiting: res?.isWaiting,
+            raw: res?.raw,
+            fetchedAt: Date.now()
+          }
+        }))
+        setSetupFeedback(res?.error || 'Đang chờ mã SMS từ nhà mạng...')
+      }
+    } catch (err: any) {
+      setSetupFeedback(`Lỗi lấy mã phone: ${err?.message || err}`)
+    } finally {
+      setFetchingPhoneId(null)
+    }
+  }
+
+  // ─── Unified 1-Click Pipeline (HideProxy + AdsPower + Extension) ───
+  const [pipelineLaunchingId, setPipelineLaunchingId] = useState<string | null>(null)
+
+  const handlePipelineLaunch = async (record: RecordItem) => {
+    setPipelineLaunchingId(record.id)
+    setSetupFeedback(`⚡ Đang khởi động 1-Click: Cấu hình Proxy -> AdsPower -> Mở Browser + Extension cho ${record.id}...`)
+    try {
+      const res = await ttsIpc.pipelineLaunchProfile(record)
+      if (res && res.ok) {
+        setSetupFeedback(`🚀 Đã mở profile thành công: ${record.id} (Port: ${res.assignedPort || 'N/A'}, Ads ID: ${res.adspowerId})`)
+        refreshAdsPowerProfiles()
+        refreshHideProxyPorts()
+        if (res.assignedPort || res.adspowerId) {
+          setRecords((prev) =>
+            prev.map((r) =>
+              r.id === record.id
+                ? {
+                    ...r,
+                    assignedPort: res.assignedPort || r.assignedPort,
+                    adspowerId: res.adspowerId || r.adspowerId
+                  }
+                : r
+            )
+          )
+        }
+      } else {
+        setSetupFeedback(`❌ Lỗi khởi động 1-Click (${record.id}): ${res?.error || 'Không rõ nguyên nhân'}`)
+      }
+    } catch (err: any) {
+      setSetupFeedback(`❌ Lỗi khởi động: ${err?.message || err}`)
+    } finally {
+      setPipelineLaunchingId(null)
+    }
+  }
+
+  // ─── Local File Import Handler (Excel .xlsx / .csv) ───
+  const handleImportLocalFile = async () => {
+    setIsLoadingSheet(true)
+    try {
+      const res = await ttsIpc.importSheetFile()
+      if (res && res.ok && res.records) {
+        const merged = res.records.map((r: RecordItem) => {
+          const s = profileSetups[r.id]
+          if (!s) return r
+          return {
+            ...r,
+            assignedPort: s.assignedPort || r.assignedPort,
+            proxyMeta: s.proxyMeta || r.proxyMeta,
+            adspowerId: s.adspowerId || r.adspowerId,
+            readyStatus: s.readyStatus || r.readyStatus,
+            readinessScore: s.readinessScore || r.readinessScore,
+            status: s.liveStatus || r.status
+          }
+        })
+        setRecords(merged)
+        setSheetError('')
+        setSetupFeedback(`🎉 Đã nạp thành công ${merged.length} hồ sơ từ tệp: ${res.fileName}`)
+        if (merged.length > 0 && !selectedRecordId) {
+          setSelectedRecordId(merged[0].id)
+        }
+        handleAutoCheckAllMails(merged)
+      } else if (!res?.canceled) {
+        setSheetError(res?.error || 'Lỗi nạp tệp bảng tính')
+      }
+    } catch (err: any) {
+      setSheetError(String(err?.message || err))
+    } finally {
+      setIsLoadingSheet(false)
     }
   }
 
@@ -2095,6 +2227,17 @@ export function TtsBotView() {
             <RefreshCw className={`w-3.5 h-3.5 ${isCheckingStatus || isLoadingSheet ? 'animate-spin' : ''}`} />
           </button>
 
+          {/* Import Local Excel / CSV Button */}
+          <button
+            onClick={handleImportLocalFile}
+            disabled={isLoadingSheet}
+            className="flex items-center space-x-1.5 px-2.5 py-1 bg-amber-950/70 hover:bg-amber-900/80 text-amber-300 border border-amber-600/50 hover:border-amber-500 font-semibold rounded-lg shadow-sm transition-all text-xs"
+            title="Nạp bảng tính từ máy tính (.xlsx, .xls, .csv) khi Sheet bị riêng tư hoặc offline"
+          >
+            <FolderOpen className="w-3.5 h-3.5 text-amber-400" />
+            <span>Nạp Excel/CSV</span>
+          </button>
+
           {/* Full Flow Dry-Run / Preflight Diagnostic Button */}
           <button
             onClick={handleRunPreflight}
@@ -2107,6 +2250,35 @@ export function TtsBotView() {
           </button>
         </div>
       </header>
+
+      {/* Private Sheet / Error Banner with 1-Click File Fallback */}
+      {sheetError && (
+        <div className="mx-6 mt-3 p-3 bg-amber-950/60 border border-amber-500/60 rounded-xl flex items-center justify-between text-xs text-amber-200 animate-in slide-in-from-top-2">
+          <div className="flex items-center space-x-2.5">
+            <AlertTriangle className="w-4 h-4 text-amber-400 shrink-0" />
+            <div>
+              <span className="font-bold block text-amber-300">Không thể kết nối Google Sheet:</span>
+              <span className="text-amber-200/90">{sheetError}</span>
+            </div>
+          </div>
+          <div className="flex items-center space-x-2 shrink-0">
+            <button
+              onClick={handleImportLocalFile}
+              className="px-3 py-1 bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold rounded-lg text-xs flex items-center space-x-1.5 shadow transition-all cursor-pointer"
+            >
+              <FolderOpen className="w-3.5 h-3.5" />
+              <span>📂 Chọn File Excel/CSV Từ Máy</span>
+            </button>
+            <button
+              onClick={() => setSheetError('')}
+              className="p-1 hover:text-white text-slate-400 transition-colors"
+              title="Đóng thông báo"
+            >
+              <X className="w-4 h-4" />
+            </button>
+          </div>
+        </div>
+      )}
 
       {/* Floating Feedback Notification (Toast) */}
       {setupFeedback && (
@@ -2442,7 +2614,7 @@ export function TtsBotView() {
                       </th>
                     )}
                     <th className="py-2.5 px-3 min-w-[200px]">HỒ SƠ & THIẾT BỊ</th>
-                    <th className="py-2.5 px-3 min-w-[240px]">HÒM THƯ (AUTO-CHECK)</th>
+                    <th className="py-2.5 px-3 min-w-[270px]">HÒM THƯ & SỐ ĐT (AUTO-OTP)</th>
                     <th className="py-2.5 px-3 min-w-[180px]">TIẾN ĐỘ & CANH 6M</th>
                     <th className="py-2.5 px-3 min-w-[200px]">KHO ẢNH & FILE ĐÃ NỘP</th>
                     <th className="py-2.5 px-3 text-right min-w-[170px]">HÀNH ĐỘNG COPILOT</th>
@@ -2601,10 +2773,11 @@ export function TtsBotView() {
                             </div>
                           </td>
 
-                          {/* Cột 2: HÒM THƯ (AUTO-CHECK) */}
+                          {/* Cột 2: HÒM THƯ & SỐ ĐT (AUTO-OTP) */}
                           <td className="py-3 px-3">
+                            {/* Email Row with Dedicated Đọc Mail Button */}
                             <div className="flex items-center space-x-1.5">
-                              <span className="font-mono text-slate-300 text-[11px] truncate max-w-[170px]" title={r.email}>
+                              <span className="font-mono text-slate-300 text-[11px] truncate max-w-[145px]" title={r.email}>
                                 {r.email || '(Chưa có email)'}
                               </span>
                               {r.email && (
@@ -2620,35 +2793,97 @@ export function TtsBotView() {
                                   <Copy className="w-3 h-3" />
                                 </button>
                               )}
-                              <button
-                                onClick={(e) => {
-                                  e.stopPropagation()
-                                  handleCheckSingleMail(r)
-                                }}
-                                disabled={isCheckingThisMail}
-                                className="text-slate-400 hover:text-indigo-300 p-0.5 rounded transition-colors"
-                                title="Check trạng thái hòm thư & OTP ngay"
-                              >
-                                <RefreshCw className={`w-3 h-3 ${isCheckingThisMail ? 'animate-spin text-indigo-400' : ''}`} />
-                              </button>
+                              {r.email && (
+                                <button
+                                  onClick={(e) => {
+                                    e.stopPropagation()
+                                    handleCheckSingleMail(r)
+                                  }}
+                                  disabled={isCheckingThisMail}
+                                  className="flex items-center space-x-1 px-1.5 py-0.5 rounded bg-indigo-950/80 hover:bg-indigo-900 text-indigo-300 border border-indigo-700/60 text-[10px] font-semibold transition-all shadow-sm shrink-0 cursor-pointer"
+                                  title="Đọc hòm thư & bóc tách mã OTP ngay lập tức"
+                                >
+                                  <Mail className="w-2.5 h-2.5 text-indigo-400 shrink-0" />
+                                  <span>{isCheckingThisMail ? 'Đang đọc...' : 'Đọc Mail'}</span>
+                                  {isCheckingThisMail && <RefreshCw className="w-2.5 h-2.5 animate-spin ml-0.5 text-indigo-300" />}
+                                </button>
+                              )}
                             </div>
 
-                            {/* Live TikTok Mail Status Badges & OTP */}
-                            <div className="mt-1 flex flex-wrap items-center gap-1.5">
+                            {/* Phone Row with Dedicated Đọc Phone Button */}
+                            <div className="flex items-center space-x-1.5 mt-1">
+                              <span className="font-mono text-slate-400 text-[11px] truncate max-w-[135px]" title={r.phone || 'Chưa có phone'}>
+                                {r.phone ? `📞 ${r.phone}` : '⚪ Chưa có SĐT'}
+                              </span>
+                              {r.phone && (
+                                <button
+                                  onClick={(e) => {
+                                    e.stopPropagation()
+                                    navigator.clipboard.writeText(r.phone!)
+                                    setSetupFeedback(`Đã copy SĐT: ${r.phone}`)
+                                  }}
+                                  className="text-slate-500 hover:text-white p-0.5 rounded transition-colors"
+                                  title="Copy Số Điện Thoại"
+                                >
+                                  <Copy className="w-3 h-3" />
+                                </button>
+                              )}
+                              {r.phoneCodeUrl && (
+                                <button
+                                  onClick={(e) => {
+                                    e.stopPropagation()
+                                    handleFetchPhoneCode(r)
+                                  }}
+                                  disabled={fetchingPhoneId === r.id}
+                                  className="flex items-center space-x-1 px-1.5 py-0.5 rounded bg-pink-950/80 hover:bg-pink-900 text-pink-300 border border-pink-700/60 text-[10px] font-semibold transition-all shadow-sm shrink-0 cursor-pointer"
+                                  title="Lấy mã OTP SMS từ phoneCodeUrl"
+                                >
+                                  <Smartphone className="w-2.5 h-2.5 text-pink-400 shrink-0" />
+                                  <span>{fetchingPhoneId === r.id ? 'Đang đọc...' : 'Đọc Phone'}</span>
+                                  {fetchingPhoneId === r.id && <RefreshCw className="w-2.5 h-2.5 animate-spin ml-0.5 text-pink-300" />}
+                                </button>
+                              )}
+                            </div>
+
+                            {/* Live Badges for Mail OTP & Phone OTP & Statuses */}
+                            <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
+                              {/* Mail OTP Badge */}
                               {otpCode ? (
                                 <button
                                   onClick={(e) => {
                                     e.stopPropagation()
                                     navigator.clipboard.writeText(otpCode)
-                                    setSetupFeedback(`Đã copy mã OTP: ${otpCode}`)
+                                    setSetupFeedback(`Đã copy mã OTP Mail: ${otpCode}`)
                                   }}
-                                  className="flex items-center space-x-1 px-2 py-0.5 rounded-md bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 border border-amber-500/60 text-[11px] font-mono font-bold transition-all shadow-sm"
-                                  title="Bấm để copy mã OTP 6 số"
+                                  className="flex items-center space-x-1 px-2 py-0.5 rounded-md bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 border border-amber-500/60 text-[11px] font-mono font-bold transition-all shadow-sm cursor-pointer"
+                                  title="Bấm để copy mã OTP Mail 6 số"
                                 >
                                   <Zap className="w-3 h-3 text-amber-400 animate-bounce shrink-0" />
-                                  <span>OTP: <span className="underline tracking-wider font-extrabold">{otpCode}</span></span>
+                                  <span>Mail OTP: <span className="underline tracking-wider font-extrabold">{otpCode}</span></span>
                                   <Copy className="w-2.5 h-2.5 ml-0.5 opacity-70 shrink-0" />
                                 </button>
+                              ) : null}
+
+                              {/* Phone OTP Badge */}
+                              {phoneCheckResults[r.id]?.code ? (
+                                <button
+                                  onClick={(e) => {
+                                    e.stopPropagation()
+                                    const code = phoneCheckResults[r.id].code!
+                                    navigator.clipboard.writeText(code)
+                                    setSetupFeedback(`Đã copy mã OTP Phone: ${code}`)
+                                  }}
+                                  className="flex items-center space-x-1 px-2 py-0.5 rounded-md bg-pink-500/20 hover:bg-pink-500/30 text-pink-300 border border-pink-500/60 text-[11px] font-mono font-bold transition-all shadow-sm cursor-pointer"
+                                  title="Bấm để copy mã Phone OTP"
+                                >
+                                  <Smartphone className="w-3 h-3 text-pink-400 animate-pulse shrink-0" />
+                                  <span>Phone OTP: <span className="underline tracking-wider font-extrabold">{phoneCheckResults[r.id].code}</span></span>
+                                  <Copy className="w-2.5 h-2.5 ml-0.5 opacity-70 shrink-0" />
+                                </button>
+                              ) : phoneCheckResults[r.id]?.isWaiting ? (
+                                <span className="inline-flex items-center space-x-1 px-1.5 py-0.5 rounded bg-pink-950/60 text-pink-300 border border-pink-800 text-[10px]">
+                                  <span>⏳ Đợi SMS...</span>
+                                </span>
                               ) : null}
 
                               {mailStatus === 'approved' ? (
@@ -2851,26 +3086,39 @@ export function TtsBotView() {
                                   <CheckCircle2 className="w-3 h-3 text-emerald-400" />
                                   <span>Hoàn tất</span>
                                 </span>
-                              ) : hasAds ? (
-                                <button
-                                  onClick={() => handleLaunchAdsPower(r)}
-                                  disabled={launchingProfileId === r.id}
-                                  className="px-2.5 py-1 text-xs bg-cyan-600 hover:bg-cyan-500 text-white font-semibold rounded-lg transition-all shadow flex items-center space-x-1"
-                                  title="Khởi động profile AdsPower iOS và điền form TikTok"
-                                >
-                                  <Play className="w-3 h-3 fill-white" />
-                                  <span>Mở Ads (iOS)</span>
-                                </button>
                               ) : (
-                                <button
-                                  onClick={() => handleSmartSetup(r)}
-                                  disabled={isSettingUpThis}
-                                  className="px-2.5 py-1 text-xs bg-emerald-600 hover:bg-emerald-500 text-white font-semibold rounded-lg transition-all shadow flex items-center space-x-1"
-                                  title="Gán Proxy và tạo Profile AdsPower cho hồ sơ này"
-                                >
-                                  <Zap className="w-3.5 h-3.5" />
-                                  <span>Setup Ads</span>
-                                </button>
+                                <div className="flex items-center space-x-1.5">
+                                  {/* Primary 1-Click Pipeline Launch Button */}
+                                  <button
+                                    onClick={() => handlePipelineLaunch(r)}
+                                    disabled={pipelineLaunchingId === r.id || launchingProfileId === r.id}
+                                    className="px-2.5 py-1 text-xs bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-white font-bold rounded-lg transition-all shadow-md flex items-center space-x-1.5 cursor-pointer disabled:opacity-50"
+                                    title="Khởi động 1-Click: Gán Port HideProxy -> Cập nhật AdsPower -> Mở Browser + Injected Extension"
+                                  >
+                                    <Play className={`w-3 h-3 fill-white ${pipelineLaunchingId === r.id ? 'animate-spin' : ''}`} />
+                                    <span>{pipelineLaunchingId === r.id ? 'Đang mở...' : '1-Click Chạy'}</span>
+                                  </button>
+
+                                  {hasAds ? (
+                                    <button
+                                      onClick={() => handleLaunchAdsPower(r)}
+                                      disabled={launchingProfileId === r.id || pipelineLaunchingId === r.id}
+                                      className="px-2 py-1 text-xs bg-slate-800 hover:bg-slate-700 text-cyan-300 border border-slate-700 rounded-lg transition-all shadow-sm flex items-center space-x-1"
+                                      title="Mở AdsPower profile đã có sẵn"
+                                    >
+                                      <span>Mở Ads</span>
+                                    </button>
+                                  ) : (
+                                    <button
+                                      onClick={() => handleSmartSetup(r)}
+                                      disabled={isSettingUpThis}
+                                      className="px-2 py-1 text-xs bg-slate-800 hover:bg-slate-700 text-amber-300 border border-slate-700 rounded-lg transition-all shadow-sm flex items-center space-x-1"
+                                      title="Chỉ tạo AdsPower & Gán Proxy (không mở browser)"
+                                    >
+                                      <span>Setup</span>
+                                    </button>
+                                  )}
+                                </div>
                               )}
 
                               {/* Drawer button */}
