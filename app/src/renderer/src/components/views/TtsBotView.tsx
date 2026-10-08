@@ -37,7 +37,9 @@ import {
   CheckCheck,
   Play,
   Key,
-  Save
+  Save,
+  ListOrdered,
+  ChevronLeft
 } from 'lucide-react'
 
 export interface RecordItem {
@@ -442,6 +444,11 @@ export function TtsBotView() {
   const [adsConfigSavedFeedback, setAdsConfigSavedFeedback] = useState(false)
   const [copiedDefaultKeyFeedback, setCopiedDefaultKeyFeedback] = useState(false)
 
+  // Row Range Filtering & Anti-Lag Pagination State
+  const [startRowInput, setStartRowInput] = useState<string>('1')
+  const [endRowInput, setEndRowInput] = useState<string>('')
+  const [pageSizeLimit, setPageSizeLimit] = useState<string>('50')
+
   // Selected Record & Drawer
   const [selectedRecordId, setSelectedRecordId] = useState<string>('')
   const [isDrawerOpen, setIsDrawerOpen] = useState(false)
@@ -550,6 +557,11 @@ export function TtsBotView() {
         if (res.data.autoConfig) setAutoConfig((prev) => ({ ...prev, ...res.data.autoConfig }))
         if (res.data.adsApiKey) setAdsApiKeyInput(res.data.adsApiKey)
         if (res.data.adsBaseUrl) setAdsBaseUrlInput(res.data.adsBaseUrl)
+        if (res.data.rowFilter) {
+          if (res.data.rowFilter.startRow !== undefined) setStartRowInput(String(res.data.rowFilter.startRow))
+          if (res.data.rowFilter.endRow !== undefined) setEndRowInput(String(res.data.rowFilter.endRow))
+          if (res.data.rowFilter.pageSize !== undefined) setPageSizeLimit(String(res.data.rowFilter.pageSize))
+        }
 
         // Hydrate in-memory records with saved setups
         setRecords((prev) =>
@@ -628,12 +640,17 @@ export function TtsBotView() {
         autoConfig: newAutoConfig ?? autoConfig,
         poolFolderPath,
         activeTab: selectedSheetTab,
+        rowFilter: {
+          startRow: startRowInput,
+          endRow: endRowInput,
+          pageSize: pageSizeLimit
+        },
         updatedAt: Date.now()
       })
     } catch (err) {
       console.error('Failed to save state:', err)
     }
-  }, [assignments, activeRuns, profileSetups, consumedRecords, harvestedUploads, mailStatuses, autoConfig, poolFolderPath, selectedSheetTab])
+  }, [assignments, activeRuns, profileSetups, consumedRecords, harvestedUploads, mailStatuses, autoConfig, poolFolderPath, selectedSheetTab, startRowInput, endRowInput, pageSizeLimit])
 
   // Direct Port Update Handler for Quick Manual Edits
   const handleDirectPortUpdate = (recordId: string, newPort: number) => {
@@ -1534,11 +1551,78 @@ export function TtsBotView() {
     })
   }, [records, searchTerm, filterState, pipelineFilter, mailStatuses, hideConsumed, consumedRecords])
 
+  // 2. Row Filtered & Anti-Lag Display Records
+  const displayRecords = useMemo(() => {
+    if (selectedSheetTab === 'TTS Chạy Thật') {
+      return activeRuns
+    }
+
+    let result = filteredRecords
+
+    // Lọc bắt đầu từ số dòng (Google Sheet rowNumber)
+    const start = parseInt(startRowInput) || 1
+    if (start > 1) {
+      result = result.filter((r) => r.rowNumber >= start)
+    }
+
+    // Lọc kết thúc ở số dòng (nếu có nhập endRow)
+    const end = parseInt(endRowInput) || 0
+    if (end > 0 && end >= start) {
+      result = result.filter((r) => r.rowNumber <= end)
+    }
+
+    // Giới hạn số dòng hiển thị tối đa cùng lúc để chống lag DOM (25, 50, 100, 200, all)
+    if (pageSizeLimit !== 'all') {
+      const limit = parseInt(pageSizeLimit) || 50
+      result = result.slice(0, limit)
+    }
+
+    return result
+  }, [selectedSheetTab, activeRuns, filteredRecords, startRowInput, endRowInput, pageSizeLimit])
+
+  // Display Range Description (ví dụ: Row 50 → 99)
+  const displayRangeText = useMemo(() => {
+    if (displayRecords.length === 0) return ''
+    const first = displayRecords[0]?.rowNumber
+    const last = displayRecords[displayRecords.length - 1]?.rowNumber
+    if (first !== undefined && last !== undefined) {
+      return `Row ${first} → ${last}`
+    }
+    return ''
+  }, [displayRecords])
+
+  // Quick Row Pagination Handlers
+  const handleNextRows = useCallback(() => {
+    const currentStart = parseInt(startRowInput) || 1
+    const step = pageSizeLimit === 'all' ? 50 : (parseInt(pageSizeLimit) || 50)
+    const newStart = currentStart + step
+    setStartRowInput(String(newStart))
+    if (endRowInput) {
+      const currentEnd = parseInt(endRowInput) || currentStart
+      setEndRowInput(String(currentEnd + step))
+    }
+  }, [startRowInput, endRowInput, pageSizeLimit])
+
+  const handlePrevRows = useCallback(() => {
+    const currentStart = parseInt(startRowInput) || 1
+    const step = pageSizeLimit === 'all' ? 50 : (parseInt(pageSizeLimit) || 50)
+    const newStart = Math.max(1, currentStart - step)
+    setStartRowInput(String(newStart))
+    if (endRowInput) {
+      const currentEnd = parseInt(endRowInput) || currentStart
+      setEndRowInput(String(Math.max(newStart, currentEnd - step)))
+    }
+  }, [startRowInput, endRowInput, pageSizeLimit])
+
+  const handleResetRows = useCallback(() => {
+    setStartRowInput('1')
+    setEndRowInput('')
+  }, [])
 
   // Current Selected Record
   const currentRecord = useMemo(() => {
-    return records.find((r) => r.id === selectedRecordId) || records[0]
-  }, [records, selectedRecordId])
+    return records.find((r) => r.id === selectedRecordId) || displayRecords[0] || records[0]
+  }, [records, displayRecords, selectedRecordId])
 
   // Current Assignment
   const currentAssignment = useMemo(() => {
@@ -2237,6 +2321,107 @@ export function TtsBotView() {
               </div>
             </div>
 
+            {/* Sub-toolbar: Row Range Filter & Anti-Lag Pagination Controls */}
+            <div className="flex items-center justify-between px-5 py-1.5 bg-slate-950/80 border-b border-slate-800/80 text-xs shrink-0">
+              {/* Left: Row Range Filter Controls */}
+              <div className="flex items-center space-x-2.5">
+                <div className="flex items-center space-x-1 text-slate-400 font-medium">
+                  <ListOrdered className="w-3.5 h-3.5 text-cyan-400" />
+                  <span className="text-[11px] font-semibold text-slate-300">LỌC DÒNG:</span>
+                </div>
+
+                {/* Bắt đầu từ row */}
+                <div className="flex items-center space-x-1">
+                  <span className="text-[11px] text-slate-400">Từ row</span>
+                  <input
+                    type="number"
+                    min="1"
+                    value={startRowInput}
+                    onChange={(e) => setStartRowInput(e.target.value)}
+                    placeholder="1"
+                    className="w-16 px-1.5 py-0.5 text-xs bg-slate-900 border border-slate-700 rounded font-mono text-cyan-300 text-center focus:border-cyan-400 focus:outline-none"
+                    title="Bắt đầu từ số dòng này trên Google Sheet trở đi"
+                  />
+                </div>
+
+                {/* Đến row */}
+                <div className="flex items-center space-x-1">
+                  <span className="text-[11px] text-slate-400">Đến row</span>
+                  <input
+                    type="number"
+                    min={parseInt(startRowInput) || 1}
+                    value={endRowInput}
+                    onChange={(e) => setEndRowInput(e.target.value)}
+                    placeholder="Hết"
+                    className="w-16 px-1.5 py-0.5 text-xs bg-slate-900 border border-slate-700 rounded font-mono text-cyan-300 text-center focus:border-cyan-400 focus:outline-none"
+                    title="Dừng ở số dòng này trên Google Sheet (để trống nếu muốn xem liên tục)"
+                  />
+                </div>
+
+                {/* Dropdown Số lượng / Giới hạn hiển thị (Page Size) */}
+                <div className="flex items-center space-x-1 pl-1 border-l border-slate-800">
+                  <span className="text-[11px] text-slate-400 pl-1">Hiển thị:</span>
+                  <select
+                    value={pageSizeLimit}
+                    onChange={(e) => setPageSizeLimit(e.target.value)}
+                    className="px-2 py-0.5 text-xs bg-slate-900 border border-slate-700 rounded text-slate-200 focus:border-cyan-400 focus:outline-none cursor-pointer"
+                  >
+                    <option value="25">25 dòng</option>
+                    <option value="50">50 dòng (Chuẩn)</option>
+                    <option value="100">100 dòng</option>
+                    <option value="200">200 dòng</option>
+                    <option value="all">Tất cả (Full)</option>
+                  </select>
+                </div>
+
+                {/* Nút Reset / Về đầu */}
+                {(startRowInput !== '1' || endRowInput !== '') && (
+                  <button
+                    onClick={handleResetRows}
+                    className="text-[11px] text-slate-400 hover:text-cyan-300 underline cursor-pointer ml-1"
+                    title="Quay lại hiển thị từ Row 1"
+                  >
+                    Về Row 1
+                  </button>
+                )}
+              </div>
+
+              {/* Right: Counter & Quick Navigation */}
+              <div className="flex items-center space-x-3 text-slate-400 text-xs">
+                <div className="flex items-center space-x-1.5 font-mono">
+                  <span className="text-slate-200 font-bold">{displayRecords.length}</span>
+                  <span className="text-slate-500">/</span>
+                  <span>{filteredRecords.length} hồ sơ</span>
+                  {displayRangeText && (
+                    <span className="text-[10px] text-cyan-300 font-semibold px-2 py-0.5 rounded bg-cyan-950/80 border border-cyan-800/60 ml-1">
+                      {displayRangeText}
+                    </span>
+                  )}
+                </div>
+
+                <div className="flex items-center space-x-1">
+                  <button
+                    onClick={handlePrevRows}
+                    disabled={parseInt(startRowInput) <= 1}
+                    className="px-2 py-0.5 text-xs bg-slate-900 hover:bg-slate-800 disabled:opacity-30 disabled:hover:bg-slate-900 text-slate-300 border border-slate-700 rounded flex items-center space-x-0.5 cursor-pointer"
+                    title="Lùi về các dòng trước"
+                  >
+                    <ChevronLeft className="w-3.5 h-3.5" />
+                    <span>Trước</span>
+                  </button>
+                  <button
+                    onClick={handleNextRows}
+                    disabled={displayRecords.length < (pageSizeLimit === 'all' ? 999999 : parseInt(pageSizeLimit) || 50)}
+                    className="px-2 py-0.5 text-xs bg-slate-900 hover:bg-slate-800 disabled:opacity-30 disabled:hover:bg-slate-900 text-slate-300 border border-slate-700 rounded flex items-center space-x-0.5 cursor-pointer"
+                    title="Tiến lên các dòng tiếp theo"
+                  >
+                    <span>Tiếp</span>
+                    <ChevronRight className="w-3.5 h-3.5" />
+                  </button>
+                </div>
+              </div>
+            </div>
+
             {/* Records Table View */}
             <div className="flex-1 overflow-auto">
               <table className="w-full text-left border-collapse text-xs">
@@ -2247,10 +2432,10 @@ export function TtsBotView() {
                         <button
                           onClick={() => {
                             if (selectedRowIds.size > 0) setSelectedRowIds(new Set())
-                            else setSelectedRowIds(new Set(filteredRecords.filter((r) => !consumedRecords[r.id]).map((r) => r.id)))
+                            else setSelectedRowIds(new Set(displayRecords.filter((r) => !consumedRecords[r.id]).map((r) => r.id)))
                           }}
                           className="text-slate-400 hover:text-white"
-                          title="Chọn tất cả"
+                          title="Chọn tất cả đang hiển thị"
                         >
                           {selectedRowIds.size > 0 ? <CheckSquare className="w-4 h-4 text-emerald-400" /> : <SquareIcon className="w-4 h-4" />}
                         </button>
@@ -2264,7 +2449,7 @@ export function TtsBotView() {
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-800/60">
-                  {filteredRecords.length === 0 ? (
+                  {displayRecords.length === 0 ? (
                     <tr>
                       <td colSpan={isCurrentTabProtected ? 6 : 5} className="py-12 text-center text-slate-500">
                         {isLoadingSheet ? (
@@ -2286,7 +2471,7 @@ export function TtsBotView() {
                       </td>
                     </tr>
                   ) : (
-                    filteredRecords.map((r) => {
+                    displayRecords.map((r) => {
                       const isSelected = selectedRecordId === r.id
                       const isConsumed = !!consumedRecords[r.id]
                       const isSettingUpThis = isSettingUpId === r.id
@@ -2346,6 +2531,14 @@ export function TtsBotView() {
                           {/* Cột 1: HỒ SƠ & THIẾT BỊ */}
                           <td className="py-3 px-3">
                             <div className="flex items-center space-x-2">
+                              {r.rowNumber !== undefined && (
+                                <span
+                                  className="px-1.5 py-0.5 rounded text-[10px] font-mono font-bold bg-slate-900 border border-slate-700/80 text-cyan-300 shrink-0 shadow-sm"
+                                  title={`Dòng thứ ${r.rowNumber} trên Google Sheet`}
+                                >
+                                  #{r.rowNumber}
+                                </span>
+                              )}
                               <span className={`font-mono font-bold text-xs ${isConsumed ? 'text-slate-500 line-through' : 'text-emerald-400'}`}>
                                 {r.id}
                               </span>
