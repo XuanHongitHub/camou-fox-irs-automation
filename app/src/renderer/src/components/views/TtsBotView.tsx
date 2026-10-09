@@ -41,7 +41,14 @@ import {
   ListOrdered,
   ChevronLeft,
   Mail,
-  Monitor
+  Monitor,
+  Eye,
+  EyeOff,
+  Phone,
+  Download,
+  ClipboardCheck,
+  ClipboardCopy,
+  Package
 } from 'lucide-react'
 
 export interface RecordItem {
@@ -63,7 +70,13 @@ export interface RecordItem {
   phone?: string
   phoneCodeUrl?: string
   fullName: string
+  firstName?: string
+  lastName?: string
+  middleName?: string
   dob: string
+  dobMonth?: string
+  dobDay?: string
+  dobYear?: string
   is195x?: boolean
   ageWarning?: string
   gender?: string
@@ -72,7 +85,9 @@ export interface RecordItem {
   state: string
   zipCode: string
   dl: string
+  dlExp?: string
   ssn: string
+  ssnLast4?: string
   ein: string
   nameLlc?: string
   addressLlc?: string
@@ -84,6 +99,11 @@ export interface RecordItem {
   bankStatement?: string
   businessType: string
   businessName: string
+  shopName?: string
+  notes?: string
+  newMail?: string
+  newPhone?: string
+  new2FA?: string
   sourceTab?: string
   assignedPort?: number
   proxyMeta?: any
@@ -341,6 +361,41 @@ const ttsIpc = {
   autoRotateVariant: async (profileId: string) => {
     if (window.electron?.ipcRenderer) return await window.electron.ipcRenderer.invoke('tts:pool:auto-rotate-variant', profileId)
     return { ok: false, error: 'IPC unavailable' }
+  },
+  generateCp575: async (record: any) => {
+    if ((window.api?.tts as any)?.doc?.generateCp575) return await (window.api.tts as any).doc.generateCp575(record)
+    if (window.electron?.ipcRenderer) return await window.electron.ipcRenderer.invoke('tts:pdf:generate-cp575', record)
+    return { ok: false, error: 'IPC unavailable' }
+  },
+  generateVerizon: async (record: any) => {
+    if ((window.api?.tts as any)?.doc?.generateVerizon) return await (window.api.tts as any).doc.generateVerizon(record)
+    if (window.electron?.ipcRenderer) return await window.electron.ipcRenderer.invoke('tts:pdf:generate-verizon', record)
+    return { ok: false, error: 'IPC unavailable' }
+  },
+  docOpenFile: async (filePath: string) => {
+    if ((window.api?.tts as any)?.doc?.openFile) return await (window.api.tts as any).doc.openFile(filePath)
+    if (window.electron?.ipcRenderer) return await window.electron.ipcRenderer.invoke('tts:doc:open-file', filePath)
+    return { ok: false, error: 'IPC unavailable' }
+  },
+  docOpenFolder: async (folderPath?: string) => {
+    if ((window.api?.tts as any)?.doc?.openFolder) return await (window.api.tts as any).doc.openFolder(folderPath)
+    if (window.electron?.ipcRenderer) return await window.electron.ipcRenderer.invoke('tts:doc:open-folder', folderPath)
+    return { ok: false, error: 'IPC unavailable' }
+  },
+  extensionGetInfo: async () => {
+    if ((window.api?.tts as any)?.extension?.getInfo) return await (window.api.tts as any).extension.getInfo()
+    if (window.electron?.ipcRenderer) return await window.electron.ipcRenderer.invoke('tts:extension:get-info')
+    return { ok: false, error: 'IPC unavailable' }
+  },
+  extensionOpenFolder: async () => {
+    if ((window.api?.tts as any)?.extension?.openFolder) return await (window.api.tts as any).extension.openFolder()
+    if (window.electron?.ipcRenderer) return await window.electron.ipcRenderer.invoke('tts:extension:open-folder')
+    return { ok: false, error: 'IPC unavailable' }
+  },
+  extensionOpenZip: async () => {
+    if ((window.api?.tts as any)?.extension?.openZip) return await (window.api.tts as any).extension.openZip()
+    if (window.electron?.ipcRenderer) return await window.electron.ipcRenderer.invoke('tts:extension:open-zip')
+    return { ok: false, error: 'IPC unavailable' }
   }
 }
 
@@ -544,6 +599,180 @@ export function TtsBotView() {
   // Auto Engine Configuration
   const [autoConfig, setAutoConfig] = useState<AutoEngineConfig>(DEFAULT_AUTO_CONFIG)
   const [isAutoConfigModalOpen, setIsAutoConfigModalOpen] = useState(false)
+
+  // Sole P / Individual Form Copy Modal & PDF Generation State
+  const [formModalRecord, setFormModalRecord] = useState<RecordItem | null>(null)
+  const [copiedField, setCopiedField] = useState<string | null>(null)
+  const [showPassMap, setShowPassMap] = useState<Record<string, boolean>>({})
+  const [liveMailOtp, setLiveMailOtp] = useState<string | null>(null)
+  const [isFetchingMailOtp, setIsFetchingMailOtp] = useState(false)
+  const [mailOtpError, setMailOtpError] = useState<string | null>(null)
+  const [livePhoneOtp, setLivePhoneOtp] = useState<string | null>(null)
+  const [isFetchingPhoneOtp, setIsFetchingPhoneOtp] = useState(false)
+  const [phoneOtpError, setPhoneOtpError] = useState<string | null>(null)
+  const [generatingDocType, setGeneratingDocType] = useState<'cp575' | 'verizon' | null>(null)
+  const [docNotice, setDocNotice] = useState<string | null>(null)
+  const [extensionModalOpen, setExtensionModalOpen] = useState(false)
+  const [copiedExtensionPath, setCopiedExtensionPath] = useState(false)
+
+  const handleCopyField = (fieldName: string, text: string) => {
+    if (!text) return
+    navigator.clipboard.writeText(text)
+    setCopiedField(fieldName)
+    setTimeout(() => {
+      setCopiedField((prev) => (prev === fieldName ? null : prev))
+    }, 2000)
+  }
+
+  const handleFetchMailOtp = async (record: RecordItem) => {
+    setIsFetchingMailOtp(true)
+    setMailOtpError(null)
+    try {
+      const res = await ttsIpc.mailCheck({
+        email: record.email,
+        pass: record.mailPass,
+        twoFactor: record.twoFactor
+      })
+      if (res && res.otp) {
+        setLiveMailOtp(res.otp)
+        handleCopyField('mail_otp', res.otp)
+      } else {
+        setMailOtpError(res?.error || res?.label || 'Chưa tìm thấy mã OTP trong hòm thư')
+      }
+    } catch (err: any) {
+      setMailOtpError(String(err?.message || err))
+    } finally {
+      setIsFetchingMailOtp(false)
+    }
+  }
+
+  const handleFetchPhoneOtp = async (record: RecordItem) => {
+    setIsFetchingPhoneOtp(true)
+    setPhoneOtpError(null)
+    try {
+      const res = await ttsIpc.phoneFetchCode({
+        phone: record.phone,
+        phoneCodeUrl: record.phoneCodeUrl
+      })
+      if (res && res.code) {
+        setLivePhoneOtp(res.code)
+        handleCopyField('phone_otp', res.code)
+      } else {
+        setPhoneOtpError(res?.error || 'Chưa nhận được mã SMS từ link API')
+      }
+    } catch (err: any) {
+      setPhoneOtpError(String(err?.message || err))
+    } finally {
+      setIsFetchingPhoneOtp(false)
+    }
+  }
+
+  const handleGenerateCp575 = async (record: RecordItem) => {
+    setGeneratingDocType('cp575')
+    setDocNotice(null)
+    try {
+      const res = await ttsIpc.generateCp575(record)
+      if (res && res.ok) {
+        setDocNotice(`✓ Đã tạo IRS CP575 Notice thành công: ${res.fileName}`)
+      } else {
+        setDocNotice(`❌ Lỗi tạo CP575: ${res?.error || 'Thất bại'}`)
+      }
+    } catch (err: any) {
+      setDocNotice(`❌ Lỗi tạo CP575: ${err?.message || err}`)
+    } finally {
+      setGeneratingDocType(null)
+    }
+  }
+
+  const handleGenerateVerizon = async (record: RecordItem) => {
+    setGeneratingDocType('verizon')
+    setDocNotice(null)
+    try {
+      const res = await ttsIpc.generateVerizon(record)
+      if (res && res.ok) {
+        setDocNotice(`✓ Đã tạo Verizon Statement thành công: ${res.fileName}`)
+      } else {
+        setDocNotice(`❌ Lỗi tạo Verizon: ${res?.error || 'Thất bại'}`)
+      }
+    } catch (err: any) {
+      setDocNotice(`❌ Lỗi tạo Verizon: ${err?.message || err}`)
+    } finally {
+      setGeneratingDocType(null)
+    }
+  }
+
+  const handleCopyFullFormText = (record: RecordItem) => {
+    const lines = [
+      `=== THÔNG TIN HỒ SƠ SOLE P / INDIVIDUAL: ${record.id} ===`,
+      `1. TÀI KHOẢN:`,
+      `- Email TTS: ${record.email}`,
+      `- Password TTS: ${record.tiktokPass || record.mailPass}`,
+      `- Số điện thoại: ${record.phone || 'Chưa có'}`,
+      `- Link API OTP Phone: ${record.phoneCodeUrl || 'Chưa có'}`,
+      ``,
+      `2. ĐỊNH DANH CÁ NHÂN:`,
+      `- Họ và tên: ${record.fullName}`,
+      `- First Name: ${record.firstName || ''}`,
+      `- Last Name: ${record.lastName || ''}`,
+      `- Ngày sinh (DOB): ${record.dob} (Tháng: ${record.dobMonth || ''}, Ngày: ${record.dobDay || ''}, Năm: ${record.dobYear || ''})`,
+      `- SSN (9 số): ${record.ssn}`,
+      `- SSN (4 số cuối): ${record.ssnLast4 || ''}`,
+      `- Số bằng lái (DL#): ${record.dl}`,
+      `- Hạn bằng lái (EXP): ${record.dlExp || ''}`,
+      ``,
+      `3. ĐỊA CHỈ CƯ TRÚ:`,
+      `- Địa chỉ: ${record.address}`,
+      `- Thành phố: ${record.city}`,
+      `- Bang: ${record.state}`,
+      `- Mã Zip: ${record.zipCode}`,
+      `- Full Address: ${record.address}, ${record.city}, ${record.state} ${record.zipCode}`,
+      ``,
+      `4. DOANH NGHIỆP SOLE PROPRIETORSHIP:`,
+      `- Tên Shop / Doanh nghiệp: ${record.businessName || record.nameLlc || record.fullName}`,
+      `- Loại hình: Sole Proprietorship`,
+      `- Mã số thuế EIN: ${record.ein}`,
+      `- Địa chỉ DN: ${record.addressLlc || record.address}, ${record.cityLlc || record.city}, ${record.stateLlc || record.state} ${record.zipLlc || record.zipCode}`
+    ]
+    handleCopyField('full_text', lines.join('\n'))
+  }
+
+  const handleCopyFullFormJson = (record: RecordItem) => {
+    const payload = {
+      id: record.id,
+      account: {
+        email: record.email,
+        password: record.tiktokPass || record.mailPass,
+        phone: record.phone,
+        phoneCodeUrl: record.phoneCodeUrl
+      },
+      personal: {
+        fullName: record.fullName,
+        firstName: record.firstName,
+        lastName: record.lastName,
+        dob: record.dob,
+        dobMonth: record.dobMonth,
+        dobDay: record.dobDay,
+        dobYear: record.dobYear,
+        ssn: record.ssn,
+        ssnLast4: record.ssnLast4,
+        dl: record.dl,
+        dlExp: record.dlExp
+      },
+      address: {
+        street: record.address,
+        city: record.city,
+        state: record.state,
+        zip: record.zipCode,
+        full: `${record.address}, ${record.city}, ${record.state} ${record.zipCode}`
+      },
+      business: {
+        businessType: 'Sole Proprietorship',
+        businessName: record.businessName || record.nameLlc || record.fullName,
+        ein: record.ein
+      }
+    }
+    handleCopyField('full_json', JSON.stringify(payload, null, 2))
+  }
 
   // 1. Check API Status
   const refreshStatus = useCallback(async () => {
@@ -3142,6 +3371,45 @@ export function TtsBotView() {
                                 </div>
                               )}
 
+                              {/* Quick Copy Form button */}
+                              <button
+                                onClick={() => {
+                                  setFormModalRecord(r)
+                                  setLiveMailOtp(null)
+                                  setLivePhoneOtp(null)
+                                  setMailOtpError(null)
+                                  setPhoneOtpError(null)
+                                  setDocNotice(null)
+                                }}
+                                className="px-2 py-1 text-xs bg-indigo-600/30 hover:bg-indigo-600 text-indigo-300 hover:text-white border border-indigo-500/40 rounded-lg transition-all shadow-sm flex items-center space-x-1 font-medium cursor-pointer"
+                                title="Mở Bảng Điền Form Sole P / Individual (1-Click Copy Từng Trường & Live OTP)"
+                              >
+                                <ClipboardCopy className="w-3.5 h-3.5" />
+                                <span>Điền Form</span>
+                              </button>
+
+                              {/* Quick CP575 button */}
+                              <button
+                                onClick={() => handleGenerateCp575(r)}
+                                disabled={generatingDocType === 'cp575'}
+                                className="px-1.5 py-1 text-[11px] bg-slate-800 hover:bg-slate-700 text-sky-300 border border-slate-700 rounded-lg transition-all shadow-sm flex items-center space-x-1 cursor-pointer"
+                                title="Tải / Tạo IRS Form CP575 Notice PDF"
+                              >
+                                <FileText className={`w-3 h-3 ${generatingDocType === 'cp575' ? 'animate-spin' : ''}`} />
+                                <span>CP575</span>
+                              </button>
+
+                              {/* Quick Verizon button */}
+                              <button
+                                onClick={() => handleGenerateVerizon(r)}
+                                disabled={generatingDocType === 'verizon'}
+                                className="px-1.5 py-1 text-[11px] bg-slate-800 hover:bg-slate-700 text-emerald-300 border border-slate-700 rounded-lg transition-all shadow-sm flex items-center space-x-1 cursor-pointer"
+                                title="Tải / Tạo Hóa Đơn Tiện Ích Verizon Statement PDF"
+                              >
+                                <Building className={`w-3 h-3 ${generatingDocType === 'verizon' ? 'animate-spin' : ''}`} />
+                                <span>Verizon</span>
+                              </button>
+
                               {/* Drawer button */}
                               <button
                                 onClick={() => {
@@ -3677,6 +3945,24 @@ export function TtsBotView() {
               </button>
             </div>
 
+            {/* Quick Action Button to Open Full Form Copy Inspector */}
+            <div className="py-2.5 border-b border-slate-800">
+              <button
+                onClick={() => {
+                  setFormModalRecord(currentRecord)
+                  setLiveMailOtp(null)
+                  setLivePhoneOtp(null)
+                  setMailOtpError(null)
+                  setPhoneOtpError(null)
+                  setDocNotice(null)
+                }}
+                className="w-full py-2 bg-gradient-to-r from-indigo-600 to-violet-600 hover:from-indigo-500 hover:to-violet-500 text-white rounded-lg text-xs font-bold shadow-md flex items-center justify-center space-x-2 transition-all cursor-pointer"
+              >
+                <ClipboardCopy className="w-4 h-4" />
+                <span>📋 Mở Bảng Điền Form Sole P / Individual (1-Click Copy Từng Trường)</span>
+              </button>
+            </div>
+
             <div className="flex-1 overflow-auto py-4 space-y-4 text-xs">
               {/* Readiness Audit Scorecard Banner */}
               {currentRecord.readyStatus === '100_ready' ? (
@@ -3854,66 +4140,78 @@ export function TtsBotView() {
                 </div>
               </div>
 
-              {/* Card 3: Tài liệu Pháp lý từ Cell Sheet */}
+              {/* Card 3: Tài liệu Pháp lý & Tạo PDF Chuẩn */}
               <div className="bg-slate-950 p-4 rounded-xl border border-slate-800">
                 <div className="flex items-center justify-between mb-2.5">
                   <h4 className="text-slate-400 uppercase font-semibold text-[10px] tracking-wider flex items-center space-x-1.5">
                     <FileText className="w-3.5 h-3.5 text-sky-400" />
-                    <span>3. Tài liệu Pháp lý (Cell Sheet)</span>
+                    <span>3. Tài liệu Pháp lý & PDF (IRS CP575, Verizon)</span>
                   </h4>
-                  <span className="text-[10px] text-cyan-400 font-medium">Tự động trích xuất</span>
+                  <button
+                    onClick={() => ttsIpc.docOpenFolder()}
+                    className="text-[10px] text-cyan-400 hover:text-cyan-300 flex items-center space-x-1 cursor-pointer"
+                  >
+                    <FolderOpen className="w-3 h-3" />
+                    <span>Mở Thư Mục PDF</span>
+                  </button>
                 </div>
                 <div className="space-y-2.5">
-                  {/* IRS CP 575 */}
-                  <div className="p-2.5 bg-slate-900 border border-slate-800 rounded-lg space-y-1">
+                  {/* IRS CP 575 Notice */}
+                  <div className="p-2.5 bg-slate-900 border border-slate-800 rounded-lg space-y-2">
                     <div className="flex items-center justify-between">
-                      <span className="text-slate-400 font-medium">Thư xác nhận thuế IRS (CP 575 / 147C):</span>
-                      <span className={currentRecord.pdfDoc ? 'text-emerald-400 text-[10px]' : 'text-slate-600 text-[10px]'}>
-                        {currentRecord.pdfDoc ? '✓ Có file PDF' : 'Chưa có'}
+                      <span className="text-slate-300 font-medium">Thư xác nhận thuế IRS (Form CP 575G):</span>
+                      <span className="text-emerald-400 text-[10px] font-mono font-semibold">
+                        EIN: {currentRecord.ein || 'Chưa có'}
                       </span>
                     </div>
-                    {currentRecord.pdfDoc ? (
-                      <div className="flex items-center justify-between bg-slate-950 p-1.5 rounded border border-slate-800 text-[11px] font-mono text-slate-300">
-                        <span className="truncate max-w-[340px]" title={currentRecord.pdfDoc}>
-                          {currentRecord.pdfDoc}
-                        </span>
+                    <div className="flex items-center space-x-2">
+                      <button
+                        onClick={() => handleGenerateCp575(currentRecord)}
+                        disabled={generatingDocType === 'cp575'}
+                        className="flex-1 py-1.5 px-3 bg-sky-600 hover:bg-sky-500 text-white rounded-lg text-xs font-semibold shadow flex items-center justify-center space-x-1.5 transition-all cursor-pointer"
+                      >
+                        <FileText className={`w-3.5 h-3.5 ${generatingDocType === 'cp575' ? 'animate-spin' : ''}`} />
+                        <span>{generatingDocType === 'cp575' ? 'Đang tạo PDF...' : '📄 Tạo & Mở IRS CP 575 PDF'}</span>
+                      </button>
+                      {currentRecord.pdfDoc && (
                         <button
                           onClick={() => navigator.clipboard.writeText(currentRecord.pdfDoc || '')}
-                          className="text-slate-400 hover:text-emerald-400 ml-1.5"
-                          title="Copy tên file PDF"
+                          className="p-1.5 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-lg"
+                          title="Copy tên file"
                         >
-                          <Copy className="w-3 h-3" />
+                          <Copy className="w-3.5 h-3.5" />
                         </button>
-                      </div>
-                    ) : (
-                      <div className="text-[11px] text-slate-500 italic">Chưa có tên tệp PDF trên Sheet</div>
-                    )}
+                      )}
+                    </div>
                   </div>
 
-                  {/* Bank Statement / Utility Bill */}
-                  <div className="p-2.5 bg-slate-900 border border-slate-800 rounded-lg space-y-1">
+                  {/* Verizon Statement */}
+                  <div className="p-2.5 bg-slate-900 border border-slate-800 rounded-lg space-y-2">
                     <div className="flex items-center justify-between">
-                      <span className="text-slate-400 font-medium">Hóa đơn tiện ích / Sao kê (Bank / Utility):</span>
-                      <span className={currentRecord.bankStatement ? 'text-emerald-400 text-[10px]' : 'text-slate-600 text-[10px]'}>
-                        {currentRecord.bankStatement ? '✓ Có file' : 'Chưa có'}
+                      <span className="text-slate-300 font-medium">Hóa đơn tiện ích / Proof of Address (Verizon):</span>
+                      <span className="text-emerald-400 text-[10px] font-mono font-semibold">
+                        Bang {currentRecord.state}
                       </span>
                     </div>
-                    {currentRecord.bankStatement ? (
-                      <div className="flex items-center justify-between bg-slate-950 p-1.5 rounded border border-slate-800 text-[11px] font-mono text-slate-300">
-                        <span className="truncate max-w-[340px]" title={currentRecord.bankStatement}>
-                          {currentRecord.bankStatement}
-                        </span>
+                    <div className="flex items-center space-x-2">
+                      <button
+                        onClick={() => handleGenerateVerizon(currentRecord)}
+                        disabled={generatingDocType === 'verizon'}
+                        className="flex-1 py-1.5 px-3 bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg text-xs font-semibold shadow flex items-center justify-center space-x-1.5 transition-all cursor-pointer"
+                      >
+                        <Building className={`w-3.5 h-3.5 ${generatingDocType === 'verizon' ? 'animate-spin' : ''}`} />
+                        <span>{generatingDocType === 'verizon' ? 'Đang tạo Bill...' : '📄 Tạo & Mở Verizon Statement PDF'}</span>
+                      </button>
+                      {currentRecord.bankStatement && (
                         <button
                           onClick={() => navigator.clipboard.writeText(currentRecord.bankStatement || '')}
-                          className="text-slate-400 hover:text-emerald-400 ml-1.5"
-                          title="Copy tên file Bank Statement"
+                          className="p-1.5 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-lg"
+                          title="Copy tên file"
                         >
-                          <Copy className="w-3 h-3" />
+                          <Copy className="w-3.5 h-3.5" />
                         </button>
-                      </div>
-                    ) : (
-                      <div className="text-[11px] text-slate-500 italic">Chưa có tên tệp Bank Statement trên Sheet</div>
-                    )}
+                      )}
+                    </div>
                   </div>
 
                   {/* Folder URL */}
@@ -6155,6 +6453,884 @@ export function TtsBotView() {
                   Xong
                 </Button>
               </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* 5. SOLE PROPRIETORSHIP / INDIVIDUAL FORM COPY MODAL (1-CLICK COPY TỪNG TRƯỜNG & LIVE OTP & PDF) */}
+      {formModalRecord && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-md p-4 animate-in fade-in duration-150">
+          <div className="w-full max-w-5xl max-h-[92vh] bg-slate-900 border border-slate-700/80 rounded-2xl flex flex-col shadow-2xl overflow-hidden">
+            {/* Modal Header */}
+            <div className="px-6 py-4 bg-slate-950 border-b border-slate-800 flex items-center justify-between shrink-0">
+              <div className="flex items-center space-x-3">
+                <div className="p-2 rounded-xl bg-indigo-500/15 border border-indigo-500/30 text-indigo-400">
+                  <ClipboardCheck className="w-5 h-5" />
+                </div>
+                <div>
+                  <div className="flex items-center space-x-2">
+                    <h3 className="text-base font-bold text-white tracking-wide">
+                      BẢNG ĐIỀN FORM SOLE PROPRIETORSHIP / INDIVIDUAL
+                    </h3>
+                    <span className="font-mono text-xs px-2.5 py-0.5 bg-indigo-950 text-indigo-300 border border-indigo-800 rounded font-bold">
+                      {formModalRecord.id}
+                    </span>
+                    <span className="text-xs px-2 py-0.5 bg-slate-800 text-slate-300 border border-slate-700 rounded font-semibold">
+                      Bang {formModalRecord.state}
+                    </span>
+                  </div>
+                  <p className="text-xs text-slate-400 mt-0.5">
+                    Chủ sở hữu: <strong className="text-slate-200">{formModalRecord.fullName}</strong> | Doanh nghiệp:{' '}
+                    <strong className="text-emerald-400">{formModalRecord.businessName || formModalRecord.nameLlc || formModalRecord.fullName}</strong>
+                  </p>
+                </div>
+              </div>
+
+              <div className="flex items-center space-x-2">
+                {formModalRecord.adspowerId && (
+                  <button
+                    onClick={async () => {
+                      try {
+                        await ttsIpc.adspowerStart(formModalRecord.adspowerId!)
+                      } catch (e) {
+                        console.error(e)
+                      }
+                    }}
+                    className="px-3 py-1.5 bg-cyan-600/30 hover:bg-cyan-600 text-cyan-300 hover:text-white border border-cyan-500/40 rounded-lg text-xs font-semibold transition-all flex items-center space-x-1.5 cursor-pointer shadow-sm"
+                    title="Mở AdsPower profile đã cấu hình"
+                  >
+                    <Play className="w-3.5 h-3.5 fill-current" />
+                    <span>Mở Browser Ads</span>
+                  </button>
+                )}
+
+                <button
+                  onClick={() => handleGenerateCp575(formModalRecord)}
+                  disabled={generatingDocType === 'cp575'}
+                  className="px-3 py-1.5 bg-sky-600/30 hover:bg-sky-600 text-sky-300 hover:text-white border border-sky-500/40 rounded-lg text-xs font-semibold transition-all flex items-center space-x-1.5 cursor-pointer shadow-sm"
+                  title="Tải / Tạo IRS CP575 Notice PDF"
+                >
+                  <FileText className={`w-3.5 h-3.5 ${generatingDocType === 'cp575' ? 'animate-spin' : ''}`} />
+                  <span>Tải EIN PDF (CP575)</span>
+                </button>
+
+                <button
+                  onClick={() => handleGenerateVerizon(formModalRecord)}
+                  disabled={generatingDocType === 'verizon'}
+                  className="px-3 py-1.5 bg-emerald-600/30 hover:bg-emerald-600 text-emerald-300 hover:text-white border border-emerald-500/40 rounded-lg text-xs font-semibold transition-all flex items-center space-x-1.5 cursor-pointer shadow-sm"
+                  title="Tải / Tạo Hóa Đơn Verizon Statement PDF"
+                >
+                  <Building className={`w-3.5 h-3.5 ${generatingDocType === 'verizon' ? 'animate-spin' : ''}`} />
+                  <span>Tải Verizon PDF</span>
+                </button>
+
+                <button
+                  onClick={() => setFormModalRecord(null)}
+                  className="text-slate-400 hover:text-white p-1 rounded-lg hover:bg-slate-800 transition-all cursor-pointer ml-2"
+                >
+                  <X className="w-5 h-5" />
+                </button>
+              </div>
+            </div>
+
+            {/* Modal Body */}
+            <div className="flex-1 overflow-y-auto p-6 space-y-5">
+              {/* Notification Banner */}
+              {docNotice && (
+                <div
+                  className={`p-3 rounded-xl border flex items-center justify-between text-xs animate-in fade-in ${
+                    docNotice.startsWith('✓')
+                      ? 'bg-emerald-950/40 border-emerald-800/80 text-emerald-200'
+                      : 'bg-rose-950/40 border-rose-800/80 text-rose-200'
+                  }`}
+                >
+                  <div className="flex items-center space-x-2">
+                    <CheckCircle2 className="w-4 h-4 shrink-0" />
+                    <span>{docNotice}</span>
+                  </div>
+                  <button
+                    onClick={() => setDocNotice(null)}
+                    className="text-slate-400 hover:text-white p-0.5 cursor-pointer"
+                  >
+                    <X className="w-3.5 h-3.5" />
+                  </button>
+                </div>
+              )}
+
+              {/* 195x Rule 2A Alert */}
+              {formModalRecord.is195x && (
+                <div className="p-3 bg-red-950/40 border border-red-800/80 rounded-xl flex items-start space-x-2 text-red-200">
+                  <AlertTriangle className="w-4 h-4 text-red-400 shrink-0 mt-0.5" />
+                  <div className="space-y-1">
+                    <div className="font-semibold text-xs text-red-300">
+                      Quy tắc Nghiệp vụ 195x (GEMINI.md Rule 2A)
+                    </div>
+                    <div className="text-[11px] leading-relaxed text-red-300/90">
+                      Năm sinh {formModalRecord.dob} thuộc thập niên 195x (độ tuổi &gt; 65). Rất dễ bị kiểm duyệt từ chối danh tính. <strong>Khuyến nghị BỎ QUA (SKIP).</strong>
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {/* Top Quick Action Bar */}
+              <div className="flex flex-wrap items-center justify-between gap-2.5 p-3 bg-slate-950/80 border border-slate-800 rounded-xl">
+                <div className="flex items-center space-x-2">
+                  <span className="text-xs font-semibold text-slate-300">Sao chép nhanh:</span>
+                  <button
+                    onClick={() => handleCopyFullFormText(formModalRecord)}
+                    className={`px-3 py-1.5 rounded-lg text-xs font-semibold flex items-center space-x-1.5 transition-all cursor-pointer ${
+                      copiedField === 'full_text'
+                        ? 'bg-emerald-600 text-white'
+                        : 'bg-slate-800 hover:bg-slate-700 text-slate-200'
+                    }`}
+                  >
+                    {copiedField === 'full_text' ? (
+                      <>
+                        <Check className="w-3.5 h-3.5 text-white" />
+                        <span>Đã copy Text!</span>
+                      </>
+                    ) : (
+                      <>
+                        <Copy className="w-3.5 h-3.5" />
+                        <span>Copy Toàn Bộ (Format Text)</span>
+                      </>
+                    )}
+                  </button>
+
+                  <button
+                    onClick={() => handleCopyFullFormJson(formModalRecord)}
+                    className={`px-3 py-1.5 rounded-lg text-xs font-semibold flex items-center space-x-1.5 transition-all cursor-pointer ${
+                      copiedField === 'full_json'
+                        ? 'bg-emerald-600 text-white'
+                        : 'bg-slate-800 hover:bg-slate-700 text-slate-200'
+                    }`}
+                  >
+                    {copiedField === 'full_json' ? (
+                      <>
+                        <Check className="w-3.5 h-3.5 text-white" />
+                        <span>Đã copy JSON!</span>
+                      </>
+                    ) : (
+                      <>
+                        <FileText className="w-3.5 h-3.5" />
+                        <span>Copy JSON Đầy Đủ</span>
+                      </>
+                    )}
+                  </button>
+                </div>
+
+                <div className="flex items-center space-x-2">
+                  <button
+                    onClick={() => setExtensionModalOpen((prev) => !prev)}
+                    className="px-3 py-1.5 bg-indigo-950/60 hover:bg-indigo-900/80 text-indigo-300 border border-indigo-800/60 rounded-lg text-xs font-semibold flex items-center space-x-1.5 transition-all cursor-pointer"
+                  >
+                    <Package className="w-3.5 h-3.5 text-indigo-400" />
+                    <span>🧩 Hướng Dẫn & Nạp Extension AdsPower</span>
+                  </button>
+                </div>
+              </div>
+
+              {/* Extension Guidance Box (Expandable) */}
+              {extensionModalOpen && (
+                <div className="p-4 bg-indigo-950/20 border border-indigo-800/60 rounded-xl space-y-3 animate-in fade-in duration-150">
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center space-x-2">
+                      <Package className="w-4 h-4 text-indigo-400" />
+                      <span className="text-xs font-bold text-indigo-200">
+                        Cơ Chế Nạp Extension AdsPower & Trình Duyệt Chrome
+                      </span>
+                    </div>
+                    <span className="text-[11px] text-slate-400">Tiện ích Copilot MV3</span>
+                  </div>
+                  <p className="text-xs text-slate-300 leading-relaxed">
+                    AdsPower chạy nhân bảo mật cao có thể hạn chế cờ dòng lệnh <code>--load-extension</code> cho tiện ích chưa xác minh. Để tiện ích hoạt động 100% vĩnh viễn trên mọi Profile, bạn có thể:
+                  </p>
+                  <ol className="text-xs text-slate-300 space-y-1 list-decimal list-inside pl-1">
+                    <li>
+                      <strong>Cách 1 (Khuyên dùng trong AdsPower):</strong> Vào mục <em>Quản lý tiện ích (Extensions)</em> trong AdsPower &gt; Bấm <em>Tải lên tiện ích (.zip)</em> &gt; Chọn file <code>tts_copilot_extension.zip</code>.
+                    </li>
+                    <li>
+                      <strong>Cách 2:</strong> Mở thư mục Unpacked và kéo-thả trực tiếp vào tab <code>chrome://extensions</code> khi mở browser.
+                    </li>
+                  </ol>
+                  <div className="flex flex-wrap items-center gap-2 pt-1">
+                    <button
+                      onClick={async () => {
+                        await ttsIpc.extensionOpenZip()
+                      }}
+                      className="px-3 py-1.5 bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg text-xs font-semibold flex items-center space-x-1.5 cursor-pointer shadow"
+                    >
+                      <Download className="w-3.5 h-3.5" />
+                      <span>📦 Mở File ZIP Extension (Để Tải Lên AdsPower)</span>
+                    </button>
+                    <button
+                      onClick={async () => {
+                        await ttsIpc.extensionOpenFolder()
+                      }}
+                      className="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-lg text-xs font-semibold flex items-center space-x-1.5 cursor-pointer"
+                    >
+                      <FolderOpen className="w-3.5 h-3.5" />
+                      <span>📂 Mở Thư Mục Unpacked</span>
+                    </button>
+                    <button
+                      onClick={async () => {
+                        const info = await ttsIpc.extensionGetInfo()
+                        if (info && info.extensionPath) {
+                          navigator.clipboard.writeText(info.extensionPath)
+                          setCopiedExtensionPath(true)
+                          setTimeout(() => setCopiedExtensionPath(false), 2000)
+                        }
+                      }}
+                      className="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-lg text-xs flex items-center space-x-1.5 cursor-pointer"
+                    >
+                      {copiedExtensionPath ? (
+                        <>
+                          <Check className="w-3.5 h-3.5 text-emerald-400" />
+                          <span>Đã copy Path!</span>
+                        </>
+                      ) : (
+                        <>
+                          <Copy className="w-3.5 h-3.5" />
+                          <span>📋 Copy Đường Dẫn Thư Mục</span>
+                        </>
+                      )}
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              {/* Main Content: 5 Cards Grid */}
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                {/* ─── CARD 1: TÀI KHOẢN TTS & MÃ OTP LIVE ─── */}
+                <div className="bg-slate-950 p-4 rounded-xl border border-slate-800 space-y-3">
+                  <div className="flex items-center justify-between pb-2 border-b border-slate-850">
+                    <h4 className="text-xs uppercase font-bold text-amber-400 flex items-center space-x-1.5 tracking-wider">
+                      <Key className="w-4 h-4 text-amber-400" />
+                      <span>1. Tài Khoản TTS & Xác Thực OTP Live</span>
+                    </h4>
+                    <span className="text-[10px] px-2 py-0.5 bg-amber-950 text-amber-300 border border-amber-800 rounded font-semibold">
+                      Live Fetch
+                    </span>
+                  </div>
+
+                  <div className="space-y-2.5">
+                    {/* Email TTS */}
+                    <div className="flex items-center justify-between p-2 rounded-lg bg-slate-900 border border-slate-800">
+                      <div className="flex flex-col min-w-0 pr-2">
+                        <span className="text-[10px] text-slate-400 font-medium">Email Đăng Nhập TTS</span>
+                        <span className="font-mono text-slate-200 truncate select-all">{formModalRecord.email}</span>
+                      </div>
+                      <button
+                        onClick={() => handleCopyField('email', formModalRecord.email)}
+                        className={`px-2 py-1 rounded text-[11px] font-medium flex items-center space-x-1 cursor-pointer transition-all ${
+                          copiedField === 'email'
+                            ? 'bg-emerald-600 text-white'
+                            : 'bg-slate-800 hover:bg-slate-700 text-slate-300'
+                        }`}
+                      >
+                        {copiedField === 'email' ? <Check className="w-3 h-3 text-white" /> : <Copy className="w-3 h-3" />}
+                        <span>{copiedField === 'email' ? 'Đã copy!' : 'Copy'}</span>
+                      </button>
+                    </div>
+
+                    {/* Password TTS */}
+                    {(() => {
+                      const passVal = formModalRecord.tiktokPass || formModalRecord.mailPass || ''
+                      const isVisible = showPassMap['tts_pass'] || false
+                      return (
+                        <div className="flex items-center justify-between p-2 rounded-lg bg-slate-900 border border-slate-800">
+                          <div className="flex flex-col min-w-0 pr-2">
+                            <span className="text-[10px] text-slate-400 font-medium">Mật Khẩu TTS (TikTok Password)</span>
+                            <span className="font-mono text-slate-200 truncate select-all">
+                              {isVisible ? passVal : '••••••••••••'}
+                            </span>
+                          </div>
+                          <div className="flex items-center space-x-1">
+                            <button
+                              type="button"
+                              onClick={() => setShowPassMap((prev) => ({ ...prev, tts_pass: !prev.tts_pass }))}
+                              className="p-1 text-slate-400 hover:text-slate-200 hover:bg-slate-800 rounded"
+                              title={isVisible ? 'Ẩn' : 'Hiện'}
+                            >
+                              {isVisible ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
+                            </button>
+                            <button
+                              onClick={() => handleCopyField('tts_pass', passVal)}
+                              className={`px-2 py-1 rounded text-[11px] font-medium flex items-center space-x-1 cursor-pointer transition-all ${
+                                copiedField === 'tts_pass'
+                                  ? 'bg-emerald-600 text-white'
+                                  : 'bg-slate-800 hover:bg-slate-700 text-slate-300'
+                              }`}
+                            >
+                              {copiedField === 'tts_pass' ? <Check className="w-3 h-3 text-white" /> : <Copy className="w-3 h-3" />}
+                              <span>{copiedField === 'tts_pass' ? 'Đã copy!' : 'Copy'}</span>
+                            </button>
+                          </div>
+                        </div>
+                      )
+                    })()}
+
+                    {/* LIVE MAIL OTP BOX */}
+                    <div className="p-3 bg-gradient-to-r from-amber-500/10 via-purple-500/10 to-indigo-500/10 border border-amber-500/30 rounded-xl space-y-2">
+                      <div className="flex items-center justify-between">
+                        <span className="text-xs font-bold text-amber-300 flex items-center space-x-1.5">
+                          <Mail className="w-3.5 h-3.5" />
+                          <span>Mã OTP Hòm Thư (Mail OTP)</span>
+                        </span>
+                        <button
+                          onClick={() => handleFetchMailOtp(formModalRecord)}
+                          disabled={isFetchingMailOtp}
+                          className="px-2.5 py-1 bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold rounded-lg text-xs shadow flex items-center space-x-1 cursor-pointer disabled:opacity-50"
+                        >
+                          <RefreshCw className={`w-3 h-3 ${isFetchingMailOtp ? 'animate-spin' : ''}`} />
+                          <span>{isFetchingMailOtp ? 'Đang đọc mail...' : '⚡ Lấy OTP Mail Ngay'}</span>
+                        </button>
+                      </div>
+
+                      {liveMailOtp ? (
+                        <div className="flex items-center justify-between bg-slate-950 p-2 rounded-lg border border-emerald-500/50">
+                          <div className="flex items-center space-x-2">
+                            <span className="text-[10px] text-emerald-400 font-semibold">MÃ OTP:</span>
+                            <span className="font-mono text-lg font-extrabold text-emerald-300 tracking-widest">
+                              {liveMailOtp}
+                            </span>
+                          </div>
+                          <button
+                            onClick={() => handleCopyField('mail_otp', liveMailOtp)}
+                            className={`px-3 py-1 rounded text-xs font-bold flex items-center space-x-1 cursor-pointer transition-all ${
+                              copiedField === 'mail_otp'
+                                ? 'bg-emerald-600 text-white'
+                                : 'bg-emerald-700 hover:bg-emerald-600 text-white'
+                            }`}
+                          >
+                            {copiedField === 'mail_otp' ? <Check className="w-3.5 h-3.5 text-white" /> : <Copy className="w-3.5 h-3.5" />}
+                            <span>{copiedField === 'mail_otp' ? 'Đã copy!' : 'Copy OTP'}</span>
+                          </button>
+                        </div>
+                      ) : mailOtpError ? (
+                        <div className="text-[11px] text-rose-300 bg-rose-950/40 p-1.5 rounded border border-rose-800/50">
+                          {mailOtpError}
+                        </div>
+                      ) : (
+                        <div className="text-[11px] text-slate-400 italic">
+                          Bấm nút trên để tự động kết nối IMAP/OAuth2 và trích xuất mã 6 số từ TikTok.
+                        </div>
+                      )}
+                    </div>
+
+                    {/* Phone Number TTS */}
+                    <div className="flex items-center justify-between p-2 rounded-lg bg-slate-900 border border-slate-800">
+                      <div className="flex flex-col min-w-0 pr-2">
+                        <span className="text-[10px] text-slate-400 font-medium">Số Điện Thoại Đăng Ký (Phone)</span>
+                        <span className="font-mono text-slate-200 truncate select-all">{formModalRecord.phone || 'Chưa có'}</span>
+                      </div>
+                      {formModalRecord.phone && (
+                        <button
+                          onClick={() => handleCopyField('phone', formModalRecord.phone || '')}
+                          className={`px-2 py-1 rounded text-[11px] font-medium flex items-center space-x-1 cursor-pointer transition-all ${
+                            copiedField === 'phone'
+                              ? 'bg-emerald-600 text-white'
+                              : 'bg-slate-800 hover:bg-slate-700 text-slate-300'
+                          }`}
+                        >
+                          {copiedField === 'phone' ? <Check className="w-3 h-3 text-white" /> : <Copy className="w-3 h-3" />}
+                          <span>{copiedField === 'phone' ? 'Đã copy!' : 'Copy'}</span>
+                        </button>
+                      )}
+                    </div>
+
+                    {/* LIVE PHONE SMS OTP BOX */}
+                    <div className="p-3 bg-gradient-to-r from-pink-500/10 via-rose-500/10 to-purple-500/10 border border-pink-500/30 rounded-xl space-y-2">
+                      <div className="flex items-center justify-between">
+                        <span className="text-xs font-bold text-pink-300 flex items-center space-x-1.5">
+                          <Phone className="w-3.5 h-3.5" />
+                          <span>Mã OTP Phone (SMS Code)</span>
+                        </span>
+                        {formModalRecord.phoneCodeUrl ? (
+                          <button
+                            onClick={() => handleFetchPhoneOtp(formModalRecord)}
+                            disabled={isFetchingPhoneOtp}
+                            className="px-2.5 py-1 bg-pink-500 hover:bg-pink-400 text-slate-950 font-bold rounded-lg text-xs shadow flex items-center space-x-1 cursor-pointer disabled:opacity-50"
+                          >
+                            <RefreshCw className={`w-3 h-3 ${isFetchingPhoneOtp ? 'animate-spin' : ''}`} />
+                            <span>{isFetchingPhoneOtp ? 'Đang gọi API...' : '⚡ Lấy OTP SMS Ngay'}</span>
+                          </button>
+                        ) : (
+                          <span className="text-[10px] text-slate-500 italic">Chưa có link SMS API</span>
+                        )}
+                      </div>
+
+                      {livePhoneOtp ? (
+                        <div className="flex items-center justify-between bg-slate-950 p-2 rounded-lg border border-pink-500/50">
+                          <div className="flex items-center space-x-2">
+                            <span className="text-[10px] text-pink-400 font-semibold">MÃ SMS:</span>
+                            <span className="font-mono text-lg font-extrabold text-pink-300 tracking-widest">
+                              {livePhoneOtp}
+                            </span>
+                          </div>
+                          <button
+                            onClick={() => handleCopyField('phone_otp', livePhoneOtp)}
+                            className={`px-3 py-1 rounded text-xs font-bold flex items-center space-x-1 cursor-pointer transition-all ${
+                              copiedField === 'phone_otp'
+                                ? 'bg-emerald-600 text-white'
+                                : 'bg-pink-700 hover:bg-pink-600 text-white'
+                            }`}
+                          >
+                            {copiedField === 'phone_otp' ? <Check className="w-3.5 h-3.5 text-white" /> : <Copy className="w-3.5 h-3.5" />}
+                            <span>{copiedField === 'phone_otp' ? 'Đã copy!' : 'Copy SMS'}</span>
+                          </button>
+                        </div>
+                      ) : phoneOtpError ? (
+                        <div className="text-[11px] text-pink-300 bg-pink-950/40 p-1.5 rounded border border-pink-800/50">
+                          {phoneOtpError}
+                        </div>
+                      ) : (
+                        <div className="text-[11px] text-slate-400 italic">
+                          Bấm nút trên để tự động gọi link API lấy mã SMS trực tiếp từ nhà mạng SIM.
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                </div>
+
+                {/* ─── CARD 2: ĐỊNH DANH CÁ NHÂN (OWNER IDENTITY) ─── */}
+                <div className="bg-slate-950 p-4 rounded-xl border border-slate-800 space-y-3">
+                  <div className="flex items-center justify-between pb-2 border-b border-slate-850">
+                    <h4 className="text-xs uppercase font-bold text-emerald-400 flex items-center space-x-1.5 tracking-wider">
+                      <ShieldCheck className="w-4 h-4 text-emerald-400" />
+                      <span>2. Định Danh Cá Nhân (Owner Identity)</span>
+                    </h4>
+                    <span className="text-[10px] text-emerald-400 font-medium">DMV 50 Bang</span>
+                  </div>
+
+                  <div className="space-y-2">
+                    {/* Full Name */}
+                    <div className="flex items-center justify-between p-2 rounded-lg bg-slate-900 border border-slate-800">
+                      <div className="flex flex-col min-w-0 pr-2">
+                        <span className="text-[10px] text-slate-400 font-medium">Họ và Tên Đầy Đủ (Full Name)</span>
+                        <span className="font-mono text-slate-100 font-bold truncate select-all">{formModalRecord.fullName}</span>
+                      </div>
+                      <button
+                        onClick={() => handleCopyField('full_name', formModalRecord.fullName)}
+                        className={`px-2 py-1 rounded text-[11px] font-medium flex items-center space-x-1 cursor-pointer transition-all ${
+                          copiedField === 'full_name' ? 'bg-emerald-600 text-white' : 'bg-slate-800 hover:bg-slate-700 text-slate-300'
+                        }`}
+                      >
+                        {copiedField === 'full_name' ? <Check className="w-3 h-3 text-white" /> : <Copy className="w-3 h-3" />}
+                        <span>{copiedField === 'full_name' ? 'Đã copy!' : 'Copy'}</span>
+                      </button>
+                    </div>
+
+                    {/* Split Names */}
+                    <div className="grid grid-cols-2 gap-2">
+                      <div className="flex items-center justify-between p-2 rounded-lg bg-slate-900 border border-slate-800">
+                        <div className="flex flex-col min-w-0 pr-1">
+                          <span className="text-[10px] text-slate-400">First Name</span>
+                          <span className="font-mono text-slate-200 truncate select-all">{formModalRecord.firstName || formModalRecord.fullName.split(' ')[0]}</span>
+                        </div>
+                        <button
+                          onClick={() => handleCopyField('first_name', formModalRecord.firstName || formModalRecord.fullName.split(' ')[0])}
+                          className="px-1.5 py-1 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded text-[11px] cursor-pointer"
+                        >
+                          {copiedField === 'first_name' ? <Check className="w-3 h-3 text-emerald-400" /> : <Copy className="w-3 h-3" />}
+                        </button>
+                      </div>
+
+                      <div className="flex items-center justify-between p-2 rounded-lg bg-slate-900 border border-slate-800">
+                        <div className="flex flex-col min-w-0 pr-1">
+                          <span className="text-[10px] text-slate-400">Last Name</span>
+                          <span className="font-mono text-slate-200 truncate select-all">{formModalRecord.lastName || formModalRecord.fullName.split(' ').pop()}</span>
+                        </div>
+                        <button
+                          onClick={() => handleCopyField('last_name', formModalRecord.lastName || formModalRecord.fullName.split(' ').pop() || '')}
+                          className="px-1.5 py-1 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded text-[11px] cursor-pointer"
+                        >
+                          {copiedField === 'last_name' ? <Check className="w-3 h-3 text-emerald-400" /> : <Copy className="w-3 h-3" />}
+                        </button>
+                      </div>
+                    </div>
+
+                    {/* Full DOB & Dropdown Parts */}
+                    <div className="p-2.5 rounded-lg bg-slate-900 border border-slate-800 space-y-1.5">
+                      <div className="flex items-center justify-between">
+                        <div className="flex flex-col">
+                          <span className="text-[10px] text-slate-400">Ngày Sinh (DOB):</span>
+                          <span className="font-mono text-slate-200 font-semibold">{formModalRecord.dob}</span>
+                        </div>
+                        <button
+                          onClick={() => handleCopyField('dob_full', formModalRecord.dob)}
+                          className={`px-2 py-1 rounded text-[11px] font-medium flex items-center space-x-1 cursor-pointer transition-all ${
+                            copiedField === 'dob_full' ? 'bg-emerald-600 text-white' : 'bg-slate-800 hover:bg-slate-700 text-slate-300'
+                          }`}
+                        >
+                          {copiedField === 'dob_full' ? <Check className="w-3 h-3 text-white" /> : <Copy className="w-3 h-3" />}
+                          <span>{copiedField === 'dob_full' ? 'Đã copy!' : 'Copy DOB'}</span>
+                        </button>
+                      </div>
+
+                      {/* Dropdown Parts */}
+                      <div className="grid grid-cols-3 gap-1.5 pt-1 border-t border-slate-800/80">
+                        <button
+                          onClick={() => handleCopyField('dob_month', formModalRecord.dobMonth || '')}
+                          disabled={!formModalRecord.dobMonth}
+                          className="p-1 bg-slate-950 hover:bg-slate-800 rounded border border-slate-800 text-[10px] flex items-center justify-between cursor-pointer"
+                        >
+                          <span className="text-slate-400">Tháng:</span>
+                          <span className="font-mono text-emerald-400 font-bold">{formModalRecord.dobMonth || 'N/A'}</span>
+                        </button>
+                        <button
+                          onClick={() => handleCopyField('dob_day', formModalRecord.dobDay || '')}
+                          disabled={!formModalRecord.dobDay}
+                          className="p-1 bg-slate-950 hover:bg-slate-800 rounded border border-slate-800 text-[10px] flex items-center justify-between cursor-pointer"
+                        >
+                          <span className="text-slate-400">Ngày:</span>
+                          <span className="font-mono text-emerald-400 font-bold">{formModalRecord.dobDay || 'N/A'}</span>
+                        </button>
+                        <button
+                          onClick={() => handleCopyField('dob_year', formModalRecord.dobYear || '')}
+                          disabled={!formModalRecord.dobYear}
+                          className="p-1 bg-slate-950 hover:bg-slate-800 rounded border border-slate-800 text-[10px] flex items-center justify-between cursor-pointer"
+                        >
+                          <span className="text-slate-400">Năm:</span>
+                          <span className="font-mono text-emerald-400 font-bold">{formModalRecord.dobYear || 'N/A'}</span>
+                        </button>
+                      </div>
+                    </div>
+
+                    {/* SSN 9 digits & Last 4 */}
+                    {(() => {
+                      const isSsnVis = showPassMap['ssn_full'] || false
+                      return (
+                        <div className="flex items-center justify-between p-2 rounded-lg bg-slate-900 border border-slate-800">
+                          <div className="flex flex-col min-w-0 pr-2">
+                            <span className="text-[10px] text-slate-400 font-medium">Mã Số An Sinh Xã Hội (SSN)</span>
+                            <span className="font-mono text-slate-200 select-all">
+                              {isSsnVis ? formModalRecord.ssn : `***-**-${formModalRecord.ssnLast4 || formModalRecord.ssn.slice(-4)}`}
+                            </span>
+                          </div>
+                          <div className="flex items-center space-x-1">
+                            <button
+                              type="button"
+                              onClick={() => setShowPassMap((prev) => ({ ...prev, ssn_full: !prev.ssn_full }))}
+                              className="p-1 text-slate-400 hover:text-slate-200 hover:bg-slate-800 rounded"
+                              title={isSsnVis ? 'Ẩn' : 'Hiện'}
+                            >
+                              {isSsnVis ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
+                            </button>
+                            <button
+                              onClick={() => handleCopyField('ssn_last4', formModalRecord.ssnLast4 || formModalRecord.ssn.slice(-4))}
+                              className="px-2 py-1 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded text-[11px] font-medium cursor-pointer"
+                              title="Copy 4 số cuối SSN"
+                            >
+                              {copiedField === 'ssn_last4' ? '✓ 4 số' : 'Copy 4 số cuối'}
+                            </button>
+                            <button
+                              onClick={() => handleCopyField('ssn_full', formModalRecord.ssn)}
+                              className={`px-2 py-1 rounded text-[11px] font-medium flex items-center space-x-1 cursor-pointer transition-all ${
+                                copiedField === 'ssn_full' ? 'bg-emerald-600 text-white' : 'bg-slate-800 hover:bg-slate-700 text-slate-300'
+                              }`}
+                              title="Copy SSN 9 số đầy đủ"
+                            >
+                              {copiedField === 'ssn_full' ? <Check className="w-3 h-3 text-white" /> : <Copy className="w-3 h-3" />}
+                              <span>{copiedField === 'ssn_full' ? 'Đã copy!' : 'Copy 9 số'}</span>
+                            </button>
+                          </div>
+                        </div>
+                      )
+                    })()}
+
+                    {/* Driver License Number (DL#) */}
+                    <div className="flex items-center justify-between p-2 rounded-lg bg-slate-900 border border-slate-800">
+                      <div className="flex flex-col min-w-0 pr-2">
+                        <span className="text-[10px] text-slate-400 font-medium">Số Bằng Lái (DL# - Chuẩn DMV {formModalRecord.state})</span>
+                        <span className="font-mono text-emerald-400 font-bold select-all">{formModalRecord.dl}</span>
+                      </div>
+                      <button
+                        onClick={() => handleCopyField('dl', formModalRecord.dl)}
+                        className={`px-2 py-1 rounded text-[11px] font-medium flex items-center space-x-1 cursor-pointer transition-all ${
+                          copiedField === 'dl' ? 'bg-emerald-600 text-white' : 'bg-slate-800 hover:bg-slate-700 text-slate-300'
+                        }`}
+                      >
+                        {copiedField === 'dl' ? <Check className="w-3 h-3 text-white" /> : <Copy className="w-3 h-3" />}
+                        <span>{copiedField === 'dl' ? 'Đã copy!' : 'Copy DL#'}</span>
+                      </button>
+                    </div>
+                  </div>
+                </div>
+
+                {/* ─── CARD 3: ĐỊA CHỈ CƯ TRÚ (RESIDENTIAL ADDRESS) ─── */}
+                <div className="bg-slate-950 p-4 rounded-xl border border-slate-800 space-y-3">
+                  <div className="flex items-center justify-between pb-2 border-b border-slate-850">
+                    <h4 className="text-xs uppercase font-bold text-cyan-400 flex items-center space-x-1.5 tracking-wider">
+                      <Building className="w-4 h-4 text-cyan-400" />
+                      <span>3. Địa Chỉ Cư Trú (Residential Address)</span>
+                    </h4>
+                    <button
+                      onClick={() =>
+                        handleCopyField(
+                          'full_addr',
+                          `${formModalRecord.address}, ${formModalRecord.city}, ${formModalRecord.state} ${formModalRecord.zipCode}`
+                        )
+                      }
+                      className="text-[10px] text-cyan-400 hover:text-cyan-300 flex items-center space-x-1 cursor-pointer"
+                    >
+                      {copiedField === 'full_addr' ? <Check className="w-3 h-3 text-emerald-400" /> : <Copy className="w-3 h-3" />}
+                      <span>{copiedField === 'full_addr' ? 'Đã copy Full!' : 'Copy Toàn Bộ Địa Chỉ'}</span>
+                    </button>
+                  </div>
+
+                  <div className="space-y-2">
+                    {/* Street */}
+                    <div className="flex items-center justify-between p-2 rounded-lg bg-slate-900 border border-slate-800">
+                      <div className="flex flex-col min-w-0 pr-2">
+                        <span className="text-[10px] text-slate-400 font-medium">Địa chỉ Dòng 1 (Street Address)</span>
+                        <span className="font-mono text-slate-200 select-all">{formModalRecord.address}</span>
+                      </div>
+                      <button
+                        onClick={() => handleCopyField('addr_street', formModalRecord.address)}
+                        className={`px-2 py-1 rounded text-[11px] font-medium flex items-center space-x-1 cursor-pointer transition-all ${
+                          copiedField === 'addr_street' ? 'bg-emerald-600 text-white' : 'bg-slate-800 hover:bg-slate-700 text-slate-300'
+                        }`}
+                      >
+                        {copiedField === 'addr_street' ? <Check className="w-3 h-3 text-white" /> : <Copy className="w-3 h-3" />}
+                        <span>{copiedField === 'addr_street' ? 'Đã copy!' : 'Copy'}</span>
+                      </button>
+                    </div>
+
+                    {/* City */}
+                    <div className="flex items-center justify-between p-2 rounded-lg bg-slate-900 border border-slate-800">
+                      <div className="flex flex-col min-w-0 pr-2">
+                        <span className="text-[10px] text-slate-400 font-medium">Thành Phố (City)</span>
+                        <span className="font-mono text-slate-200 select-all">{formModalRecord.city}</span>
+                      </div>
+                      <button
+                        onClick={() => handleCopyField('addr_city', formModalRecord.city)}
+                        className={`px-2 py-1 rounded text-[11px] font-medium flex items-center space-x-1 cursor-pointer transition-all ${
+                          copiedField === 'addr_city' ? 'bg-emerald-600 text-white' : 'bg-slate-800 hover:bg-slate-700 text-slate-300'
+                        }`}
+                      >
+                        {copiedField === 'addr_city' ? <Check className="w-3 h-3 text-white" /> : <Copy className="w-3 h-3" />}
+                        <span>{copiedField === 'addr_city' ? 'Đã copy!' : 'Copy'}</span>
+                      </button>
+                    </div>
+
+                    {/* State & Zip */}
+                    <div className="grid grid-cols-2 gap-2">
+                      <div className="flex items-center justify-between p-2 rounded-lg bg-slate-900 border border-slate-800">
+                        <div className="flex flex-col min-w-0 pr-1">
+                          <span className="text-[10px] text-slate-400 font-medium">Bang (State)</span>
+                          <span className="font-mono text-emerald-400 font-bold select-all">{formModalRecord.state}</span>
+                        </div>
+                        <button
+                          onClick={() => handleCopyField('addr_state', formModalRecord.state)}
+                          className="px-2 py-1 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded text-[11px] cursor-pointer"
+                        >
+                          {copiedField === 'addr_state' ? <Check className="w-3 h-3 text-emerald-400" /> : <Copy className="w-3 h-3" />}
+                        </button>
+                      </div>
+
+                      <div className="flex items-center justify-between p-2 rounded-lg bg-slate-900 border border-slate-800">
+                        <div className="flex flex-col min-w-0 pr-1">
+                          <span className="text-[10px] text-slate-400 font-medium">Mã Zip (Zipcode)</span>
+                          <span className="font-mono text-slate-200 font-bold select-all">{formModalRecord.zipCode}</span>
+                        </div>
+                        <button
+                          onClick={() => handleCopyField('addr_zip', formModalRecord.zipCode)}
+                          className="px-2 py-1 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded text-[11px] cursor-pointer"
+                        >
+                          {copiedField === 'addr_zip' ? <Check className="w-3 h-3 text-emerald-400" /> : <Copy className="w-3 h-3" />}
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                {/* ─── CARD 4: DOANH NGHIỆP SOLE PROPRIETORSHIP ─── */}
+                <div className="bg-slate-950 p-4 rounded-xl border border-slate-800 space-y-3">
+                  <div className="flex items-center justify-between pb-2 border-b border-slate-850">
+                    <h4 className="text-xs uppercase font-bold text-violet-400 flex items-center space-x-1.5 tracking-wider">
+                      <Building className="w-4 h-4 text-violet-400" />
+                      <span>4. Doanh Nghiệp Sole Proprietorship</span>
+                    </h4>
+                    <span className="text-[10px] px-2 py-0.5 bg-violet-950 text-violet-300 border border-violet-800 rounded font-semibold">
+                      Sole Prop
+                    </span>
+                  </div>
+
+                  <div className="space-y-2">
+                    {/* Business Name */}
+                    {(() => {
+                      const bizName = formModalRecord.businessName || formModalRecord.nameLlc || formModalRecord.fullName
+                      return (
+                        <div className="flex items-center justify-between p-2 rounded-lg bg-slate-900 border border-slate-800">
+                          <div className="flex flex-col min-w-0 pr-2">
+                            <span className="text-[10px] text-slate-400 font-medium">Tên Shop / Doanh Nghiệp</span>
+                            <span className="font-mono text-emerald-300 font-bold select-all truncate">{bizName}</span>
+                          </div>
+                          <button
+                            onClick={() => handleCopyField('biz_name', bizName)}
+                            className={`px-2 py-1 rounded text-[11px] font-medium flex items-center space-x-1 cursor-pointer transition-all ${
+                              copiedField === 'biz_name' ? 'bg-emerald-600 text-white' : 'bg-slate-800 hover:bg-slate-700 text-slate-300'
+                            }`}
+                          >
+                            {copiedField === 'biz_name' ? <Check className="w-3 h-3 text-white" /> : <Copy className="w-3 h-3" />}
+                            <span>{copiedField === 'biz_name' ? 'Đã copy!' : 'Copy'}</span>
+                          </button>
+                        </div>
+                      )
+                    })()}
+
+                    {/* EIN Number Formatted & Raw */}
+                    <div className="flex items-center justify-between p-2 rounded-lg bg-slate-900 border border-slate-800">
+                      <div className="flex flex-col min-w-0 pr-2">
+                        <span className="text-[10px] text-slate-400 font-medium">Mã Số Thuế Doanh Nghiệp (EIN)</span>
+                        <span className="font-mono text-slate-200 font-bold select-all">{formModalRecord.ein}</span>
+                      </div>
+                      <div className="flex items-center space-x-1">
+                        <button
+                          onClick={() => handleCopyField('ein_clean', formModalRecord.ein.replace(/\D/g, ''))}
+                          className="px-2 py-1 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded text-[11px] font-medium cursor-pointer"
+                          title="Copy dạng 9 số liền (không dấu gạch ngang)"
+                        >
+                          {copiedField === 'ein_clean' ? '✓ 9 số' : '9 số liền'}
+                        </button>
+                        <button
+                          onClick={() => handleCopyField('ein_formatted', formModalRecord.ein)}
+                          className={`px-2 py-1 rounded text-[11px] font-medium flex items-center space-x-1 cursor-pointer transition-all ${
+                            copiedField === 'ein_formatted' ? 'bg-emerald-600 text-white' : 'bg-slate-800 hover:bg-slate-700 text-slate-300'
+                          }`}
+                        >
+                          {copiedField === 'ein_formatted' ? <Check className="w-3 h-3 text-white" /> : <Copy className="w-3 h-3" />}
+                          <span>{copiedField === 'ein_formatted' ? 'Đã copy!' : 'Copy'}</span>
+                        </button>
+                      </div>
+                    </div>
+
+                    {/* Business Address */}
+                    <div className="flex items-center justify-between p-2 rounded-lg bg-slate-900 border border-slate-800">
+                      <div className="flex flex-col min-w-0 pr-2">
+                        <span className="text-[10px] text-slate-400 font-medium">Địa Chỉ Doanh Nghiệp (Trùng nơi cư trú)</span>
+                        <span className="font-mono text-slate-300 select-all truncate">
+                          {formModalRecord.addressLlc || formModalRecord.address}, {formModalRecord.cityLlc || formModalRecord.city}
+                        </span>
+                      </div>
+                      <button
+                        onClick={() =>
+                          handleCopyField(
+                            'biz_addr',
+                            `${formModalRecord.addressLlc || formModalRecord.address}, ${formModalRecord.cityLlc || formModalRecord.city}, ${formModalRecord.stateLlc || formModalRecord.state} ${formModalRecord.zipLlc || formModalRecord.zipCode}`
+                          )
+                        }
+                        className="px-2 py-1 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded text-[11px] cursor-pointer"
+                      >
+                        {copiedField === 'biz_addr' ? <Check className="w-3 h-3 text-emerald-400" /> : <Copy className="w-3 h-3" />}
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              {/* ─── CARD 5: GIẤY TỜ PHÁP LÝ & TẠO PDF (IRS CP575, VERIZON) ─── */}
+              <div className="bg-slate-950 p-4 rounded-xl border border-slate-800 space-y-3">
+                <div className="flex items-center justify-between pb-2 border-b border-slate-850">
+                  <h4 className="text-xs uppercase font-bold text-sky-400 flex items-center space-x-1.5 tracking-wider">
+                    <FileText className="w-4 h-4 text-sky-400" />
+                    <span>5. Giấy Tờ Xác Minh & Proof of Address (1-Click Tải & Mở File)</span>
+                  </h4>
+                  <button
+                    onClick={() => ttsIpc.docOpenFolder()}
+                    className="text-xs text-sky-400 hover:text-sky-300 flex items-center space-x-1 cursor-pointer"
+                  >
+                    <FolderOpen className="w-3.5 h-3.5" />
+                    <span>Mở Folder Lưu Trữ PDF</span>
+                  </button>
+                </div>
+
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                  {/* IRS Notice CP 575 Box */}
+                  <div className="p-3 bg-slate-900 border border-slate-800 rounded-xl space-y-2">
+                    <div className="flex items-center justify-between">
+                      <span className="text-xs font-bold text-white flex items-center space-x-1.5">
+                        <FileText className="w-4 h-4 text-sky-400" />
+                        <span>Thư Xác Nhận Thuế IRS (Form CP 575G)</span>
+                      </span>
+                      <span className="text-[10px] px-1.5 py-0.5 bg-sky-950 text-sky-300 border border-sky-800 rounded font-mono font-semibold">
+                        EIN: {formModalRecord.ein}
+                      </span>
+                    </div>
+                    <p className="text-[11px] text-slate-400 leading-relaxed">
+                      Văn bản chính thức cấp mã số thuế doanh nghiệp từ Sở Thuế Vụ Hoa Kỳ (IRS). Định dạng vector sắc nét, đạt chuẩn xét duyệt danh tính TikTok Shop.
+                    </p>
+                    <div className="flex items-center space-x-2 pt-1">
+                      <button
+                        onClick={() => handleGenerateCp575(formModalRecord)}
+                        disabled={generatingDocType === 'cp575'}
+                        className="flex-1 py-2 px-3 bg-sky-600 hover:bg-sky-500 text-white rounded-lg text-xs font-bold shadow flex items-center justify-center space-x-1.5 cursor-pointer disabled:opacity-50 transition-all"
+                      >
+                        <FileText className={`w-4 h-4 ${generatingDocType === 'cp575' ? 'animate-spin' : ''}`} />
+                        <span>{generatingDocType === 'cp575' ? 'Đang tạo PDF...' : '📄 Tạo & Mở IRS CP 575 PDF'}</span>
+                      </button>
+                      <button
+                        onClick={() => ttsIpc.docOpenFolder('outputs/ein_notices')}
+                        className="p-2 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-lg cursor-pointer"
+                        title="Mở Folder Thư Mục IRS"
+                      >
+                        <FolderOpen className="w-4 h-4" />
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* Verizon Utility Bill Box */}
+                  <div className="p-3 bg-slate-900 border border-slate-800 rounded-xl space-y-2">
+                    <div className="flex items-center justify-between">
+                      <span className="text-xs font-bold text-white flex items-center space-x-1.5">
+                        <Building className="w-4 h-4 text-emerald-400" />
+                        <span>Hóa Đơn Tiện Ích Viễn Thông (Verizon Statement)</span>
+                      </span>
+                      <span className="text-[10px] px-1.5 py-0.5 bg-emerald-950 text-emerald-300 border border-emerald-800 rounded font-mono font-semibold">
+                        Bang {formModalRecord.state}
+                      </span>
+                    </div>
+                    <p className="text-[11px] text-slate-400 leading-relaxed">
+                      Hóa đơn cước dịch vụ viễn thông Verizon (Proof of Address) xác thực địa chỉ cư trú trùng khớp 100% với hồ sơ cá nhân và mã bưu điện bang.
+                    </p>
+                    <div className="flex items-center space-x-2 pt-1">
+                      <button
+                        onClick={() => handleGenerateVerizon(formModalRecord)}
+                        disabled={generatingDocType === 'verizon'}
+                        className="flex-1 py-2 px-3 bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg text-xs font-bold shadow flex items-center justify-center space-x-1.5 cursor-pointer disabled:opacity-50 transition-all"
+                      >
+                        <Building className={`w-4 h-4 ${generatingDocType === 'verizon' ? 'animate-spin' : ''}`} />
+                        <span>{generatingDocType === 'verizon' ? 'Đang tạo Bill...' : '📄 Tạo & Mở Verizon Bill PDF'}</span>
+                      </button>
+                      <button
+                        onClick={() => ttsIpc.docOpenFolder('outputs/statements')}
+                        className="p-2 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-lg cursor-pointer"
+                        title="Mở Folder Statements"
+                      >
+                        <FolderOpen className="w-4 h-4" />
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            {/* Modal Footer */}
+            <div className="px-6 py-3.5 bg-slate-950 border-t border-slate-800 flex items-center justify-between shrink-0">
+              <div className="text-xs text-slate-400 flex items-center space-x-2">
+                <span>Trạng thái hồ sơ:</span>
+                <span className="font-semibold text-emerald-400">{formModalRecord.status}</span>
+              </div>
+              <Button
+                variant="primary"
+                size="sm"
+                onClick={() => setFormModalRecord(null)}
+                className="bg-indigo-600 hover:bg-indigo-500 text-white text-xs px-5 cursor-pointer"
+              >
+                Đóng
+              </Button>
             </div>
           </div>
         </div>

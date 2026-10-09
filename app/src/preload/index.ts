@@ -162,6 +162,17 @@ const api = {
     state: {
       get: () => ipcRenderer.invoke('tts:state:get'),
       save: (payload: any) => ipcRenderer.invoke('tts:state:save', payload)
+    },
+    doc: {
+      generateCp575: (record: any) => ipcRenderer.invoke('tts:pdf:generate-cp575', record),
+      generateVerizon: (record: any) => ipcRenderer.invoke('tts:pdf:generate-verizon', record),
+      openFile: (filePath: string) => ipcRenderer.invoke('tts:doc:open-file', filePath),
+      openFolder: (folderPath?: string) => ipcRenderer.invoke('tts:doc:open-folder', folderPath)
+    },
+    extension: {
+      getInfo: () => ipcRenderer.invoke('tts:extension:get-info'),
+      openFolder: () => ipcRenderer.invoke('tts:extension:open-folder'),
+      openZip: () => ipcRenderer.invoke('tts:extension:open-zip')
     }
   }
 }

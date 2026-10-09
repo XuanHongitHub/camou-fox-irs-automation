@@ -1,4 +1,4 @@
-import { IpcMain, dialog } from 'electron'
+import { IpcMain, dialog, shell } from 'electron'
 import { join, basename, extname } from 'path'
 import { existsSync, mkdirSync, readFileSync, writeFileSync, readdirSync, statSync } from 'fs'
 import { spawn } from 'child_process'
@@ -670,42 +670,55 @@ function generateValidDl(stateCode: string, lastName: string = ''): string {
       return headers.findIndex((h) => keywords.some((k) => h.includes(k)))
     }
 
-    const colName = findColExact('profile name', 'profile', 'mã', 'id') !== -1
-      ? findColExact('profile name', 'profile', 'mã', 'id')
+    const colName = findColExact('mã profile (id)', 'profile name', 'profile', 'mã', 'id') !== -1
+      ? findColExact('mã profile (id)', 'profile name', 'profile', 'mã', 'id')
       : findCol('profile')
-    const colStatus = findColExact('status', 'trạng thái')
-    const colRegDate = findColExact('ngày reg', 'reg date')
+    const colStatus = findColExact('trạng thái acc', 'status', 'trạng thái')
+    const colRegDate = findColExact('ngày reg', 'reg date', 'hạn bảo hành')
     const colIssueDate = findColExact('ngày cấp', 'issue date')
-    const colSeller = findColExact('seller')
-    const colMail = findColExact('mail', 'email')
-    const colTiktokPass = findColExact('pass titkok shop', 'pass tiktok shop', 'pass titkok', 'pass tiktok') !== -1
-      ? findColExact('pass titkok shop', 'pass tiktok shop', 'pass titkok', 'pass tiktok')
-      : findCol('titkok', 'tiktok', 'pass')
-    const col2FA = findColExact('2fa', 'two_factor')
-    const colProxy = findColExact('proxy', 'ip')
-    const colPhoneCode = findColExact('get code phone', 'phone code', 'code phone') !== -1
+    const colSeller = findColExact('người phụ trách', 'nguồn / vendor', 'seller', 'vendor')
+    const colMail = findColExact('email đăng nhập tts', 'mail', 'email')
+    const colTiktokPass = findColExact('mật khẩu tts', 'pass titkok shop', 'pass tiktok shop', 'pass titkok', 'pass tiktok', 'mật khẩu') !== -1
+      ? findColExact('mật khẩu tts', 'pass titkok shop', 'pass tiktok shop', 'pass titkok', 'pass tiktok', 'mật khẩu')
+      : findCol('titkok', 'tiktok', 'pass', 'mật khẩu')
+    const col2FA = findColExact('mã 2fa tts (secret key)', '2fa', 'two_factor', 'mã 2fa')
+    const colProxy = findColExact('proxy / ip:port:user:pass', 'proxy', 'ip')
+    
+    // Phone & SMS API columns
+    const colPhoneOnly = findColExact('sđt đăng ký gốc', 'sđt', 'phone number', 'phone')
+    const colPhoneApiUrl = findColExact('link api sms lấy otp gốc', 'link api sms', 'api sms')
+    const colPhoneCodeLegacy = findColExact('get code phone', 'phone code', 'code phone') !== -1
       ? findColExact('get code phone', 'phone code', 'code phone')
       : findCol('get code', 'phone')
-    const colFullName = findColExact('ein name', 'tên', 'full name', 'fullname') !== -1
-      ? findColExact('ein name', 'tên', 'full name', 'fullname')
-      : findCol('ein name', 'full name')
-    const colSsn = findColExact('ssn')
-    const colAddress = findColExact('address', 'địa chỉ')
-    const colCity = findColExact('citi', 'city', 'thành phố')
-    const colState = findColExact('bang', 'state')
-    const colZip = findColExact('zip', 'postal')
-    const colDob = findColExact('dob', 'ngày sinh', 'birth')
-    const colGender = findColExact('gender', 'giới tính')
-    const colEin = findColExact('ein')
-    const colNameLlc = findColExact('name llc', 'llc name', 'tên llc')
-    const colAddressLlc = findColExact('address llc', 'địa chỉ llc')
+
+    const colFullName = findColExact('họ tên đầy đủ (full name)', 'ein name', 'tên', 'full name', 'fullname') !== -1
+      ? findColExact('họ tên đầy đủ (full name)', 'ein name', 'tên', 'full name', 'fullname')
+      : findCol('ein name', 'full name', 'họ tên')
+    const colLastName = findColExact('họ (last name)', 'họ', 'last name', 'lastname')
+    const colFirstName = findColExact('tên đệm & tên (first name)', 'first name', 'firstname')
+    const colSsn = findColExact('ssn / itin', 'ssn', 'itin')
+    const colAddress = findColExact('địa chỉ (street)', 'address', 'địa chỉ', 'street')
+    const colCity = findColExact('thành phố (city)', 'citi', 'city', 'thành phố')
+    const colState = findColExact('bang (state)', 'bang', 'state')
+    const colZip = findColExact('mã bưu điện (zipcode)', 'zip', 'postal', 'zipcode')
+    const colDob = findColExact('ngày sinh (dob)', 'dob', 'ngày sinh', 'birth')
+    const colGender = findColExact('giới tính', 'gender')
+    const colEin = findColExact('mã thuế doanh nghiệp (ein)', 'ein', 'mã thuế')
+    const colNameLlc = findColExact('tên doanh nghiệp (llc/corp)', 'name llc', 'llc name', 'tên llc', 'tên doanh nghiệp')
+    const colAddressLlc = findColExact('địa chỉ doanh nghiệp', 'address llc', 'địa chỉ llc')
     const colCityLlc = findColExact('citi llc', 'city llc')
     const colStateLlc = findColExact('bang llc', 'state llc')
     const colZipLlc = findColExact('zip llc')
     const colPdf = findColExact('pdf', 'irs pdf', 'cp 575', 'cp575', '147c')
     const colFolderUrl = findColExact('folder_url', 'folder url', 'drive')
     const colBankStatement = findColExact('bank_statement', 'bank statement', 'utility', 'bill')
-    const colDl = findColExact('dl', 'bằng lái', 'driver')
+    const colDl = findColExact('số bằng lái (dl#)', 'dl', 'bằng lái', 'driver')
+    const colDlExp = findColExact('ngày hết hạn dl (exp)', 'exp', 'hết hạn', 'dl exp')
+    const colShopName = findColExact('shop name / tên shop', 'shop name', 'tên shop')
+    const colNotes = findColExact('ghi chú chi tiết', 'ghi chú', 'notes', 'note')
+    const colNewMail = findColExact('mail mới (new mail)', 'mail mới', 'new mail')
+    const colNewPhone = findColExact('sđt mới (new phone)', 'sđt mới', 'new phone')
+    const colNew2FA = findColExact('2fa mới (new 2fa)', '2fa mới', 'new 2fa')
 
     const records: any[] = []
     for (let i = 1; i < rows.length; i++) {
@@ -733,24 +746,76 @@ function generateValidDl(stateCode: string, lastName: string = ''): string {
       }
 
       // Parse Phone and SMS API code URL
-      let rawPhone = (colPhoneCode >= 0 ? r[colPhoneCode] : '') || ''
       let phone = ''
       let phoneCodeUrl = ''
-      if (rawPhone.includes('----')) {
-        const parts = rawPhone.split('----')
-        phone = parts[0]?.trim() || ''
-        phoneCodeUrl = parts[1]?.trim() || ''
-      } else if (rawPhone.startsWith('http')) {
-        phoneCodeUrl = rawPhone.trim()
-      } else {
-        phone = rawPhone.trim()
+
+      if (colPhoneOnly >= 0 && r[colPhoneOnly]?.trim()) {
+        phone = r[colPhoneOnly].trim()
+      }
+      if (colPhoneApiUrl >= 0 && r[colPhoneApiUrl]?.trim()) {
+        phoneCodeUrl = r[colPhoneApiUrl].trim()
+      }
+
+      if (!phone || !phoneCodeUrl) {
+        let rawPhone = (colPhoneCodeLegacy >= 0 ? r[colPhoneCodeLegacy] : '') || ''
+        if (rawPhone.includes('----')) {
+          const parts = rawPhone.split('----')
+          if (!phone) phone = parts[0]?.trim() || ''
+          if (!phoneCodeUrl) phoneCodeUrl = parts[1]?.trim() || ''
+        } else if (rawPhone.startsWith('http')) {
+          if (!phoneCodeUrl) phoneCodeUrl = rawPhone.trim()
+        } else if (!phone) {
+          phone = rawPhone.trim()
+        }
       }
 
       const fullName = (colFullName >= 0 ? r[colFullName] : '') || ''
+      let lastName = (colLastName >= 0 ? r[colLastName] : '') || ''
+      let firstName = (colFirstName >= 0 ? r[colFirstName] : '') || ''
+      let middleName = ''
+
+      if (fullName && (!firstName || !lastName)) {
+        const parts = fullName.trim().split(/\s+/)
+        if (parts.length === 1) {
+          firstName = parts[0]
+          lastName = parts[0]
+        } else if (parts.length === 2) {
+          lastName = parts[0]
+          firstName = parts[1]
+        } else if (parts.length >= 3) {
+          lastName = parts[0]
+          firstName = parts.slice(1).join(' ')
+          middleName = parts.slice(1, -1).join(' ')
+        }
+      }
+
       const rawState = (colState >= 0 ? r[colState] : '') || ''
       const state = normalizeStateCode(rawState)
       const ssn = (colSsn >= 0 ? r[colSsn] : '') || ''
+      const ssnClean = ssn.replace(/\D/g, '')
+      const ssnLast4 = ssnClean.length >= 4 ? ssnClean.slice(-4) : ssnClean
+
       const dob = (colDob >= 0 ? r[colDob] : '') || ''
+      let dobMonth = ''
+      let dobDay = ''
+      let dobYear = ''
+
+      if (dob) {
+        const slashMatch = dob.match(/^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{4})$/)
+        if (slashMatch) {
+          dobMonth = slashMatch[1].padStart(2, '0')
+          dobDay = slashMatch[2].padStart(2, '0')
+          dobYear = slashMatch[3]
+        } else {
+          const isoMatch = dob.match(/^(\d{4})[\/\-](\d{1,2})[\/\-](\d{1,2})/)
+          if (isoMatch) {
+            dobYear = isoMatch[1]
+            dobMonth = isoMatch[2].padStart(2, '0')
+            dobDay = isoMatch[3].padStart(2, '0')
+          }
+        }
+      }
+
       const rawAddress = (colAddress >= 0 ? r[colAddress] : '') || ''
       const rawEin = (colEin >= 0 ? r[colEin] : '') || ''
       const rawProxy = (colProxy >= 0 ? r[colProxy] : '') || ''
@@ -758,6 +823,12 @@ function generateValidDl(stateCode: string, lastName: string = ''): string {
       const pdfDoc = (colPdf >= 0 ? r[colPdf] : '') || ''
       const bankStatement = (colBankStatement >= 0 ? r[colBankStatement] : '') || ''
       const folderUrl = (colFolderUrl >= 0 ? r[colFolderUrl] : '') || ''
+      const dlExp = (colDlExp >= 0 ? r[colDlExp] : '') || ''
+      const shopName = (colShopName >= 0 ? r[colShopName] : '') || ''
+      const notes = (colNotes >= 0 ? r[colNotes] : '') || ''
+      const newMail = (colNewMail >= 0 ? r[colNewMail] : '') || ''
+      const newPhone = (colNewPhone >= 0 ? r[colNewPhone] : '') || ''
+      const new2FA = (colNew2FA >= 0 ? r[colNew2FA] : '') || ''
 
       const hasSubstantiveData = !!(
         fullName.trim() ||
@@ -842,7 +913,13 @@ function generateValidDl(stateCode: string, lastName: string = ''): string {
         phone,
         phoneCodeUrl,
         fullName,
+        firstName,
+        lastName,
+        middleName,
         dob,
+        dobMonth,
+        dobDay,
+        dobYear,
         is195x,
         ageWarning,
         gender: (colGender >= 0 ? r[colGender] : '') || '',
@@ -851,7 +928,9 @@ function generateValidDl(stateCode: string, lastName: string = ''): string {
         state,
         zipCode: (colZip >= 0 ? r[colZip] : '') || '',
         dl,
+        dlExp,
         ssn,
+        ssnLast4,
         ein: (colEin >= 0 ? r[colEin] : '') || '',
         nameLlc,
         addressLlc: (colAddressLlc >= 0 ? r[colAddressLlc] : '') || '',
@@ -863,6 +942,11 @@ function generateValidDl(stateCode: string, lastName: string = ''): string {
         bankStatement,
         businessType: 'Sole Proprietorship',
         businessName: nameLlc,
+        shopName,
+        notes,
+        newMail,
+        newPhone,
+        new2FA,
         assignedPort: savedSetup.assignedPort,
         proxyMeta: savedSetup.proxyMeta,
         adspowerId: savedSetup.adspowerId,
@@ -2732,6 +2816,177 @@ function generateValidDl(stateCode: string, lastName: string = ''): string {
       overallStatus,
       summary,
       checks
+    }
+  })
+
+  // ─── 8. Document & Statement Generation IPC Handlers (CP575, Verizon) ───
+  ipcMain.handle('tts:pdf:generate-cp575', async (_event, record: any) => {
+    try {
+      const cliScript = join(foxAutoRoot, 'additions', 'tts_bot', 'doc_generator.py')
+      const outDir = join(foxAutoRoot, 'outputs', 'ein_notices')
+      mkdirSync(outDir, { recursive: true })
+
+      const pyArgs = [
+        '-u',
+        cliScript,
+        '--type',
+        'cp575',
+        '--data',
+        JSON.stringify(record),
+        '--output-dir',
+        outDir
+      ]
+
+      const launch = pythonLaunchFn(pyArgs)
+      return await new Promise((resolve) => {
+        const child = spawn(launch.cmd, launch.args, {
+          cwd: join(foxAutoRoot, 'additions', 'tts_bot'),
+          env: { ...process.env, PYTHONUNBUFFERED: '1' }
+        })
+
+        let stdout = ''
+        let stderr = ''
+        child.stdout?.on('data', (d) => { stdout += d.toString() })
+        child.stderr?.on('data', (d) => { stderr += d.toString() })
+
+        child.on('close', async (code) => {
+          if (code === 0) {
+            try {
+              const res = JSON.parse(stdout.trim())
+              if (res.ok && res.filePath) {
+                try { await shell.openPath(res.filePath) } catch {}
+                try { shell.showItemInFolder(res.filePath) } catch {}
+              }
+              resolve(res)
+            } catch {
+              resolve({ ok: true, stdout })
+            }
+          } else {
+            resolve({ ok: false, error: stderr || stdout || `Doc generator failed with code ${code}` })
+          }
+        })
+      })
+    } catch (err: any) {
+      return { ok: false, error: String(err?.message || err) }
+    }
+  })
+
+  ipcMain.handle('tts:pdf:generate-verizon', async (_event, record: any) => {
+    try {
+      const cliScript = join(foxAutoRoot, 'additions', 'tts_bot', 'doc_generator.py')
+      const outDir = join(foxAutoRoot, 'outputs', 'statements')
+      mkdirSync(outDir, { recursive: true })
+
+      const pyArgs = [
+        '-u',
+        cliScript,
+        '--type',
+        'verizon',
+        '--data',
+        JSON.stringify(record),
+        '--output-dir',
+        outDir
+      ]
+
+      const launch = pythonLaunchFn(pyArgs)
+      return await new Promise((resolve) => {
+        const child = spawn(launch.cmd, launch.args, {
+          cwd: join(foxAutoRoot, 'additions', 'tts_bot'),
+          env: { ...process.env, PYTHONUNBUFFERED: '1' }
+        })
+
+        let stdout = ''
+        let stderr = ''
+        child.stdout?.on('data', (d) => { stdout += d.toString() })
+        child.stderr?.on('data', (d) => { stderr += d.toString() })
+
+        child.on('close', async (code) => {
+          if (code === 0) {
+            try {
+              const res = JSON.parse(stdout.trim())
+              if (res.ok && res.filePath) {
+                try { await shell.openPath(res.filePath) } catch {}
+                try { shell.showItemInFolder(res.filePath) } catch {}
+              }
+              resolve(res)
+            } catch {
+              resolve({ ok: true, stdout })
+            }
+          } else {
+            resolve({ ok: false, error: stderr || stdout || `Doc generator failed with code ${code}` })
+          }
+        })
+      })
+    } catch (err: any) {
+      return { ok: false, error: String(err?.message || err) }
+    }
+  })
+
+  ipcMain.handle('tts:doc:open-file', async (_event, filePath: string) => {
+    try {
+      if (!filePath || !existsSync(filePath)) {
+        return { ok: false, error: `Tập tin không tồn tại: ${filePath}` }
+      }
+      await shell.openPath(filePath)
+      return { ok: true }
+    } catch (err: any) {
+      return { ok: false, error: String(err?.message || err) }
+    }
+  })
+
+  ipcMain.handle('tts:doc:open-folder', async (_event, folderPath?: string) => {
+    try {
+      const target = folderPath && existsSync(folderPath) ? folderPath : join(foxAutoRoot, 'outputs')
+      mkdirSync(target, { recursive: true })
+      await shell.openPath(target)
+      return { ok: true, path: target }
+    } catch (err: any) {
+      return { ok: false, error: String(err?.message || err) }
+    }
+  })
+
+  ipcMain.handle('tts:extension:get-info', async () => {
+    try {
+      const extDir = join(foxAutoRoot, 'additions', 'tts_bot', 'extension')
+      const zipPath = join(foxAutoRoot, 'additions', 'tts_bot', 'tts_copilot_extension.zip')
+      const manifestPath = join(extDir, 'manifest.json')
+      let manifest = null
+      if (existsSync(manifestPath)) {
+        try { manifest = JSON.parse(readFileSync(manifestPath, 'utf-8')) } catch {}
+      }
+      return {
+        ok: true,
+        extensionPath: extDir,
+        zipPath,
+        hasUnpacked: existsSync(manifestPath),
+        hasZip: existsSync(zipPath),
+        manifest
+      }
+    } catch (err: any) {
+      return { ok: false, error: String(err?.message || err) }
+    }
+  })
+
+  ipcMain.handle('tts:extension:open-folder', async () => {
+    try {
+      const extDir = join(foxAutoRoot, 'additions', 'tts_bot', 'extension')
+      await shell.openPath(extDir)
+      return { ok: true }
+    } catch (err: any) {
+      return { ok: false, error: String(err?.message || err) }
+    }
+  })
+
+  ipcMain.handle('tts:extension:open-zip', async () => {
+    try {
+      const zipPath = join(foxAutoRoot, 'additions', 'tts_bot', 'tts_copilot_extension.zip')
+      if (existsSync(zipPath)) {
+        shell.showItemInFolder(zipPath)
+        return { ok: true }
+      }
+      return { ok: false, error: 'Chưa có file zip' }
+    } catch (err: any) {
+      return { ok: false, error: String(err?.message || err) }
     }
   })
 }

@@ -260,6 +260,17 @@ export interface IApi {
       get: () => Promise<{ ok: boolean; data?: any; error?: string }>
       save: (payload: any) => Promise<{ ok: boolean; error?: string }>
     }
+    doc: {
+      generateCp575: (record: any) => Promise<{ ok: boolean; filePath?: string; fileName?: string; error?: string }>
+      generateVerizon: (record: any) => Promise<{ ok: boolean; filePath?: string; fileName?: string; error?: string }>
+      openFile: (filePath: string) => Promise<{ ok: boolean; error?: string }>
+      openFolder: (folderPath?: string) => Promise<{ ok: boolean; path?: string; error?: string }>
+    }
+    extension: {
+      getInfo: () => Promise<{ ok: boolean; extensionPath?: string; zipPath?: string; hasUnpacked?: boolean; hasZip?: boolean; manifest?: any; error?: string }>
+      openFolder: () => Promise<{ ok: boolean; error?: string }>
+      openZip: () => Promise<{ ok: boolean; error?: string }>
+    }
   }
 }
 
