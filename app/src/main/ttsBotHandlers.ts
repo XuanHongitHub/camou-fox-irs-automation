@@ -1298,9 +1298,7 @@ function generateValidDl(stateCode: string, lastName: string = ''): string {
         },
         launch_args: [
           `--load-extension=${extensionPath}`,
-          `--disable-extensions-except=${extensionPath}`,
-          '--start-maximized',
-          registerUrl
+          '--start-maximized'
         ]
       }
 
@@ -1382,9 +1380,7 @@ function generateValidDl(stateCode: string, lastName: string = ''): string {
       const registerUrl = 'https://seller-us.tiktok.com/account/register'
       const launchArgs = JSON.stringify([
         `--load-extension=${extensionPath}`,
-        `--disable-extensions-except=${extensionPath}`,
-        '--start-maximized',
-        registerUrl
+        '--start-maximized'
       ])
 
       const url = `${baseUrl}/api/v1/browser/start?user_id=${effectiveUserId}&open_tabs=1&launch_args=${encodeURIComponent(launchArgs)}`
@@ -1392,6 +1388,20 @@ function generateValidDl(stateCode: string, lastName: string = ''): string {
       const data = await res.json()
 
       if (data && data.code === 0) {
+        // Auto-navigate to TikTok Seller Register tab via CDP if not already open
+        if (data.data?.debug_port) {
+          const debugPort = data.data.debug_port
+          setTimeout(async () => {
+            try {
+              const targetsRes = await fetch(`http://127.0.0.1:${debugPort}/json/list`).then((r) => r.json()).catch(() => [])
+              const hasRegisterTab = Array.isArray(targetsRes) && targetsRes.some((t: any) => t.url && t.url.includes('seller-us.tiktok.com'))
+              if (!hasRegisterTab) {
+                await fetch(`http://127.0.0.1:${debugPort}/json/new?${encodeURIComponent(registerUrl)}`, { method: 'PUT' }).catch(() => {})
+              }
+            } catch {}
+          }, 1200)
+        }
+
         try {
           if (existsSync(stateFile)) {
             const stateData = JSON.parse(readFileSync(stateFile, 'utf-8'))

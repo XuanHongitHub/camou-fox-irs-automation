@@ -1,0 +1,149 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+  <meta charset="UTF-8">
+  <title>Fox-Auto Copilot</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+    body {
+      width: 320px;
+      background: #0f172a;
+      color: #f8fafc;
+      padding: 14px;
+      font-size: 13px;
+    }
+    .header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding-bottom: 12px;
+      border-bottom: 1px solid #1e293b;
+      margin-bottom: 12px;
+    }
+    .logo-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .logo-img {
+      width: 24px;
+      height: 24px;
+      border-radius: 6px;
+    }
+    .title {
+      font-weight: 700;
+      font-size: 14px;
+      color: #ffffff;
+    }
+    .status-badge {
+      font-size: 10px;
+      font-weight: 700;
+      padding: 3px 8px;
+      border-radius: 9999px;
+      background: rgba(16, 185, 129, 0.2);
+      color: #34d399;
+      border: 1px solid rgba(16, 185, 129, 0.4);
+    }
+    .info-card {
+      background: #1e293b;
+      border: 1px solid #334155;
+      border-radius: 10px;
+      padding: 10px 12px;
+      margin-bottom: 12px;
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+    .info-row {
+      display: flex;
+      justify-content: space-between;
+      font-size: 11px;
+    }
+    .info-label { color: #94a3b8; }
+    .info-val { color: #f1f5f9; font-weight: 600; font-family: monospace; }
+    .btn-group {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+    .btn {
+      width: 100%;
+      padding: 9px 12px;
+      border-radius: 8px;
+      font-size: 12px;
+      font-weight: 600;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      transition: all 0.15s ease;
+      border: 1px solid transparent;
+    }
+    .btn-primary {
+      background: #2563eb;
+      color: white;
+      border-color: #3b82f6;
+    }
+    .btn-primary:hover {
+      background: #1d4ed8;
+    }
+    .btn-secondary {
+      background: #1e293b;
+      color: #cbd5e1;
+      border-color: #334155;
+    }
+    .btn-secondary:hover {
+      background: #334155;
+      color: white;
+    }
+    .footer {
+      margin-top: 12px;
+      text-align: center;
+      font-size: 10px;
+      color: #64748b;
+    }
+  </style>
+</head>
+<body>
+  <div class="header">
+    <div class="logo-row">
+      <img src="icons/icon48.png" alt="Logo" class="logo-img">
+      <div class="title">Fox Copilot</div>
+    </div>
+    <div class="status-badge" id="status-badge">🟢 ĐÃ NẠP</div>
+  </div>
+
+  <div class="info-card">
+    <div class="info-row">
+      <span class="info-label">Trạng thái:</span>
+      <span class="info-val" style="color: #38bdf8;">Đã nạp tự động</span>
+    </div>
+    <div class="info-row">
+      <span class="info-label">Hỗ trợ trang:</span>
+      <span class="info-val">seller-us.tiktok.com</span>
+    </div>
+    <div class="info-row">
+      <span class="info-label">Watchdog Audit:</span>
+      <span class="info-val" style="color: #4ade80;">Bảo vệ 6 phút</span>
+    </div>
+  </div>
+
+  <div class="btn-group">
+    <button class="btn btn-primary" id="btn-open-tts">
+      <span>🚀</span>
+      <span>Mở Đăng Ký TikTok Shop</span>
+    </button>
+    <button class="btn btn-secondary" id="btn-toggle-panel">
+      <span>📌</span>
+      <span>Hiện / Ẩn Thanh Copilot</span>
+    </button>
+  </div>
+
+  <div class="footer">
+    Fox-Auto Onboarding Engine • AdsPower Verified
+  </div>
+
+  <script src="popup.js"></script>
+</body>
+</html>

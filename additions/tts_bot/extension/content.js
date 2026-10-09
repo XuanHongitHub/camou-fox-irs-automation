@@ -29,6 +29,38 @@
   document.documentElement.appendChild(host);
   const shadow = host.attachShadow({ mode: "open" });
 
+  // On AdsPower start tab, show prominent quick launch pill
+  if (window.location.hostname.includes("adspower.net")) {
+    const pill = document.createElement("div");
+    pill.style.cssText = "position:fixed;bottom:24px;right:24px;background:#0f172a;border:2px solid #3b82f6;border-radius:12px;padding:12px 18px;color:#fff;font-family:-apple-system,BlinkMacSystemFont,Segoe UI,Roboto,sans-serif;font-size:13px;z-index:2147483647;box-shadow:0 10px 25px rgba(0,0,0,0.5);display:flex;align-items:center;gap:12px;";
+    pill.innerHTML = `
+      <div style="display:flex;align-items:center;gap:8px;">
+        <span style="display:inline-block;width:10px;height:10px;background:#10b981;border-radius:50%;box-shadow:0 0 8px #10b981;"></span>
+        <span style="font-weight:700;color:#38bdf8;">Fox Copilot: Đã Tự Động Nạp!</span>
+      </div>
+      <button id="fox-quick-launch-btn" style="background:#2563eb;color:#fff;border:none;border-radius:8px;padding:8px 14px;font-weight:600;font-size:12px;cursor:pointer;transition:all 0.15s;display:flex;align-items:center;gap:6px;">
+        <span>🚀</span> Mở Form Đăng Ký TikTok Shop
+      </button>
+    `;
+    shadow.appendChild(pill);
+    shadow.getElementById("fox-quick-launch-btn")?.addEventListener("click", () => {
+      window.location.href = "https://seller-us.tiktok.com/account/register";
+    });
+    return;
+  }
+
+  // Listen for popup messages
+  try {
+    chrome.runtime?.onMessage?.addListener((msg) => {
+      if (msg.type === "FOX_TOGGLE_PANEL") {
+        const panel = shadow.getElementById("copilot-panel");
+        if (panel) {
+          panel.classList.toggle("minimized");
+        }
+      }
+    });
+  } catch (e) {}
+
   // 2. Inject Styles into Shadow DOM
   const styleEl = document.createElement("style");
   styleEl.textContent = `

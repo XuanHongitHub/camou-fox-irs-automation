@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Fox-Auto Copilot & 6-Min Watchdog",
-  "version": "2.0.0",
+  "version": "2.0.1",
   "description": "Smart Assistant for TikTok Seller Onboarding with Single Source of Truth, Instant OTP, Auto Form Fill & 6-Minute Audit Watchdog.",
   "permissions": [
     "tabs",
@@ -11,8 +11,25 @@
     "http://127.0.0.1:8787/*",
     "*://*.tiktok.com/*",
     "*://seller-us.tiktok.com/*",
-    "*://seller-us-accounts.tiktok.com/*"
+    "*://seller-us-accounts.tiktok.com/*",
+    "*://start.adspower.net/*"
   ],
+  "action": {
+    "default_title": "Fox-Auto Copilot",
+    "default_popup": "popup.html",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "32": "icons/icon32.png",
+      "48": "icons/icon48.png",
+      "128": "icons/icon128.png"
+    }
+  },
+  "icons": {
+    "16": "icons/icon16.png",
+    "32": "icons/icon32.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  },
   "background": {
     "service_worker": "background.js"
   },
@@ -21,7 +38,8 @@
       "matches": [
         "*://seller-us.tiktok.com/*",
         "*://seller-us-accounts.tiktok.com/*",
-        "*://*.tiktok.com/*"
+        "*://*.tiktok.com/*",
+        "*://start.adspower.net/*"
       ],
       "js": ["content.js"],
       "run_at": "document_end"
