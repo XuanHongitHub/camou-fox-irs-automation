@@ -40,7 +40,8 @@ import {
   Save,
   ListOrdered,
   ChevronLeft,
-  Mail
+  Mail,
+  Monitor
 } from 'lucide-react'
 
 export interface RecordItem {
@@ -1167,6 +1168,16 @@ export function TtsBotView() {
       if (res && res.ok && res.record) {
         setRecords((prev) => prev.map((r) => (r.id === res.record.id ? res.record : r)))
         setActiveRuns((prev) => prev.map((r) => (r.id === res.record.id ? res.record : r)))
+        setProfileSetups((prev) => ({
+          ...prev,
+          [res.record.id]: {
+            assignedPort: res.record.assignedPort,
+            adspowerId: res.record.adspowerId,
+            readyStatus: res.record.readyStatus,
+            readinessScore: res.record.readinessScore,
+            updatedAt: Date.now()
+          }
+        }))
         refreshHideProxyPorts()
         refreshAdsPowerProfiles()
         setSetupModalConfig((prev) => ({
@@ -1253,6 +1264,16 @@ export function TtsBotView() {
             updatedList.push(res.record)
             setRecords((prev) => prev.map((r) => (r.id === res.record.id ? res.record : r)))
             setActiveRuns((prev) => prev.map((r) => (r.id === res.record.id ? res.record : r)))
+            setProfileSetups((prev) => ({
+              ...prev,
+              [res.record.id]: {
+                assignedPort: res.record.assignedPort,
+                adspowerId: res.record.adspowerId,
+                readyStatus: res.record.readyStatus,
+                readinessScore: res.record.readinessScore,
+                updatedAt: Date.now()
+              }
+            }))
           } else {
             updatedList.push(rec)
           }
@@ -5260,8 +5281,8 @@ export function TtsBotView() {
                   </div>
                   <p className="text-xs text-slate-400 mt-0.5">
                     {setupModalConfig.mode === 'single'
-                      ? `Cấu hình Profile AdsPower iOS 390x844, Nạp Extension Copilot MV3 & Gán Proxy chuẩn Bang ${setupModalConfig.records[0]?.state}`
-                      : `Tự động phân bổ Port HideProxy theo bang và khởi tạo Profile AdsPower cho ${setupModalConfig.records.length} hồ sơ đã chọn`}
+                      ? `Cấu hình Profile AdsPower Desktop Full-Screen, Nạp Extension Copilot MV3, Tab Đăng Ký TTS & Gán Proxy chuẩn Bang ${setupModalConfig.records[0]?.state}`
+                      : `Tự động phân bổ Port HideProxy theo bang, khởi tạo Profile AdsPower Desktop Full-Screen kèm Extension và Tab Đăng Ký cho ${setupModalConfig.records.length} hồ sơ đã chọn`}
                   </p>
                 </div>
               </div>
@@ -5299,8 +5320,8 @@ export function TtsBotView() {
                         <div className="bg-slate-950/80 border border-slate-800 rounded-xl p-5 space-y-4">
                           <div className="flex items-center justify-between pb-3 border-b border-slate-800/80">
                             <div className="flex items-center space-x-2 text-cyan-400 font-semibold text-xs uppercase tracking-wider">
-                              <Smartphone className="w-4 h-4" />
-                              <span>1. Môi Trường AdsPower (Mobile iOS)</span>
+                              <Monitor className="w-4 h-4" />
+                              <span>1. Môi Trường AdsPower (Desktop Standard)</span>
                             </div>
                             <span className="text-[10px] px-2 py-0.5 rounded bg-cyan-950 text-cyan-300 border border-cyan-800 font-mono">
                               Mặc định Ungrouped
@@ -5322,11 +5343,17 @@ export function TtsBotView() {
                             </div>
                             <div className="flex justify-between items-center">
                               <span className="text-slate-400">Hệ Điều Hành & Thiết Bị:</span>
-                              <span className="text-slate-200 font-medium">Apple iPhone 15 Pro (iOS 17.5.1)</span>
+                              <span className="text-slate-200 font-medium">Windows / Chrome Standard (AdsPower Default)</span>
                             </div>
                             <div className="flex justify-between items-center">
-                              <span className="text-slate-400">Độ Phân Giải / Viewport:</span>
-                              <span className="font-mono text-emerald-400 font-medium">390 x 844 (Mobile Real)</span>
+                              <span className="text-slate-400">Độ Phân Giải / Màn Hình:</span>
+                              <span className="font-mono text-emerald-400 font-medium">Full Màn Hình Mặc Định (--start-maximized)</span>
+                            </div>
+                            <div className="flex justify-between items-center">
+                              <span className="text-slate-400">Tab Mở Sẵn (Startup):</span>
+                              <span className="font-mono text-cyan-300 text-[11px] truncate max-w-[220px]" title="https://seller-us.tiktok.com/account/register">
+                                seller-us.tiktok.com/account/register
+                              </span>
                             </div>
                             <div className="flex justify-between items-center">
                               <span className="text-slate-400">Ngôn Ngữ & Múi Giờ:</span>
@@ -5566,6 +5593,21 @@ export function TtsBotView() {
                       </div>
                     </div>
                   )}
+
+                  {/* Environment Standard Config Indicator */}
+                  <div className="flex flex-wrap items-center justify-between gap-2 p-3 bg-cyan-950/40 border border-cyan-800/60 rounded-xl text-xs text-cyan-200">
+                    <div className="flex items-center space-x-2">
+                      <Monitor className="w-4 h-4 text-cyan-400 shrink-0" />
+                      <span className="font-semibold text-cyan-300">Chuẩn Hóa Profile Hàng Loạt:</span>
+                      <span className="text-slate-300">
+                        Màn hình Full (--start-maximized) | Tab đăng ký:{' '}
+                        <span className="font-mono text-cyan-300">seller-us.tiktok.com/account/register</span> | Auto-Inject Extension Copilot MV3
+                      </span>
+                    </div>
+                    <span className="px-2 py-0.5 rounded bg-emerald-950 text-emerald-300 border border-emerald-700/60 text-[10px] font-mono">
+                      Ungrouped (group_id: 0)
+                    </span>
+                  </div>
 
                   {/* Bulk Port Management Toolbar */}
                   <div className="flex flex-wrap items-center justify-between gap-2 p-3 bg-slate-900/90 border border-slate-800 rounded-xl text-xs">

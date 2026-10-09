@@ -321,7 +321,7 @@ ADS_HEADERS = {
     "Content-Type": "application/json"
 }
 HIDEPROXY_BASE = "http://127.0.0.1:10101"
-EXTENSION_DIR = r"G:\RTTS\19-08-2026\fox-auto\additions\tts_bot\extension"
+EXTENSION_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "extension").replace("\\", "/")
 
 @router.get("/proxy_ports")
 def get_proxy_ports():
@@ -373,26 +373,25 @@ def setup_profile_endpoint(payload: Dict[str, Any] = Body(...)):
             "proxy_type": "http",
             "proxy_host": "127.0.0.1",
             "proxy_port": str(assigned_port),
-            "proxy_user": "minhteo0209",
-            "proxy_password": "minhteo"
+            "proxy_user": "",
+            "proxy_password": ""
         }
+        register_url = "https://seller-us.tiktok.com/account/register"
         create_payload = {
             "name": f"{pid} - {prof['name'] or 'TTS'}",
             "group_id": "0",  # Ungrouped
+            "tabs": [register_url],
             "user_proxy_config": proxy_config,
             "fingerprint_config": {
-                "os": "iOS",
-                "ua": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_5_1 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Mobile/15E148 Safari/604.1",
-                "screen_resolution": "390_844",
-                "language": ["en-US", "en"]
+                "screen_resolution": "none",
+                "language": ["en-US", "en"],
+                "flash": "block"
             },
             "launch_args": [
                 f"--load-extension={EXTENSION_DIR}",
-                "--window-size=430,932",
-                "--touch-events=enabled",
-                "--enable-viewport",
-                "--force-device-scale-factor=3",
-                "--use-mobile-user-agent"
+                f"--disable-extensions-except={EXTENSION_DIR}",
+                "--start-maximized",
+                register_url
             ]
         }
         res = requests.post(f"{ADS_BASE}/api/v1/user/create", headers=ADS_HEADERS, json=create_payload, timeout=8)

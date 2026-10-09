@@ -1198,27 +1198,25 @@ function generateValidDl(stateCode: string, lastName: string = ''): string {
   ipcMain.handle('tts:adspower:create', async (_event, payload: any) => {
     try {
       const baseUrl = getAdsBaseUrl()
-      const extensionPath = join(foxAutoRoot, 'additions', 'tts_bot', 'extension')
+      const rawExtensionPath = join(foxAutoRoot, 'additions', 'tts_bot', 'extension')
+      const extensionPath = rawExtensionPath.replace(/\\/g, '/')
+      const registerUrl = 'https://seller-us.tiktok.com/account/register'
       const profileData = {
         name: payload.name,
         group_id: payload.groupId || '0', // 0 = Ungrouped
+        tabs: [registerUrl],
         user_proxy_config: payload.proxyConfig || { proxy_soft: 'no_proxy' },
         fingerprint_config: {
-          os: 'iOS',
-          ua:
-            payload.ua ||
-            'Mozilla/5.0 (iPhone; CPU iPhone OS 17_5_1 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Mobile/15E148 Safari/604.1',
-          screen_resolution: '390_844',
+          screen_resolution: 'none', // Full desktop screen default (no distortion)
           language: ['en-US', 'en'],
+          flash: 'block',
           ...payload.fingerprintConfig
         },
         launch_args: [
           `--load-extension=${extensionPath}`,
-          '--window-size=430,932',
-          '--touch-events=enabled',
-          '--enable-viewport',
-          '--force-device-scale-factor=3',
-          '--use-mobile-user-agent'
+          `--disable-extensions-except=${extensionPath}`,
+          '--start-maximized',
+          registerUrl
         ]
       }
 
@@ -1297,17 +1295,15 @@ function generateValidDl(stateCode: string, lastName: string = ''): string {
 
       const rawExtensionPath = join(foxAutoRoot, 'additions', 'tts_bot', 'extension')
       const extensionPath = rawExtensionPath.replace(/\\/g, '/')
+      const registerUrl = 'https://seller-us.tiktok.com/account/register'
       const launchArgs = JSON.stringify([
         `--load-extension=${extensionPath}`,
         `--disable-extensions-except=${extensionPath}`,
-        '--window-size=430,932',
-        '--touch-events=enabled',
-        '--enable-viewport',
-        '--force-device-scale-factor=3',
-        '--use-mobile-user-agent'
+        '--start-maximized',
+        registerUrl
       ])
 
-      const url = `${baseUrl}/api/v1/browser/start?user_id=${effectiveUserId}&launch_args=${encodeURIComponent(launchArgs)}`
+      const url = `${baseUrl}/api/v1/browser/start?user_id=${effectiveUserId}&open_tabs=1&launch_args=${encodeURIComponent(launchArgs)}`
       const res = await fetch(url, { headers })
       const data = await res.json()
 
@@ -1594,23 +1590,25 @@ function generateValidDl(stateCode: string, lastName: string = ''): string {
           }
         : { proxy_soft: 'no_proxy' }
 
+      const registerUrl = 'https://seller-us.tiktok.com/account/register'
       if (existingProfile) {
         adspowerId = existingProfile.user_id
-        // Keep proxy and launch_args synchronized with current assignedPort and extension!
+        // Keep proxy, extension, default desktop full-screen and register tab synchronized!
         await fetch(`${adsBase}/api/v1/user/update`, {
           method: 'POST',
           headers: adsHeaders,
           body: JSON.stringify({
             profile_id: adspowerId,
             user_proxy_config: proxyConfig,
+            tabs: [registerUrl],
+            fingerprint_config: {
+              screen_resolution: 'none'
+            },
             launch_args: [
               `--load-extension=${extensionPath}`,
               `--disable-extensions-except=${extensionPath}`,
-              '--window-size=430,932',
-              '--touch-events=enabled',
-              '--enable-viewport',
-              '--force-device-scale-factor=3',
-              '--use-mobile-user-agent'
+              '--start-maximized',
+              registerUrl
             ]
           })
         }).catch(() => null)
@@ -1621,22 +1619,18 @@ function generateValidDl(stateCode: string, lastName: string = ''): string {
           body: JSON.stringify({
             name: `${record.id} - ${record.fullName || 'TTS'}`,
             group_id: '0', // Mặc định Ungrouped (không phân nhóm)
+            tabs: [registerUrl],
             user_proxy_config: proxyConfig,
             fingerprint_config: {
-              os: 'iOS',
-              ua:
-                'Mozilla/5.0 (iPhone; CPU iPhone OS 17_5_1 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Mobile/15E148 Safari/604.1',
-              screen_resolution: '390_844',
-              language: ['en-US', 'en']
+              screen_resolution: 'none', // Full desktop screen default (no mobile ratio)
+              language: ['en-US', 'en'],
+              flash: 'block'
             },
             launch_args: [
               `--load-extension=${extensionPath}`,
               `--disable-extensions-except=${extensionPath}`,
-              '--window-size=430,932',
-              '--touch-events=enabled',
-              '--enable-viewport',
-              '--force-device-scale-factor=3',
-              '--use-mobile-user-agent'
+              '--start-maximized',
+              registerUrl
             ]
           })
         })
@@ -2702,11 +2696,12 @@ function generateValidDl(stateCode: string, lastName: string = ''): string {
     const simPayload = {
       name: `${simProfile} - Preflight Test`,
       group_id: '0',
-      user_proxy_config: { proxy_soft: 'other', proxy_type: 'socks5', proxy_host: '127.0.0.1', proxy_port: simPort },
-      fingerprint_config: { os: 'iOS', ua: 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_5_1 like Mac OS X)', screen_resolution: '390_844' },
-      launch_args: [simExtArg]
+      tabs: ['https://seller-us.tiktok.com/account/register'],
+      user_proxy_config: { proxy_soft: 'other', proxy_type: 'http', proxy_host: '127.0.0.1', proxy_port: simPort },
+      fingerprint_config: { screen_resolution: 'none', language: ['en-US', 'en'] },
+      launch_args: [simExtArg, '--start-maximized', 'https://seller-us.tiktok.com/account/register']
     }
-    const simValid = Boolean(simPayload.name && simPayload.launch_args[0].includes('extension') && simPayload.fingerprint_config.os === 'iOS')
+    const simValid = Boolean(simPayload.name && simPayload.launch_args[0].includes('extension') && simPayload.tabs.length > 0)
 
     checks.push({
       id: 'simulation',
@@ -2714,7 +2709,7 @@ function generateValidDl(stateCode: string, lastName: string = ''): string {
       name: 'E2E Dry-Run Simulation',
       status: simValid ? 'pass' : 'warn',
       latencyMs: Date.now() - tSimStart,
-      message: `Mô phỏng Full Flow thành công: Cấu hình Profile iOS 390x844 + Proxy SOCKS5 + Extension Auto-Inject`,
+      message: `Mô phỏng Full Flow thành công: Cấu hình Profile Desktop Full-Screen + Tab Đăng Ký TTS + Extension Auto-Inject`,
       detail: simPayload,
       fixGuide: 'Pipeline tự động hóa hoàn chỉnh và sẵn sàng vận hành mọi profile TikTok Shop.'
     })
