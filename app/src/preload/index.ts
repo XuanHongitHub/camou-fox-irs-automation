@@ -173,6 +173,14 @@ const api = {
       getInfo: () => ipcRenderer.invoke('tts:extension:get-info'),
       openFolder: () => ipcRenderer.invoke('tts:extension:open-folder'),
       openZip: () => ipcRenderer.invoke('tts:extension:open-zip')
+    },
+    proxy: {
+      test: (params: any) => ipcRenderer.invoke('tts:proxy:test', params),
+      updateProfile: (payload: any) => ipcRenderer.invoke('tts:proxy:update-profile', payload),
+      rotateUrl: (payload: { rotateUrl: string }) => ipcRenderer.invoke('tts:proxy:rotate-url', payload),
+      poolGet: () => ipcRenderer.invoke('tts:proxy:pool:get'),
+      poolSave: (payload: { pool: string[] }) => ipcRenderer.invoke('tts:proxy:pool:save', payload),
+      poolPopNext: (payload: { recordId: string }) => ipcRenderer.invoke('tts:proxy:pool:pop-next', payload)
     }
   }
 }

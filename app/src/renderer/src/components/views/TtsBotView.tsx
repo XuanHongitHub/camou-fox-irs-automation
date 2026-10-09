@@ -396,6 +396,36 @@ const ttsIpc = {
     if ((window.api?.tts as any)?.extension?.openZip) return await (window.api.tts as any).extension.openZip()
     if (window.electron?.ipcRenderer) return await window.electron.ipcRenderer.invoke('tts:extension:open-zip')
     return { ok: false, error: 'IPC unavailable' }
+  },
+  proxyTest: async (params: { proxyType?: string; host: string; port: number | string; user?: string; password?: string }) => {
+    if ((window.api?.tts as any)?.proxy?.test) return await (window.api.tts as any).proxy.test(params)
+    if (window.electron?.ipcRenderer) return await window.electron.ipcRenderer.invoke('tts:proxy:test', params)
+    return { ok: false, error: 'IPC unavailable' }
+  },
+  proxyUpdateProfile: async (payload: any) => {
+    if ((window.api?.tts as any)?.proxy?.updateProfile) return await (window.api.tts as any).proxy.updateProfile(payload)
+    if (window.electron?.ipcRenderer) return await window.electron.ipcRenderer.invoke('tts:proxy:update-profile', payload)
+    return { ok: false, error: 'IPC unavailable' }
+  },
+  proxyRotateUrl: async (payload: { rotateUrl: string }) => {
+    if ((window.api?.tts as any)?.proxy?.rotateUrl) return await (window.api.tts as any).proxy.rotateUrl(payload)
+    if (window.electron?.ipcRenderer) return await window.electron.ipcRenderer.invoke('tts:proxy:rotate-url', payload)
+    return { ok: false, error: 'IPC unavailable' }
+  },
+  proxyPoolGet: async () => {
+    if ((window.api?.tts as any)?.proxy?.poolGet) return await (window.api.tts as any).proxy.poolGet()
+    if (window.electron?.ipcRenderer) return await window.electron.ipcRenderer.invoke('tts:proxy:pool:get')
+    return { ok: false, pool: [] }
+  },
+  proxyPoolSave: async (payload: { pool: string[] }) => {
+    if ((window.api?.tts as any)?.proxy?.poolSave) return await (window.api.tts as any).proxy.poolSave(payload)
+    if (window.electron?.ipcRenderer) return await window.electron.ipcRenderer.invoke('tts:proxy:pool:save', payload)
+    return { ok: false, error: 'IPC unavailable' }
+  },
+  proxyPoolPopNext: async (payload: { recordId: string }) => {
+    if ((window.api?.tts as any)?.proxy?.poolPopNext) return await (window.api.tts as any).proxy.poolPopNext(payload)
+    if (window.electron?.ipcRenderer) return await window.electron.ipcRenderer.invoke('tts:proxy:pool:pop-next', payload)
+    return { ok: false, error: 'IPC unavailable' }
   }
 }
 
@@ -614,6 +644,431 @@ export function TtsBotView() {
   const [docNotice, setDocNotice] = useState<string | null>(null)
   const [extensionModalOpen, setExtensionModalOpen] = useState(false)
   const [copiedExtensionPath, setCopiedExtensionPath] = useState(false)
+
+  // Advanced Multi-Case Proxy Switcher State
+  const [proxyModalRecord, setProxyModalRecord] = useState<RecordItem | null>(null)
+  const [proxyModalTab, setProxyModalTab] = useState<'quick_string' | 'manual' | 'hideproxy' | 'rotate_url' | 'pool' | 'no_proxy'>('quick_string')
+  const [proxyQuickInput, setProxyQuickInput] = useState<string>('')
+  const [proxyManualForm, setProxyManualForm] = useState<{
+    type: 'http' | 'socks5'
+    host: string
+    port: string
+    user: string
+    password: string
+    showPassword: boolean
+  }>({
+    type: 'http',
+    host: '127.0.0.1',
+    port: '50000',
+    user: '',
+    password: '',
+    showPassword: false
+  })
+  const [proxyHideproxyState, setProxyHideproxyState] = useState<string>('Texas')
+  const [proxyHideproxyCity, setProxyHideproxyCity] = useState<string>('')
+  const [proxyHideproxyPort, setProxyHideproxyPort] = useState<number>(50000)
+  const [isBuyingHideproxy, setIsBuyingHideproxy] = useState<boolean>(false)
+  const [proxyRotateUrl, setProxyRotateUrl] = useState<string>('')
+  const [proxyRotateCooldown, setProxyRotateCooldown] = useState<number>(0)
+  const [isRotatingUrl, setIsRotatingUrl] = useState<boolean>(false)
+  const [rotateUrlFeedback, setRotateUrlFeedback] = useState<string | null>(null)
+  const [proxyPoolText, setProxyPoolText] = useState<string>('')
+  const [proxyPoolList, setProxyPoolList] = useState<string[]>([])
+  const [isSavingPool, setIsSavingPool] = useState<boolean>(false)
+  const [proxyRestartIfActive, setProxyRestartIfActive] = useState<boolean>(true)
+  const [isTestingProxy, setIsTestingProxy] = useState<boolean>(false)
+  const [testProxyResult, setTestProxyResult] = useState<{
+    ok: boolean
+    latencyMs?: number
+    ip?: string
+    country?: string
+    region?: string
+    city?: string
+    isp?: string
+    error?: string
+  } | null>(null)
+  const [isUpdatingProxy, setIsUpdatingProxy] = useState<boolean>(false)
+  const [proxyUpdateNotice, setProxyUpdateNotice] = useState<{ ok: boolean; msg: string } | null>(null)
+
+  const parseProxyInputString = (raw: string) => {
+    let str = raw.trim()
+    if (!str) return null
+    let type: 'http' | 'socks5' = 'http'
+    if (str.startsWith('socks5://') || str.startsWith('socks://')) {
+      type = 'socks5'
+      str = str.replace(/^(socks5:\/\/|socks:\/\/)/, '')
+    } else if (str.startsWith('http://') || str.startsWith('https://')) {
+      type = 'http'
+      str = str.replace(/^(http:\/\/|https:\/\/)/, '')
+    }
+
+    let host = ''
+    let port = '8080'
+    let user = ''
+    let password = ''
+
+    if (str.includes('@')) {
+      const [authPart, hostPart] = str.split('@')
+      if (authPart.includes(':')) {
+        const [u, p] = authPart.split(':')
+        user = u.trim()
+        password = p.trim()
+      } else {
+        user = authPart.trim()
+      }
+      if (hostPart) {
+        const hp = hostPart.split(':')
+        host = hp[0].trim()
+        port = hp[1]?.trim() || '8080'
+      }
+    } else if (str.includes(':')) {
+      const parts = str.split(':').map((p) => p.trim())
+      if (parts.length === 2) {
+        host = parts[0]
+        port = parts[1]
+      } else if (parts.length >= 4) {
+        host = parts[0]
+        port = parts[1]
+        user = parts[2]
+        password = parts[3]
+      } else if (parts.length === 3) {
+        host = parts[0]
+        port = parts[1]
+        user = parts[2]
+      }
+    } else {
+      host = str
+    }
+
+    return { type, host, port, user, password }
+  }
+
+  const openProxyModal = async (record: RecordItem) => {
+    setProxyModalRecord(record)
+    setProxyModalTab('quick_string')
+    setTestProxyResult(null)
+    setProxyUpdateNotice(null)
+    setRotateUrlFeedback(null)
+
+    const stateObj = US_STATES.find(
+      (s) => s.code.toLowerCase() === (record.state || '').toLowerCase() || s.name.toLowerCase() === (record.state || '').toLowerCase()
+    )
+    setProxyHideproxyState(stateObj?.name || record.state || 'Texas')
+    setProxyHideproxyCity(record.city || '')
+    const portToUse = record.assignedPort || 50000
+    setProxyHideproxyPort(portToUse)
+
+    try {
+      const poolRes = await ttsIpc.proxyPoolGet()
+      if (poolRes && Array.isArray(poolRes.pool)) {
+        setProxyPoolList(poolRes.pool)
+        setProxyPoolText(poolRes.pool.join('\n'))
+      }
+    } catch {}
+
+    const currentProxy = record.proxy || ''
+    if (currentProxy && currentProxy.toLowerCase() !== 'no proxy') {
+      setProxyQuickInput(currentProxy)
+      const parsed = parseProxyInputString(currentProxy)
+      if (parsed) {
+        setProxyManualForm({
+          type: parsed.type,
+          host: parsed.host || '127.0.0.1',
+          port: parsed.port || String(portToUse),
+          user: parsed.user || '',
+          password: parsed.password || '',
+          showPassword: false
+        })
+      }
+    } else if (record.assignedPort) {
+      setProxyQuickInput(`http://127.0.0.1:${record.assignedPort}`)
+      setProxyManualForm({
+        type: 'http',
+        host: '127.0.0.1',
+        port: String(record.assignedPort),
+        user: '',
+        password: '',
+        showPassword: false
+      })
+    } else {
+      setProxyQuickInput('')
+      setProxyManualForm({
+        type: 'http',
+        host: '127.0.0.1',
+        port: '50000',
+        user: '',
+        password: '',
+        showPassword: false
+      })
+    }
+  }
+
+  const handleTestCurrentProxy = async () => {
+    setIsTestingProxy(true)
+    setTestProxyResult(null)
+    try {
+      let host = proxyManualForm.host.trim()
+      let port = proxyManualForm.port.trim()
+      let user = proxyManualForm.user.trim()
+      let password = proxyManualForm.password.trim()
+      let proxyType = proxyManualForm.type
+
+      if (proxyModalTab === 'quick_string' && proxyQuickInput.trim()) {
+        const parsed = parseProxyInputString(proxyQuickInput)
+        if (parsed) {
+          host = parsed.host
+          port = parsed.port
+          user = parsed.user
+          password = parsed.password
+          proxyType = parsed.type
+        }
+      } else if (proxyModalTab === 'hideproxy') {
+        host = '127.0.0.1'
+        port = String(proxyHideproxyPort)
+      } else if (proxyModalTab === 'no_proxy') {
+        setTestProxyResult({ ok: true, latencyMs: 0, ip: 'IP Trực tiếp (Direct Network)', country: 'No Proxy' })
+        setIsTestingProxy(false)
+        return
+      }
+
+      const res = await ttsIpc.proxyTest({ host, port, user, password, proxyType })
+      setTestProxyResult(res)
+    } catch (err: any) {
+      setTestProxyResult({ ok: false, error: String(err?.message || err) })
+    } finally {
+      setIsTestingProxy(false)
+    }
+  }
+
+  const handleApplyProxy = async () => {
+    if (!proxyModalRecord) return
+    setIsUpdatingProxy(true)
+    setProxyUpdateNotice(null)
+    try {
+      let proxyConfig: any = { proxy_soft: 'no_proxy' }
+      let proxyString = 'No Proxy'
+
+      if (proxyModalTab === 'no_proxy') {
+        proxyConfig = { proxy_soft: 'no_proxy' }
+        proxyString = 'No Proxy'
+      } else if (proxyModalTab === 'hideproxy') {
+        proxyConfig = {
+          proxy_soft: 'other',
+          proxy_type: 'http',
+          proxy_host: '127.0.0.1',
+          proxy_port: String(proxyHideproxyPort),
+          proxy_user: '',
+          proxy_password: ''
+        }
+        proxyString = `http://127.0.0.1:${proxyHideproxyPort}`
+      } else if (proxyModalTab === 'rotate_url') {
+        const host = proxyManualForm.host.trim() || '127.0.0.1'
+        const port = proxyManualForm.port.trim() || '8080'
+        proxyConfig = {
+          proxy_soft: 'other',
+          proxy_type: proxyManualForm.type,
+          proxy_host: host,
+          proxy_port: port,
+          proxy_user: proxyManualForm.user.trim(),
+          proxy_password: proxyManualForm.password.trim(),
+          proxy_url: proxyRotateUrl.trim()
+        }
+        const authPart = proxyManualForm.user ? `${proxyManualForm.user}:${proxyManualForm.password}@` : ''
+        proxyString = `${proxyManualForm.type}://${authPart}${host}:${port}`
+      } else {
+        let host = proxyManualForm.host.trim()
+        let port = proxyManualForm.port.trim()
+        let user = proxyManualForm.user.trim()
+        let password = proxyManualForm.password.trim()
+        let type = proxyManualForm.type
+
+        if (proxyModalTab === 'quick_string' && proxyQuickInput.trim()) {
+          const parsed = parseProxyInputString(proxyQuickInput)
+          if (parsed) {
+            host = parsed.host
+            port = parsed.port
+            user = parsed.user
+            password = parsed.password
+            type = parsed.type
+          }
+        }
+
+        if (!host || !port) {
+          setProxyUpdateNotice({ ok: false, msg: 'Vui lòng điền đầy đủ Host và Port!' })
+          setIsUpdatingProxy(false)
+          return
+        }
+
+        proxyConfig = {
+          proxy_soft: 'other',
+          proxy_type: type,
+          proxy_host: host,
+          proxy_port: port,
+          proxy_user: user,
+          proxy_password: password
+        }
+        const authPart = user ? `${user}:${password}@` : ''
+        proxyString = `${type}://${authPart}${host}:${port}`
+      }
+
+      const res = await ttsIpc.proxyUpdateProfile({
+        recordId: proxyModalRecord.id,
+        adspowerId: proxyModalRecord.adspowerId,
+        proxyString,
+        proxyConfig,
+        restartIfActive: proxyRestartIfActive
+      })
+
+      if (res && res.ok) {
+        setRecords((prev) =>
+          prev.map((r) => {
+            if (r.id === proxyModalRecord.id) {
+              return {
+                ...r,
+                proxy: proxyString,
+                assignedPort: proxyConfig.proxy_port ? Number(proxyConfig.proxy_port) : r.assignedPort,
+                checkList: r.checkList
+                  ? {
+                      ...r.checkList,
+                      hasProxy: proxyString !== 'No Proxy'
+                    }
+                  : {
+                      hasInfo: Boolean(r.fullName && r.dob && r.address && r.ssn),
+                      hasTax: Boolean(r.ein),
+                      hasDocs: Boolean(r.pdfDoc || r.folderUrl),
+                      hasAuth: Boolean(r.email && (r.mailPass || r.tiktokPass)),
+                      hasProxy: proxyString !== 'No Proxy',
+                      hasBrowser: Boolean(r.adspowerId),
+                      hasPhotos: false
+                    }
+              }
+            }
+            return r
+          })
+        )
+
+        if (formModalRecord && formModalRecord.id === proxyModalRecord.id) {
+          setFormModalRecord((prev) => (prev ? { ...prev, proxy: proxyString } : null))
+        }
+
+        setProxyUpdateNotice({
+          ok: true,
+          msg: `✓ Đã cập nhật proxy thành công cho [${proxyModalRecord.id}]! ${res.adsUpdated ? '(Đã sync AdsPower)' : ''} ${res.restarted ? '(Đã restart browser)' : ''}`
+        })
+        setSetupFeedback(`✓ Đã đổi proxy cho ${proxyModalRecord.id}: ${proxyString}`)
+        setTimeout(() => {
+          setProxyModalRecord(null)
+        }, 1500)
+      } else {
+        setProxyUpdateNotice({ ok: false, msg: res?.error || 'Lỗi khi cập nhật proxy' })
+      }
+    } catch (err: any) {
+      setProxyUpdateNotice({ ok: false, msg: String(err?.message || err) })
+    } finally {
+      setIsUpdatingProxy(false)
+    }
+  }
+
+  const handleBuyHideproxy = async () => {
+    if (!proxyModalRecord) return
+    setIsBuyingHideproxy(true)
+    setProxyUpdateNotice(null)
+    try {
+      const res = await ttsIpc.hideproxyBuy({
+        country: 'US',
+        state: proxyHideproxyState,
+        city: proxyHideproxyCity,
+        port: proxyHideproxyPort
+      })
+      if (res && res.ok) {
+        setProxyManualForm((prev) => ({
+          ...prev,
+          type: 'http',
+          host: '127.0.0.1',
+          port: String(proxyHideproxyPort)
+        }))
+        setProxyUpdateNotice({ ok: true, msg: `✓ Đã mua và gán IP HideProxy thành công tại Port ${proxyHideproxyPort} (${proxyHideproxyState})!` })
+      } else {
+        setProxyUpdateNotice({ ok: false, msg: res?.error || 'Không thể mua IP từ HideProxy' })
+      }
+    } catch (err: any) {
+      setProxyUpdateNotice({ ok: false, msg: String(err?.message || err) })
+    } finally {
+      setIsBuyingHideproxy(false)
+    }
+  }
+
+  const handleTriggerRotate = async () => {
+    if (!proxyRotateUrl.trim()) return
+    setIsRotatingUrl(true)
+    setRotateUrlFeedback(null)
+    try {
+      const res = await ttsIpc.proxyRotateUrl({ rotateUrl: proxyRotateUrl.trim() })
+      if (res && res.ok) {
+        setRotateUrlFeedback(`✓ Đã gửi lệnh xoay IP! Phản hồi: ${res.body?.slice(0, 80) || 'OK'}`)
+        setProxyRotateCooldown(30)
+        const iv = setInterval(() => {
+          setProxyRotateCooldown((prev) => {
+            if (prev <= 1) {
+              clearInterval(iv)
+              return 0
+            }
+            return prev - 1
+          })
+        }, 1000)
+      } else {
+        setRotateUrlFeedback(`⚠️ Lỗi xoay IP: ${res?.error || 'Không nhận được phản hồi'}`)
+      }
+    } catch (err: any) {
+      setRotateUrlFeedback(`⚠️ Lỗi xoay IP: ${String(err?.message || err)}`)
+    } finally {
+      setIsRotatingUrl(false)
+    }
+  }
+
+  const handleSavePool = async () => {
+    setIsSavingPool(true)
+    try {
+      const lines = proxyPoolText.split('\n').map((l) => l.trim()).filter(Boolean)
+      const res = await ttsIpc.proxyPoolSave({ pool: lines })
+      if (res && res.ok) {
+        setProxyPoolList(lines)
+        setProxyUpdateNotice({ ok: true, msg: `✓ Đã lưu ${lines.length} proxy vào kho!` })
+      }
+    } catch (err: any) {
+      setProxyUpdateNotice({ ok: false, msg: String(err?.message || err) })
+    } finally {
+      setIsSavingPool(false)
+    }
+  }
+
+  const handlePopPoolNext = async () => {
+    if (!proxyModalRecord) return
+    try {
+      const res = await ttsIpc.proxyPoolPopNext({ recordId: proxyModalRecord.id })
+      if (res && res.ok && res.proxyString) {
+        setProxyQuickInput(res.proxyString)
+        const parsed = parseProxyInputString(res.proxyString)
+        if (parsed) {
+          setProxyManualForm({
+            type: parsed.type,
+            host: parsed.host,
+            port: parsed.port,
+            user: parsed.user,
+            password: parsed.password,
+            showPassword: false
+          })
+        }
+        setProxyPoolList((prev) => prev.slice(1))
+        setProxyPoolText((prev) => prev.split('\n').slice(1).join('\n'))
+        setProxyUpdateNotice({ ok: true, msg: `✓ Đã lấy proxy tiếp theo từ kho: ${res.proxyString} (Còn lại ${res.remaining} proxy)` })
+      } else {
+        setProxyUpdateNotice({ ok: false, msg: res?.error || 'Kho proxy trống' })
+      }
+    } catch (err: any) {
+      setProxyUpdateNotice({ ok: false, msg: String(err?.message || err) })
+    }
+  }
 
   const handleCopyField = (fieldName: string, text: string) => {
     if (!text) return
@@ -2980,18 +3435,34 @@ export function TtsBotView() {
                                 </span>
                               )}
                             </div>
-                            <div className="flex items-center space-x-2 mt-1.5 text-[11px] font-mono">
-                              {effectivePort ? (
-                                <span className="text-emerald-400 flex items-center space-x-1" title="HideProxy SOCKS5 Port">
+                            <div className="flex items-center space-x-1.5 mt-1.5 text-[11px] font-mono">
+                              {r.proxy && r.proxy !== 'No Proxy' ? (
+                                <span className="text-emerald-400 flex items-center space-x-1 truncate max-w-[150px]" title={r.proxy}>
+                                  <Globe className="w-3 h-3 text-emerald-400 shrink-0" />
+                                  <span className="truncate">{r.proxy.replace(/^(http:\/\/|socks5:\/\/)/, '')}</span>
+                                </span>
+                              ) : effectivePort ? (
+                                <span className="text-emerald-400 flex items-center space-x-1" title="HideProxy Port">
                                   <Globe className="w-3 h-3 text-emerald-400 shrink-0" />
                                   <span>:{effectivePort} ({effectiveProxyMeta?.state || r.state})</span>
                                 </span>
                               ) : (
-                                <span className="text-slate-600 flex items-center space-x-1">
-                                  <Globe className="w-3 h-3 text-slate-600 shrink-0" />
-                                  <span>Chưa gán port</span>
+                                <span className="text-slate-500 flex items-center space-x-1">
+                                  <Globe className="w-3 h-3 text-slate-500 shrink-0" />
+                                  <span>No Proxy</span>
                                 </span>
                               )}
+                              <button
+                                onClick={(e) => {
+                                  e.stopPropagation()
+                                  openProxyModal(r)
+                                }}
+                                className="px-1.5 py-0.5 rounded bg-slate-800 hover:bg-slate-700 text-amber-300 hover:text-amber-200 border border-slate-700/80 text-[10px] font-sans font-medium flex items-center space-x-0.5 cursor-pointer shadow-sm transition-all"
+                                title="Đổi / Cấu hình Proxy (Đa Chế Độ)"
+                              >
+                                <RefreshCw className="w-2.5 h-2.5" />
+                                <span>Đổi</span>
+                              </button>
                               <span className="text-slate-700">•</span>
                               {hasAds ? (
                                 <button
@@ -3408,6 +3879,16 @@ export function TtsBotView() {
                               >
                                 <Building className={`w-3 h-3 ${generatingDocType === 'verizon' ? 'animate-spin' : ''}`} />
                                 <span>Verizon</span>
+                              </button>
+
+                              {/* Quick Proxy button */}
+                              <button
+                                onClick={() => openProxyModal(r)}
+                                className="px-1.5 py-1 text-[11px] bg-slate-800 hover:bg-slate-700 text-amber-300 border border-slate-700 rounded-lg transition-all shadow-sm flex items-center space-x-1 cursor-pointer"
+                                title="Đổi / Cấu hình Proxy Đa Chế Độ (Parse, Form, HideProxy, Rotate URL, Pool)"
+                              >
+                                <Globe className="w-3 h-3 text-amber-400" />
+                                <span>Proxy</span>
                               </button>
 
                               {/* Drawer button */}
@@ -4359,21 +4840,36 @@ export function TtsBotView() {
                     </span>
                   </div>
                   <div className="flex justify-between items-center">
+                    <span className="text-slate-500">Chuỗi Proxy:</span>
+                    <span className="text-amber-300 font-mono text-[11px] font-semibold truncate max-w-[210px]" title={currentRecord.proxy || 'Chưa gán'}>
+                      {currentRecord.proxy || (currentRecord.assignedPort ? `127.0.0.1:${currentRecord.assignedPort}` : 'Chưa gán')}
+                    </span>
+                  </div>
+                  <div className="flex justify-between items-center">
                     <span className="text-slate-500">Trạng thái Live:</span>
                     <span className="text-emerald-400 font-semibold flex items-center space-x-1">
                       <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span>
-                      <span>{currentRecord.assignedPort ? 'Socks5 Sẵn sàng' : 'Chưa kết nối'}</span>
+                      <span>{currentRecord.assignedPort || currentRecord.proxy ? 'Sẵn sàng' : 'Chưa kết nối'}</span>
                     </span>
                   </div>
                 </div>
-                <button
-                  onClick={() => handleSmartSetup(currentRecord, false)}
-                  disabled={isSettingUpId === currentRecord.id}
-                  className="w-full mt-3 py-1.5 bg-cyan-600/20 hover:bg-cyan-600/30 text-cyan-300 border border-cyan-500/40 rounded-lg text-xs font-medium transition-all flex items-center justify-center space-x-1.5 disabled:opacity-50"
-                >
-                  <RefreshCw className={`w-3.5 h-3.5 ${isSettingUpId === currentRecord.id ? 'animate-spin' : ''}`} />
-                  <span>Match lại Proxy cho Bang {currentRecord.state}</span>
-                </button>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-2 mt-3">
+                  <button
+                    onClick={() => handleSmartSetup(currentRecord, false)}
+                    disabled={isSettingUpId === currentRecord.id}
+                    className="py-1.5 px-2 bg-cyan-600/20 hover:bg-cyan-600/30 text-cyan-300 border border-cyan-500/40 rounded-lg text-xs font-medium transition-all flex items-center justify-center space-x-1 disabled:opacity-50 cursor-pointer"
+                  >
+                    <RefreshCw className={`w-3.5 h-3.5 ${isSettingUpId === currentRecord.id ? 'animate-spin' : ''}`} />
+                    <span>Match Bang {currentRecord.state}</span>
+                  </button>
+                  <button
+                    onClick={() => openProxyModal(currentRecord)}
+                    className="py-1.5 px-2 bg-amber-600/20 hover:bg-amber-600/30 text-amber-300 border border-amber-500/40 rounded-lg text-xs font-medium transition-all flex items-center justify-center space-x-1 cursor-pointer shadow-sm"
+                  >
+                    <Globe className="w-3.5 h-3.5 text-amber-400" />
+                    <span>Đổi Proxy Đa Chế Độ</span>
+                  </button>
+                </div>
               </div>
 
               {/* Card 6: AdsPower Mobile Profile */}
@@ -6526,6 +7022,15 @@ export function TtsBotView() {
                 </button>
 
                 <button
+                  onClick={() => openProxyModal(formModalRecord)}
+                  className="px-3 py-1.5 bg-amber-600/30 hover:bg-amber-600 text-amber-300 hover:text-white border border-amber-500/40 rounded-lg text-xs font-semibold transition-all flex items-center space-x-1.5 cursor-pointer shadow-sm"
+                  title="Mở bảng Đổi Proxy Đa Chế Độ cho hồ sơ này"
+                >
+                  <Globe className="w-3.5 h-3.5" />
+                  <span>Đổi Proxy</span>
+                </button>
+
+                <button
                   onClick={() => setFormModalRecord(null)}
                   className="text-slate-400 hover:text-white p-1 rounded-lg hover:bg-slate-800 transition-all cursor-pointer ml-2"
                 >
@@ -7331,6 +7836,511 @@ export function TtsBotView() {
               >
                 Đóng
               </Button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ─── MODAL QUẢN LÝ & ĐỔI PROXY ĐA CHẾ ĐỘ (ADVANCED MULTI-CASE PROXY SWITCHER) ─── */}
+      {proxyModalRecord && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 backdrop-blur-sm p-4 overflow-y-auto animate-in fade-in duration-150">
+          <div className="bg-slate-900 border border-slate-800 rounded-2xl w-full max-w-2xl shadow-2xl overflow-hidden flex flex-col my-auto max-h-[92vh]">
+            {/* Header */}
+            <div className="px-6 py-4 bg-slate-950 border-b border-slate-800 flex items-center justify-between shrink-0">
+              <div className="flex items-center space-x-3">
+                <div className="w-9 h-9 rounded-xl bg-amber-500/10 border border-amber-500/30 flex items-center justify-center text-amber-400">
+                  <Globe className="w-5 h-5" />
+                </div>
+                <div>
+                  <h3 className="text-sm font-bold text-white flex items-center space-x-2">
+                    <span>Đổi & Cấu Hình Proxy Đa Chế Độ</span>
+                    <span className="font-mono text-xs px-2 py-0.5 rounded bg-amber-500/10 border border-amber-500/20 text-amber-300 font-semibold">
+                      [{proxyModalRecord.id}]
+                    </span>
+                  </h3>
+                  <p className="text-xs text-slate-400 mt-0.5">
+                    Hồ sơ: <strong className="text-slate-200">{proxyModalRecord.fullName}</strong> • Bang: <strong className="text-emerald-400">{proxyModalRecord.state}</strong> • Profile Ads: <strong className="text-sky-400 font-mono">{proxyModalRecord.adspowerId || 'Chưa tạo'}</strong>
+                  </p>
+                </div>
+              </div>
+              <button
+                onClick={() => setProxyModalRecord(null)}
+                className="text-slate-400 hover:text-white p-1 rounded-lg hover:bg-slate-800 transition-all cursor-pointer"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            {/* Current Proxy Status & Ping Bar */}
+            <div className="px-6 py-3 bg-slate-950/60 border-b border-slate-800/80 flex flex-wrap items-center justify-between gap-3 text-xs">
+              <div className="flex items-center space-x-2 min-w-0">
+                <span className="text-slate-400 font-medium shrink-0">Proxy Hiện Tại:</span>
+                <span className="font-mono text-amber-300 bg-slate-900 px-2 py-0.5 rounded border border-slate-800 font-semibold truncate max-w-[280px]">
+                  {proxyModalRecord.proxy || (proxyModalRecord.assignedPort ? `127.0.0.1:${proxyModalRecord.assignedPort}` : 'Chưa gán (No Proxy)')}
+                </span>
+              </div>
+              <div className="flex items-center space-x-2">
+                <button
+                  onClick={handleTestCurrentProxy}
+                  disabled={isTestingProxy}
+                  className="px-2.5 py-1 bg-slate-800 hover:bg-slate-700 text-sky-300 hover:text-white rounded-lg text-xs font-semibold flex items-center space-x-1.5 transition-all border border-slate-700 cursor-pointer disabled:opacity-50"
+                  title="Ping trực tiếp proxy và kiểm tra IP công khai qua TCP tunnel"
+                >
+                  <RefreshCw className={`w-3.5 h-3.5 ${isTestingProxy ? 'animate-spin' : ''}`} />
+                  <span>{isTestingProxy ? 'Đang test...' : '⚡ Test Ping & Geo-IP'}</span>
+                </button>
+              </div>
+            </div>
+
+            {/* Ping Result Banner if available */}
+            {testProxyResult && (
+              <div
+                className={`mx-6 mt-3 p-3 rounded-xl border text-xs flex items-start space-x-2 ${
+                  testProxyResult.ok
+                    ? 'bg-emerald-950/40 border-emerald-800/80 text-emerald-200'
+                    : 'bg-rose-950/40 border-rose-800/80 text-rose-200'
+                }`}
+              >
+                {testProxyResult.ok ? (
+                  <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0 mt-0.5" />
+                ) : (
+                  <AlertCircle className="w-4 h-4 text-rose-400 shrink-0 mt-0.5" />
+                )}
+                <div className="flex-1 space-y-1">
+                  <div className="font-semibold flex items-center justify-between">
+                    <span>{testProxyResult.ok ? '✓ Proxy Hoạt Động Tốt' : '✕ Kết Nối Proxy Thất Bại'}</span>
+                    {testProxyResult.latencyMs !== undefined && (
+                      <span className="font-mono text-[11px] px-1.5 py-0.5 bg-slate-900/80 rounded border border-slate-700 text-amber-300">
+                        {testProxyResult.latencyMs} ms
+                      </span>
+                    )}
+                  </div>
+                  {testProxyResult.ok ? (
+                    <div className="text-[11px] text-emerald-300/90 leading-relaxed font-mono">
+                      IP: <strong>{testProxyResult.ip || 'N/A'}</strong> • Vùng: {testProxyResult.region || testProxyResult.city || 'N/A'} ({testProxyResult.country || 'US'}) • ISP: {testProxyResult.isp || 'N/A'}
+                    </div>
+                  ) : (
+                    <div className="text-[11px] text-rose-300/90 leading-relaxed">
+                      Lỗi: {testProxyResult.error}
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
+
+            {/* Notice Alert if available */}
+            {proxyUpdateNotice && (
+              <div
+                className={`mx-6 mt-3 p-3 rounded-xl border text-xs flex items-start space-x-2 ${
+                  proxyUpdateNotice.ok
+                    ? 'bg-emerald-950/40 border-emerald-800/80 text-emerald-200'
+                    : 'bg-rose-950/40 border-rose-800/80 text-rose-200'
+                }`}
+              >
+                {proxyUpdateNotice.ok ? (
+                  <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0 mt-0.5" />
+                ) : (
+                  <AlertCircle className="w-4 h-4 text-rose-400 shrink-0 mt-0.5" />
+                )}
+                <div className="flex-1">{proxyUpdateNotice.msg}</div>
+                <button onClick={() => setProxyUpdateNotice(null)} className="text-slate-400 hover:text-white">
+                  <X className="w-3.5 h-3.5" />
+                </button>
+              </div>
+            )}
+
+            {/* Mode Tabs Navigation */}
+            <div className="px-6 pt-4 pb-1 border-b border-slate-800 flex flex-wrap gap-1">
+              {[
+                { id: 'quick_string', label: '1. Parse Nhanh', icon: Zap },
+                { id: 'manual', label: '2. Điền Form Chi Tiết', icon: Sliders },
+                { id: 'hideproxy', label: '3. HideProxy Bang', icon: Globe },
+                { id: 'rotate_url', label: '4. Link Xoay IP', icon: RefreshCw },
+                { id: 'pool', label: '5. Kho Proxy (Pool)', icon: Package },
+                { id: 'no_proxy', label: '6. Direct (No Proxy)', icon: XCircle }
+              ].map((tab) => {
+                const TabIcon = tab.icon
+                const isActive = proxyModalTab === tab.id
+                return (
+                  <button
+                    key={tab.id}
+                    onClick={() => {
+                      setProxyModalTab(tab.id as any)
+                      setTestProxyResult(null)
+                    }}
+                    className={`px-3 py-2 text-xs font-semibold rounded-lg flex items-center space-x-1.5 transition-all cursor-pointer ${
+                      isActive
+                        ? 'bg-amber-500 text-slate-950 shadow-md font-bold'
+                        : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800'
+                    }`}
+                  >
+                    <TabIcon className="w-3.5 h-3.5" />
+                    <span>{tab.label}</span>
+                  </button>
+                )
+              })}
+            </div>
+
+            {/* Modal Body / Tab Content */}
+            <div className="p-6 overflow-y-auto space-y-4 flex-1">
+              {/* TAB 1: QUICK STRING */}
+              {proxyModalTab === 'quick_string' && (
+                <div className="space-y-3">
+                  <div>
+                    <label className="text-xs font-semibold text-slate-300 block mb-1">
+                      Dán chuỗi Proxy (Hỗ trợ mọi định dạng thông dụng):
+                    </label>
+                    <input
+                      type="text"
+                      value={proxyQuickInput}
+                      onChange={(e) => {
+                        setProxyQuickInput(e.target.value)
+                        const parsed = parseProxyInputString(e.target.value)
+                        if (parsed) {
+                          setProxyManualForm({
+                            type: parsed.type,
+                            host: parsed.host,
+                            port: parsed.port,
+                            user: parsed.user,
+                            password: parsed.password,
+                            showPassword: false
+                          })
+                        }
+                      }}
+                      placeholder="vd: 192.168.1.1:8080:user:pass hoặc socks5://user:pass@host:1080"
+                      className="w-full px-3 py-2 bg-slate-950 border border-slate-700 rounded-xl text-xs font-mono text-white focus:outline-none focus:border-amber-400 focus:ring-1 focus:ring-amber-400 placeholder:text-slate-600"
+                    />
+                    <p className="text-[11px] text-slate-500 mt-1">
+                      Cú pháp nhận diện tự động: <code>host:port</code>, <code>host:port:user:pass</code>, <code>user:pass@host:port</code>, <code>socks5://...</code>, <code>http://...</code>
+                    </p>
+                  </div>
+
+                  {/* Live Parsed Preview */}
+                  {(() => {
+                    const parsed = parseProxyInputString(proxyQuickInput)
+                    if (!parsed) return null
+                    return (
+                      <div className="p-3 bg-slate-950/80 border border-slate-800 rounded-xl space-y-1.5">
+                        <div className="text-[11px] font-semibold text-slate-400 flex items-center space-x-1.5">
+                          <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" />
+                          <span>Kết quả trích xuất tự động (Live Parse):</span>
+                        </div>
+                        <div className="grid grid-cols-2 md:grid-cols-4 gap-2 text-xs font-mono">
+                          <div className="p-1.5 bg-slate-900 rounded border border-slate-800">
+                            <span className="text-[10px] text-slate-500 block">Loại (Type):</span>
+                            <span className="text-sky-300 uppercase font-bold">{parsed.type}</span>
+                          </div>
+                          <div className="p-1.5 bg-slate-900 rounded border border-slate-800">
+                            <span className="text-[10px] text-slate-500 block">Host:</span>
+                            <span className="text-emerald-300 font-bold truncate block">{parsed.host || '—'}</span>
+                          </div>
+                          <div className="p-1.5 bg-slate-900 rounded border border-slate-800">
+                            <span className="text-[10px] text-slate-500 block">Port:</span>
+                            <span className="text-amber-300 font-bold">{parsed.port || '—'}</span>
+                          </div>
+                          <div className="p-1.5 bg-slate-900 rounded border border-slate-800">
+                            <span className="text-[10px] text-slate-500 block">Auth:</span>
+                            <span className="text-purple-300 truncate block">
+                              {parsed.user ? `${parsed.user}:${parsed.password ? '••••' : ''}` : 'None'}
+                            </span>
+                          </div>
+                        </div>
+                      </div>
+                    )
+                  })()}
+                </div>
+              )}
+
+              {/* TAB 2: MANUAL DETAILED FORM */}
+              {proxyModalTab === 'manual' && (
+                <div className="space-y-3">
+                  <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                    <div>
+                      <label className="text-xs font-medium text-slate-400 block mb-1">Giao thức (Protocol)</label>
+                      <select
+                        value={proxyManualForm.type}
+                        onChange={(e) => setProxyManualForm((prev) => ({ ...prev, type: e.target.value as any }))}
+                        className="w-full px-3 py-2 bg-slate-950 border border-slate-800 rounded-lg text-xs font-medium text-white focus:outline-none focus:border-amber-400"
+                      >
+                        <option value="http">HTTP / HTTPS</option>
+                        <option value="socks5">SOCKS5</option>
+                      </select>
+                    </div>
+                    <div>
+                      <label className="text-xs font-medium text-slate-400 block mb-1">Host / IP</label>
+                      <input
+                        type="text"
+                        value={proxyManualForm.host}
+                        onChange={(e) => setProxyManualForm((prev) => ({ ...prev, host: e.target.value }))}
+                        placeholder="127.0.0.1 hoặc domain proxy"
+                        className="w-full px-3 py-2 bg-slate-950 border border-slate-800 rounded-lg text-xs font-mono text-white focus:outline-none focus:border-amber-400"
+                      />
+                    </div>
+                    <div>
+                      <div className="flex items-center justify-between mb-1">
+                        <label className="text-xs font-medium text-slate-400">Port</label>
+                        <div className="flex items-center space-x-1">
+                          <button
+                            type="button"
+                            onClick={() => {
+                              const p = parseInt(proxyManualForm.port, 10)
+                              if (!isNaN(p)) setProxyManualForm((prev) => ({ ...prev, port: String(p - 1) }))
+                            }}
+                            className="px-1 py-0.5 bg-slate-800 hover:bg-slate-700 text-[10px] text-slate-300 rounded cursor-pointer"
+                          >
+                            -1
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              const p = parseInt(proxyManualForm.port, 10)
+                              if (!isNaN(p)) setProxyManualForm((prev) => ({ ...prev, port: String(p + 1) }))
+                            }}
+                            className="px-1 py-0.5 bg-slate-800 hover:bg-slate-700 text-[10px] text-slate-300 rounded cursor-pointer"
+                          >
+                            +1
+                          </button>
+                        </div>
+                      </div>
+                      <input
+                        type="text"
+                        value={proxyManualForm.port}
+                        onChange={(e) => setProxyManualForm((prev) => ({ ...prev, port: e.target.value }))}
+                        placeholder="8080"
+                        className="w-full px-3 py-2 bg-slate-950 border border-slate-800 rounded-lg text-xs font-mono text-amber-300 font-bold focus:outline-none focus:border-amber-400"
+                      />
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-3 pt-1">
+                    <div>
+                      <label className="text-xs font-medium text-slate-400 block mb-1">Username (Tùy chọn)</label>
+                      <input
+                        type="text"
+                        value={proxyManualForm.user}
+                        onChange={(e) => setProxyManualForm((prev) => ({ ...prev, user: e.target.value }))}
+                        placeholder="user nếu có"
+                        className="w-full px-3 py-2 bg-slate-950 border border-slate-800 rounded-lg text-xs font-mono text-white focus:outline-none focus:border-amber-400"
+                      />
+                    </div>
+                    <div>
+                      <label className="text-xs font-medium text-slate-400 block mb-1">Password (Tùy chọn)</label>
+                      <div className="relative">
+                        <input
+                          type={proxyManualForm.showPassword ? 'text' : 'password'}
+                          value={proxyManualForm.password}
+                          onChange={(e) => setProxyManualForm((prev) => ({ ...prev, password: e.target.value }))}
+                          placeholder="password nếu có"
+                          className="w-full px-3 py-2 bg-slate-950 border border-slate-800 rounded-lg text-xs font-mono text-white focus:outline-none focus:border-amber-400 pr-8"
+                        />
+                        <button
+                          type="button"
+                          onClick={() => setProxyManualForm((prev) => ({ ...prev, showPassword: !prev.showPassword }))}
+                          className="absolute right-2 top-2.5 text-slate-400 hover:text-white"
+                        >
+                          {proxyManualForm.showPassword ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {/* TAB 3: HIDEPROXY THEO BANG */}
+              {proxyModalTab === 'hideproxy' && (
+                <div className="space-y-3">
+                  <div className="p-3 bg-cyan-950/20 border border-cyan-800/50 rounded-xl text-xs space-y-1.5">
+                    <div className="flex items-center space-x-1.5 font-bold text-cyan-300">
+                      <Globe className="w-4 h-4 text-cyan-400" />
+                      <span>HideProxy Client Nội Bộ (127.0.0.1:10101)</span>
+                    </div>
+                    <p className="text-slate-300 leading-relaxed text-[11px]">
+                      Hệ thống tự động đồng bộ theo đúng Bang <strong className="text-cyan-200">{proxyModalRecord.state}</strong> của hồ sơ tài khoản để đảm bảo tỷ lệ duyệt 99%.
+                    </p>
+                  </div>
+
+                  <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                    <div>
+                      <label className="text-xs font-medium text-slate-400 block mb-1">Bang (State)</label>
+                      <select
+                        value={proxyHideproxyState}
+                        onChange={(e) => setProxyHideproxyState(e.target.value)}
+                        className="w-full px-3 py-2 bg-slate-950 border border-slate-800 rounded-lg text-xs font-medium text-white focus:outline-none focus:border-amber-400"
+                      >
+                        {US_STATES.map((s) => (
+                          <option key={s.code} value={s.name}>
+                            {s.code} - {s.name}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                    <div>
+                      <label className="text-xs font-medium text-slate-400 block mb-1">Thành Phố (City - Tùy chọn)</label>
+                      <input
+                        type="text"
+                        value={proxyHideproxyCity}
+                        onChange={(e) => setProxyHideproxyCity(e.target.value)}
+                        placeholder="Để trống nếu lấy ngẫu nhiên"
+                        className="w-full px-3 py-2 bg-slate-950 border border-slate-800 rounded-lg text-xs text-white focus:outline-none focus:border-amber-400"
+                      />
+                    </div>
+                    <div>
+                      <label className="text-xs font-medium text-slate-400 block mb-1">Port Local Forward</label>
+                      <input
+                        type="number"
+                        value={proxyHideproxyPort}
+                        onChange={(e) => setProxyHideproxyPort(Number(e.target.value) || 50000)}
+                        className="w-full px-3 py-2 bg-slate-950 border border-slate-800 rounded-lg text-xs font-mono text-amber-300 font-bold focus:outline-none focus:border-amber-400"
+                      />
+                    </div>
+                  </div>
+
+                  <button
+                    onClick={handleBuyHideproxy}
+                    disabled={isBuyingHideproxy}
+                    className="w-full py-2.5 bg-cyan-600 hover:bg-cyan-500 text-slate-950 rounded-xl text-xs font-bold shadow-md flex items-center justify-center space-x-2 transition-all cursor-pointer disabled:opacity-50"
+                  >
+                    <Zap className={`w-4 h-4 ${isBuyingHideproxy ? 'animate-spin' : ''}`} />
+                    <span>{isBuyingHideproxy ? 'Đang gọi HideProxy API...' : `🛒 Mua & Gán IP HideProxy Bang ${proxyHideproxyState} Ngay`}</span>
+                  </button>
+                </div>
+              )}
+
+              {/* TAB 4: ROTATE URL */}
+              {proxyModalTab === 'rotate_url' && (
+                <div className="space-y-3">
+                  <div>
+                    <label className="text-xs font-semibold text-slate-300 block mb-1">
+                      Link API Xoay IP (Proxy Rotation / Reset URL):
+                    </label>
+                    <input
+                      type="text"
+                      value={proxyRotateUrl}
+                      onChange={(e) => setProxyRotateUrl(e.target.value)}
+                      placeholder="vd: https://api.tmproxy.com/v1/rotate?api_key=... hoặc https://tinproxy.com/api/key/rotate/..."
+                      className="w-full px-3 py-2 bg-slate-950 border border-slate-700 rounded-xl text-xs font-mono text-white focus:outline-none focus:border-amber-400 placeholder:text-slate-600"
+                    />
+                    <p className="text-[11px] text-slate-500 mt-1">
+                      AdsPower hỗ trợ tự động kích hoạt xoay IP theo link này mỗi khi Profile khởi chạy hoặc thay đổi.
+                    </p>
+                  </div>
+
+                  <div className="p-3 bg-slate-950 border border-slate-800 rounded-xl space-y-2">
+                    <div className="flex items-center justify-between">
+                      <span className="text-xs font-semibold text-slate-300">Kích hoạt xoay IP thủ công:</span>
+                      <button
+                        onClick={handleTriggerRotate}
+                        disabled={isRotatingUrl || proxyRotateCooldown > 0 || !proxyRotateUrl.trim()}
+                        className="px-3 py-1.5 bg-amber-600 hover:bg-amber-500 text-white rounded-lg text-xs font-semibold flex items-center space-x-1.5 transition-all cursor-pointer disabled:opacity-50"
+                      >
+                        <RefreshCw className={`w-3.5 h-3.5 ${isRotatingUrl ? 'animate-spin' : ''}`} />
+                        <span>
+                          {isRotatingUrl
+                            ? 'Đang gửi...'
+                            : proxyRotateCooldown > 0
+                            ? `Chờ ${proxyRotateCooldown}s`
+                            : '🔄 Kích Hoạt Xoay IP Ngay'}
+                        </span>
+                      </button>
+                    </div>
+                    {rotateUrlFeedback && (
+                      <div className="text-[11px] font-mono text-amber-300 bg-slate-900 p-2 rounded border border-slate-800">
+                        {rotateUrlFeedback}
+                      </div>
+                    )}
+                  </div>
+                </div>
+              )}
+
+              {/* TAB 5: PROXY POOL */}
+              {proxyModalTab === 'pool' && (
+                <div className="space-y-3">
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <span className="text-xs font-semibold text-slate-300">Kho Proxy Dự Phòng (Proxy Pool):</span>
+                      <p className="text-[11px] text-slate-500">Mỗi dòng 1 proxy. Hệ thống sẽ lưu trữ và quản lý xoay vòng.</p>
+                    </div>
+                    <span className="text-xs font-mono font-bold text-emerald-400 bg-slate-950 px-2 py-0.5 rounded border border-slate-800">
+                      Hiện có: {proxyPoolList.length} proxy
+                    </span>
+                  </div>
+
+                  <textarea
+                    rows={5}
+                    value={proxyPoolText}
+                    onChange={(e) => setProxyPoolText(e.target.value)}
+                    placeholder="192.168.1.1:8080:user:pass&#10;192.168.1.2:8080:user:pass&#10;socks5://user:pass@host:1080"
+                    className="w-full px-3 py-2 bg-slate-950 border border-slate-700 rounded-xl text-xs font-mono text-white focus:outline-none focus:border-amber-400"
+                  />
+
+                  <div className="flex items-center justify-between gap-2">
+                    <button
+                      onClick={handleSavePool}
+                      disabled={isSavingPool}
+                      className="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-lg text-xs font-semibold flex items-center space-x-1.5 cursor-pointer disabled:opacity-50"
+                    >
+                      <Save className="w-3.5 h-3.5" />
+                      <span>{isSavingPool ? 'Đang lưu...' : '💾 Lưu Kho Proxy'}</span>
+                    </button>
+
+                    <button
+                      onClick={handlePopPoolNext}
+                      disabled={proxyPoolList.length === 0}
+                      className="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg text-xs font-bold flex items-center space-x-1.5 cursor-pointer disabled:opacity-50"
+                    >
+                      <Zap className="w-3.5 h-3.5" />
+                      <span>⚡ Gán 1 Proxy Kế Tiếp Cho Hồ Sơ Này</span>
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              {/* TAB 6: NO PROXY / DIRECT */}
+              {proxyModalTab === 'no_proxy' && (
+                <div className="p-4 bg-slate-950 border border-slate-800 rounded-xl space-y-2 text-center">
+                  <div className="w-10 h-10 rounded-full bg-rose-500/10 border border-rose-500/20 text-rose-400 flex items-center justify-center mx-auto">
+                    <XCircle className="w-5 h-5" />
+                  </div>
+                  <h4 className="text-xs font-bold text-white">Chế Độ Kết Nối Mạng Trực Tiếp (Direct Connection)</h4>
+                  <p className="text-xs text-slate-400 max-w-md mx-auto leading-relaxed">
+                    Hồ sơ sẽ sử dụng trực tiếp kết nối Internet và địa chỉ IP hiện tại của máy tính mà không thông qua bất kỳ máy chủ trung gian Proxy nào.
+                  </p>
+                </div>
+              )}
+
+              {/* Option: Auto restart active browser */}
+              <div className="pt-2 border-t border-slate-800/80 flex items-center justify-between">
+                <label className="flex items-center space-x-2 text-xs text-slate-300 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={proxyRestartIfActive}
+                    onChange={(e) => setProxyRestartIfActive(e.target.checked)}
+                    className="w-4 h-4 rounded text-amber-500 bg-slate-950 border-slate-700 focus:ring-0"
+                  />
+                  <span>Tự động restart browser nếu profile đang mở để nhận ngay IP mới</span>
+                </label>
+              </div>
+            </div>
+
+            {/* Modal Footer */}
+            <div className="px-6 py-3.5 bg-slate-950 border-t border-slate-800 flex items-center justify-between shrink-0">
+              <Button
+                variant="secondary"
+                size="sm"
+                onClick={() => setProxyModalRecord(null)}
+                className="text-xs px-4 cursor-pointer"
+              >
+                Hủy / Đóng
+              </Button>
+
+              <button
+                onClick={handleApplyProxy}
+                disabled={isUpdatingProxy}
+                className="px-5 py-2 bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold rounded-xl text-xs shadow flex items-center space-x-2 transition-all cursor-pointer disabled:opacity-50"
+              >
+                <Check className={`w-4 h-4 ${isUpdatingProxy ? 'animate-spin' : ''}`} />
+                <span>{isUpdatingProxy ? 'Đang cập nhật...' : '⚡ Áp Dụng & Đồng Bộ AdsPower'}</span>
+              </button>
             </div>
           </div>
         </div>

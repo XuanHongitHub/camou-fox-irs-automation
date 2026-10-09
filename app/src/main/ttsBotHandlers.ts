@@ -3,6 +3,7 @@ import { join, basename, extname } from 'path'
 import { existsSync, mkdirSync, readFileSync, writeFileSync, readdirSync, statSync } from 'fs'
 import { spawn } from 'child_process'
 import tls from 'tls'
+import net from 'net'
 import * as XLSX from 'xlsx-js-style'
 
 const DEFAULT_ADS_API_KEY = 'c9ea96522fba29ee72f2fee511b77868008da729dcdcc201'
@@ -876,7 +877,7 @@ function generateValidDl(stateCode: string, lastName: string = ''): string {
       const hasTax = !!(ssn && rawEin)
       const hasDocs = !!(pdfDoc || bankStatement)
       const hasAuth = !!(mailEmail && (tiktokPass || mailPass))
-      const hasProxy = !!savedSetup.assignedPort
+      const hasProxy = !!(savedSetup.assignedProxy || savedSetup.assignedPort || (colProxy >= 0 && r[colProxy]))
       const hasBrowser = !!savedSetup.adspowerId
 
       let readinessScore = 0
@@ -908,7 +909,7 @@ function generateValidDl(stateCode: string, lastName: string = ''): string {
         email: mailEmail,
         mailPass,
         twoFactor: mail2FA,
-        proxy: (colProxy >= 0 ? r[colProxy] : '') || '',
+        proxy: savedSetup.assignedProxy || (colProxy >= 0 ? r[colProxy] : '') || '',
         tiktokPass,
         phone,
         phoneCodeUrl,
@@ -1262,6 +1263,261 @@ function generateValidDl(stateCode: string, lastName: string = ''): string {
       }
     }
   )
+
+  // 3.5 Advanced Multi-Case Proxy Switcher & Healthcheck Handlers
+  ipcMain.handle('tts:proxy:test', async (_event, params: {
+    proxyType?: string
+    host: string
+    port: number | string
+    user?: string
+    password?: string
+  }) => {
+    return new Promise((resolve) => {
+      const host = (params.host || '').trim()
+      const port = Number(params.port)
+      const user = (params.user || '').trim()
+      const password = (params.password || '').trim()
+
+      if (!host || isNaN(port) || port <= 0 || port > 65535) {
+        return resolve({ ok: false, error: 'Host hoặc Port không hợp lệ' })
+      }
+
+      const started = Date.now()
+      const socket = net.createConnection({ host, port })
+      let resolved = false
+      let stage = 'CONNECT'
+
+      socket.setTimeout(6000)
+
+      socket.on('connect', () => {
+        let authHeader = ''
+        if (user && password) {
+          authHeader = 'Proxy-Authorization: Basic ' + Buffer.from(`${user}:${password}`).toString('base64') + '\r\n'
+        }
+        socket.write(
+          'CONNECT ip-api.com:80 HTTP/1.1\r\n' +
+          'Host: ip-api.com:80\r\n' +
+          authHeader +
+          'Connection: keep-alive\r\n\r\n'
+        )
+      })
+
+      let buffer = ''
+      socket.on('data', (chunk) => {
+        buffer += chunk.toString('utf8')
+        if (stage === 'CONNECT') {
+          if (buffer.includes('200 Connection established') || buffer.includes('HTTP/1.1 200') || buffer.includes('HTTP/1.0 200')) {
+            stage = 'GET'
+            buffer = ''
+            socket.write('GET /json HTTP/1.1\r\nHost: ip-api.com\r\nConnection: close\r\n\r\n')
+          } else if (buffer.includes('407')) {
+            if (!resolved) {
+              resolved = true
+              socket.destroy()
+              resolve({ ok: false, error: 'Lỗi xác thực: Sai User hoặc Password (HTTP 407)', latencyMs: Date.now() - started })
+            }
+          } else if (buffer.includes('HTTP/')) {
+            if (!resolved) {
+              resolved = true
+              socket.destroy()
+              resolve({ ok: true, latencyMs: Date.now() - started, ip: host, country: 'Online', msg: 'Proxy hoạt động' })
+            }
+          }
+        } else if (stage === 'GET') {
+          if (buffer.includes('{') && buffer.includes('}')) {
+            const jsonMatch = buffer.match(/\{[\s\S]*\}/)
+            if (jsonMatch && !resolved) {
+              resolved = true
+              try {
+                const data = JSON.parse(jsonMatch[0])
+                const latency = Date.now() - started
+                socket.destroy()
+                resolve({
+                  ok: true,
+                  latencyMs: latency,
+                  ip: data.query || host,
+                  country: data.country || 'Unknown',
+                  region: data.regionName || '',
+                  city: data.city || '',
+                  isp: data.isp || ''
+                })
+              } catch {
+                socket.destroy()
+                resolve({ ok: true, latencyMs: Date.now() - started, ip: host, country: 'Online' })
+              }
+            }
+          }
+        }
+      })
+
+      socket.on('timeout', () => {
+        if (!resolved) {
+          resolved = true
+          socket.destroy()
+          resolve({ ok: false, error: 'Hết thời gian kết nối (Timeout > 6s)' })
+        }
+      })
+
+      socket.on('error', (err: any) => {
+        if (!resolved) {
+          resolved = true
+          resolve({ ok: false, error: `Lỗi kết nối: ${err.message}` })
+        }
+      })
+    })
+  })
+
+  ipcMain.handle('tts:proxy:update-profile', async (_event, payload: {
+    recordId: string
+    adspowerId?: string
+    proxyString: string
+    proxyConfig: {
+      proxy_soft: string
+      proxy_type?: string
+      proxy_host?: string
+      proxy_port?: string
+      proxy_user?: string
+      proxy_password?: string
+      proxy_url?: string
+    }
+    restartIfActive?: boolean
+  }) => {
+    try {
+      const recordId = payload.recordId
+      const proxyConfig = payload.proxyConfig
+      const proxyString = payload.proxyString || ''
+
+      let stateData: any = {}
+      if (existsSync(stateFile)) {
+        try { stateData = JSON.parse(readFileSync(stateFile, 'utf-8')) } catch {}
+      }
+      if (!stateData.profileSetups) stateData.profileSetups = {}
+      if (!stateData.profileSetups[recordId]) stateData.profileSetups[recordId] = {}
+
+      stateData.profileSetups[recordId].assignedProxy = proxyString
+      stateData.profileSetups[recordId].proxyConfig = proxyConfig
+      if (proxyConfig.proxy_port && !isNaN(Number(proxyConfig.proxy_port))) {
+        stateData.profileSetups[recordId].assignedPort = Number(proxyConfig.proxy_port)
+      }
+      writeFileSync(stateFile, JSON.stringify(stateData, null, 2), 'utf-8')
+
+      // Resolve AdsPower user_id
+      let effectiveUserId = payload.adspowerId || stateData.profileSetups[recordId]?.adspowerId || recordId
+      const resolved = await resolveAdsPowerUserId(effectiveUserId)
+      if (resolved) effectiveUserId = resolved
+
+      let adsUpdated = false
+      let adsError = ''
+      if (effectiveUserId) {
+        try {
+          const baseUrl = getAdsBaseUrl()
+          const updateRes = await fetch(`${baseUrl}/api/v1/user/update`, {
+            method: 'POST',
+            headers: getAdsHeaders(),
+            body: JSON.stringify({
+              user_id: effectiveUserId,
+              user_proxy_config: proxyConfig
+            })
+          })
+          const updateData = await updateRes.json()
+          adsUpdated = updateData.code === 0
+          if (!adsUpdated) adsError = updateData.msg || 'AdsPower update failed'
+        } catch (e: any) {
+          adsError = e.message
+        }
+      }
+
+      let restarted = false
+      if (payload.restartIfActive && effectiveUserId) {
+        try {
+          const baseUrl = getAdsBaseUrl()
+          const activeRes = await fetch(`${baseUrl}/api/v1/browser/active?user_id=${effectiveUserId}`, { headers: getAdsHeaders() }).then(r => r.json()).catch(() => null)
+          if (activeRes && activeRes.code === 0 && activeRes.data?.status === 'Active') {
+            await fetch(`${baseUrl}/api/v1/browser/stop?user_id=${effectiveUserId}`, { headers: getAdsHeaders() }).then(r => r.json()).catch(() => null)
+            await new Promise(r => setTimeout(r, 1200))
+            await startAdsPowerBrowser(effectiveUserId, recordId)
+            restarted = true
+          }
+        } catch {}
+      }
+
+      return {
+        ok: true,
+        recordId,
+        adspowerId: effectiveUserId,
+        assignedProxy: proxyString,
+        adsUpdated,
+        adsError,
+        restarted
+      }
+    } catch (err: any) {
+      return { ok: false, error: String(err?.message || err) }
+    }
+  })
+
+  ipcMain.handle('tts:proxy:rotate-url', async (_event, { rotateUrl }: { rotateUrl: string }) => {
+    try {
+      if (!rotateUrl || !rotateUrl.startsWith('http')) {
+        return { ok: false, error: 'Đường dẫn xoay IP không hợp lệ (cần bắt đầu bằng http:// hoặc https://)' }
+      }
+      const controller = new AbortController()
+      const timeout = setTimeout(() => controller.abort(), 10000)
+      const res = await fetch(rotateUrl, { signal: controller.signal })
+      clearTimeout(timeout)
+      const text = await res.text()
+      return { ok: res.ok, status: res.status, body: text }
+    } catch (err: any) {
+      return { ok: false, error: String(err?.message || err) }
+    }
+  })
+
+  ipcMain.handle('tts:proxy:pool:get', async () => {
+    try {
+      if (!existsSync(stateFile)) return { ok: true, pool: [] }
+      const stateData = JSON.parse(readFileSync(stateFile, 'utf-8'))
+      return { ok: true, pool: stateData.proxyPool || [] }
+    } catch (err: any) {
+      return { ok: false, pool: [], error: err.message }
+    }
+  })
+
+  ipcMain.handle('tts:proxy:pool:save', async (_event, { pool }: { pool: string[] }) => {
+    try {
+      let stateData: any = {}
+      if (existsSync(stateFile)) {
+        try { stateData = JSON.parse(readFileSync(stateFile, 'utf-8')) } catch {}
+      }
+      stateData.proxyPool = (pool || []).map((p: string) => p.trim()).filter(Boolean)
+      writeFileSync(stateFile, JSON.stringify(stateData, null, 2), 'utf-8')
+      return { ok: true, count: stateData.proxyPool.length }
+    } catch (err: any) {
+      return { ok: false, error: err.message }
+    }
+  })
+
+  ipcMain.handle('tts:proxy:pool:pop-next', async (_event, { recordId }: { recordId: string }) => {
+    try {
+      let stateData: any = {}
+      if (existsSync(stateFile)) {
+        try { stateData = JSON.parse(readFileSync(stateFile, 'utf-8')) } catch {}
+      }
+      const pool: string[] = stateData.proxyPool || []
+      if (pool.length === 0) {
+        return { ok: false, error: 'Kho Proxy hiện đang trống. Vui lòng thêm danh sách proxy vào kho trước.' }
+      }
+      const nextProxy = pool.shift()!
+      stateData.proxyPool = pool
+
+      if (!stateData.profileSetups) stateData.profileSetups = {}
+      if (!stateData.profileSetups[recordId]) stateData.profileSetups[recordId] = {}
+      stateData.profileSetups[recordId].assignedProxy = nextProxy
+      writeFileSync(stateFile, JSON.stringify(stateData, null, 2), 'utf-8')
+
+      return { ok: true, proxyString: nextProxy, remaining: pool.length }
+    } catch (err: any) {
+      return { ok: false, error: err.message }
+    }
+  })
 
   // 4. AdsPower Handlers
   ipcMain.handle('tts:adspower:list', async (_event, groupId?: string) => {

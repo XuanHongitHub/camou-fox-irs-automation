@@ -271,6 +271,21 @@ export interface IApi {
       openFolder: () => Promise<{ ok: boolean; error?: string }>
       openZip: () => Promise<{ ok: boolean; error?: string }>
     }
+    proxy: {
+      test: (params: { proxyType?: string; host: string; port: number | string; user?: string; password?: string }) =>
+        Promise<{ ok: boolean; latencyMs?: number; ip?: string; country?: string; region?: string; city?: string; isp?: string; error?: string }>
+      updateProfile: (payload: {
+        recordId: string
+        adspowerId?: string
+        proxyString: string
+        proxyConfig: any
+        restartIfActive?: boolean
+      }) => Promise<{ ok: boolean; recordId?: string; adspowerId?: string; assignedProxy?: string; adsUpdated?: boolean; adsError?: string; restarted?: boolean; error?: string }>
+      rotateUrl: (payload: { rotateUrl: string }) => Promise<{ ok: boolean; status?: number; body?: string; error?: string }>
+      poolGet: () => Promise<{ ok: boolean; pool?: string[]; error?: string }>
+      poolSave: (payload: { pool: string[] }) => Promise<{ ok: boolean; count?: number; error?: string }>
+      poolPopNext: (payload: { recordId: string }) => Promise<{ ok: boolean; proxyString?: string; remaining?: number; error?: string }>
+    }
   }
 }
 
