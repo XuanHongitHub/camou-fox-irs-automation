@@ -126,7 +126,19 @@ const api = {
       stop: (userId: string) => ipcRenderer.invoke('tts:adspower:stop', userId),
       getConfig: () => ipcRenderer.invoke('tts:adspower:get-config'),
       setConfig: (payload: { apiKey?: string; baseUrl?: string }) =>
-        ipcRenderer.invoke('tts:adspower:set-config', payload)
+        ipcRenderer.invoke('tts:adspower:set-config', payload),
+      groups: () => ipcRenderer.invoke('tts:adspower:groups')
+    },
+    settings: {
+      get: () => ipcRenderer.invoke('tts:settings:get'),
+      set: (settings: any) => ipcRenderer.invoke('tts:settings:set', settings)
+    },
+    mail: {
+      check: (params: { email: string; pass?: string; twoFactor?: string }) =>
+        ipcRenderer.invoke('tts:mail:check', params),
+      batchCheck: (records: any[]) => ipcRenderer.invoke('tts:mail:batch-check', records),
+      getDetails: (params: { email: string; pass?: string; twoFactor?: string }) =>
+        ipcRenderer.invoke('tts:mail:get-details', params)
     },
     smartSetup: (params: { record: any; autoBuyProxy?: boolean }) =>
       ipcRenderer.invoke('tts:smart:setup', params),
@@ -166,6 +178,8 @@ const api = {
     doc: {
       generateCp575: (record: any) => ipcRenderer.invoke('tts:pdf:generate-cp575', record),
       generateVerizon: (record: any) => ipcRenderer.invoke('tts:pdf:generate-verizon', record),
+      downloadDialog: (params: { filePath: string; defaultName?: string }) =>
+        ipcRenderer.invoke('tts:doc:download-dialog', params),
       openFile: (filePath: string) => ipcRenderer.invoke('tts:doc:open-file', filePath),
       openFolder: (folderPath?: string) => ipcRenderer.invoke('tts:doc:open-folder', folderPath)
     },

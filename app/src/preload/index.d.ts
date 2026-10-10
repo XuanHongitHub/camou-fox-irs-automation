@@ -209,6 +209,18 @@ export interface IApi {
       create: (payload: any) => Promise<{ ok: boolean; data?: any; error?: string }>
       start: (userId: string) => Promise<{ ok: boolean; data?: any; error?: string }>
       stop: (userId: string) => Promise<{ ok: boolean; error?: string }>
+      getConfig: () => Promise<{ ok: boolean; apiKey?: string; baseUrl?: string; defaultApiKey?: string }>
+      setConfig: (payload: { apiKey?: string; baseUrl?: string }) => Promise<{ ok: boolean; apiKey?: string; baseUrl?: string; error?: string }>
+      groups: () => Promise<{ ok: boolean; data?: any[]; error?: string }>
+    }
+    settings: {
+      get: () => Promise<{ ok: boolean; settings?: any; error?: string }>
+      set: (settings: any) => Promise<{ ok: boolean; settings?: any; error?: string }>
+    }
+    mail: {
+      check: (params: { email: string; pass?: string; twoFactor?: string }) => Promise<any>
+      batchCheck: (records: any[]) => Promise<any>
+      getDetails: (params: { email: string; pass?: string; twoFactor?: string }) => Promise<any>
     }
     smartSetup: (params: {
       record: any
@@ -263,6 +275,7 @@ export interface IApi {
     doc: {
       generateCp575: (record: any) => Promise<{ ok: boolean; filePath?: string; fileName?: string; error?: string }>
       generateVerizon: (record: any) => Promise<{ ok: boolean; filePath?: string; fileName?: string; error?: string }>
+      downloadDialog: (params: { filePath: string; defaultName?: string }) => Promise<{ ok: boolean; savedPath?: string; canceled?: boolean; error?: string }>
       openFile: (filePath: string) => Promise<{ ok: boolean; error?: string }>
       openFolder: (folderPath?: string) => Promise<{ ok: boolean; path?: string; error?: string }>
     }

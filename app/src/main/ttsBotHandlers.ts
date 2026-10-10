@@ -72,6 +72,15 @@ function decodeMimeWords(str: string): string {
   })
 }
 
+export interface EmailMessageItem {
+  id: string
+  from?: string
+  subject: string
+  date?: string
+  snippet: string
+  otp?: string | null
+}
+
 export interface MailCheckResult {
   ok: boolean
   email: string
@@ -83,6 +92,7 @@ export interface MailCheckResult {
   detail?: string
   error?: string
   checkedAt: number
+  messages?: EmailMessageItem[]
 }
 
 function executeImapSession(
@@ -167,36 +177,75 @@ function executeImapSession(
           })
           return
         }
-        const lastUid = uids[uids.length - 1]
+        const startSeq = Math.max(1, uids.length - 7)
+        const endSeq = uids.length
         state = 'FETCH'
-        socket.write(`A04 FETCH ${lastUid} (BODY.PEEK[HEADER.FIELDS (SUBJECT FROM DATE)] BODY.PEEK[TEXT]<0.2000>)\r\n`)
+        socket.write(`A04 FETCH ${startSeq}:${endSeq} (BODY.PEEK[HEADER.FIELDS (SUBJECT FROM DATE)] BODY.PEEK[TEXT]<0.1200>)\r\n`)
       } else if (state === 'FETCH' && buffer.includes('A04 OK')) {
         clearTimeout(timeout)
         const raw = buffer
         socket.write('A05 LOGOUT\r\n')
         socket.end()
 
-        const subjMatch = raw.match(/Subject:\s*(.*?)\r?\n/i)
-        const subject = subjMatch ? decodeMimeWords(subjMatch[1].trim()) : ''
+        // Parse individual message blocks
+        const msgChunks = raw.split(/\*\s+\d+\s+FETCH/i).filter((c) => c.includes('BODY[HEADER.FIELDS') || c.includes('Subject:') || c.includes('From:'))
+        const messages: EmailMessageItem[] = []
+        let foundOtp: string | null = null
+        let latestSubject = ''
 
-        // Search for 6-digit OTP code, prioritizing verification code keywords
-        let otp: string | null = null
-        const explicitOtp = raw.match(/(?:verification\s*code|mã\s*xác\s*nhận|code|otp)[^\d]{0,25}(\d{6})/i)
-        if (explicitOtp) {
-          otp = explicitOtp[1]
-        } else {
-          const generalOtp = raw.match(/\b\d{6}\b/)
-          if (generalOtp) otp = generalOtp[0]
+        // Iterate backwards (newest message first)
+        for (let idx = msgChunks.length - 1; idx >= 0; idx--) {
+          const chunk = msgChunks[idx]
+          const subjMatch = chunk.match(/Subject:\s*(.*?)\r?\n/i)
+          const subject = subjMatch ? decodeMimeWords(subjMatch[1].trim()) : '(Không có tiêu đề)'
+          const fromMatch = chunk.match(/From:\s*(.*?)\r?\n/i)
+          const from = fromMatch ? decodeMimeWords(fromMatch[1].trim()) : ''
+          const dateMatch = chunk.match(/Date:\s*(.*?)\r?\n/i)
+          const date = dateMatch ? dateMatch[1].trim() : ''
+
+          // Clean text snippet
+          const textMatch = chunk.match(/BODY\[TEXT\](?:<\d+>)?\s*\{?\d*\}?\r?\n([\s\S]*?)(?:\)\r?\n|\n\*\s+|\nA04)/i)
+          const bodyText = textMatch ? textMatch[1].trim() : chunk
+          const snippet = bodyText.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 300)
+
+          // Extract OTP
+          let chunkOtp: string | null = null
+          const explicitOtp = chunk.match(/(?:verification\s*code|mã\s*xác\s*nhận|code|otp)[^\d]{0,25}(\d{6})/i)
+          if (explicitOtp && !/^202[4-7]$/.test(explicitOtp[1])) {
+            chunkOtp = explicitOtp[1]
+          } else {
+            const all6 = chunk.match(/\b\d{6}\b/g)
+            if (all6) {
+              const valid = all6.find((m) => !/^202[4-7]$/.test(m))
+              if (valid) chunkOtp = valid
+            }
+          }
+
+          if (chunkOtp && !foundOtp) {
+            foundOtp = chunkOtp
+          }
+          if (!latestSubject) {
+            latestSubject = subject
+          }
+
+          messages.push({
+            id: String(idx + 1),
+            from,
+            subject,
+            date,
+            snippet,
+            otp: chunkOtp
+          })
         }
 
         let status: MailCheckResult['status'] = 'has_mail'
-        let label = `📩 ${subject.slice(0, 32)}`
-        const lower = (subject + ' ' + raw).toLowerCase()
+        let label = latestSubject ? `📩 ${latestSubject.slice(0, 32)}` : '📩 Có thư'
+        const lower = (latestSubject + ' ' + raw).toLowerCase()
 
         if (lower.includes('tiktok')) {
-          if (otp || lower.includes('verification') || lower.includes('code')) {
+          if (foundOtp || lower.includes('verification') || lower.includes('code')) {
             status = 'has_otp'
-            label = `🔑 OTP: ${otp || 'Có mã'}`
+            label = `🔑 OTP: ${foundOtp || 'Có mã'}`
           } else if (lower.includes('close to opening your shop') || lower.includes('complete your registration')) {
             status = 'incomplete_onboarding'
             label = '🟡 Đang mở shop dở (Chờ submit)'
@@ -216,11 +265,12 @@ function executeImapSession(
           ok: true,
           email,
           count: msgCount,
-          latestSubject: subject,
-          otp,
+          latestSubject,
+          otp: foundOtp,
           status,
           label,
-          checkedAt: Date.now()
+          checkedAt: Date.now(),
+          messages
         })
       }
     })
@@ -442,9 +492,58 @@ export function registerTtsBotHandlers(
     }
   })
 
+  // 1.06 AdsPower Groups List Handler
+  ipcMain.handle('tts:adspower:groups', async () => {
+    try {
+      const baseUrl = getAdsBaseUrl()
+      const headers = getAdsHeaders()
+      const res = await fetch(`${baseUrl}/api/v1/group/list?page_size=100`, { headers })
+      const data = await res.json()
+      return { ok: data.code === 0, data: data.data?.list || [], error: data.msg }
+    } catch (err: any) {
+      return { ok: false, error: String(err?.message || err) }
+    }
+  })
+
+  // 1.07 Global Profile & Environment Settings
+  ipcMain.handle('tts:settings:get', async () => {
+    try {
+      let stateData: any = {}
+      if (existsSync(stateFile)) {
+        try { stateData = JSON.parse(readFileSync(stateFile, 'utf-8')) } catch {}
+      }
+      const defaultSettings = {
+        defaultGroupId: '0',
+        defaultProxyMode: 'hideproxy',
+        profileType: 'ios'
+      }
+      return { ok: true, settings: { ...defaultSettings, ...(stateData.globalSettings || {}) } }
+    } catch (err: any) {
+      return { ok: false, error: String(err?.message || err) }
+    }
+  })
+
+  ipcMain.handle('tts:settings:set', async (_event, newSettings: any) => {
+    try {
+      let stateData: any = {}
+      if (existsSync(stateFile)) {
+        try { stateData = JSON.parse(readFileSync(stateFile, 'utf-8')) } catch {}
+      }
+      stateData.globalSettings = { ...(stateData.globalSettings || {}), ...newSettings }
+      writeFileSync(stateFile, JSON.stringify(stateData, null, 2), 'utf-8')
+      return { ok: true, settings: stateData.globalSettings }
+    } catch (err: any) {
+      return { ok: false, error: String(err?.message || err) }
+    }
+  })
+
   // 1.1 Mail Checker & Auto-Trigger (Lightweight Native XOAUTH2 / IMAP)
   ipcMain.handle('tts:mail:check', async (_event, { email, pass, twoFactor }: { email: string; pass?: string; twoFactor?: string }) => {
     return await checkMailInbox(email, pass, twoFactor)
+  })
+
+  ipcMain.handle('tts:mail:get-details', async (_event, params: { email: string; pass?: string; twoFactor?: string }) => {
+    return await checkMailInbox(params.email, params.pass, params.twoFactor)
   })
 
   ipcMain.handle('tts:mail:batch-check', async (_event, records: Array<{ id: string; email: string; pass?: string; twoFactor?: string }>) => {
@@ -713,7 +812,9 @@ function generateValidDl(stateCode: string, lastName: string = ''): string {
     const colPdf = findColExact('pdf', 'irs pdf', 'cp 575', 'cp575', '147c')
     const colFolderUrl = findColExact('folder_url', 'folder url', 'drive')
     const colBankStatement = findColExact('bank_statement', 'bank statement', 'utility', 'bill')
-    const colDl = findColExact('số bằng lái (dl#)', 'dl', 'bằng lái', 'driver')
+    const colDl = findColExact('số bằng lái (dl#)', 'dl#', 'dl', 'driver license', "driver's license", 'dl_num', 'dl no', 'bằng lái', 'driver', 'license', 'id number') !== -1
+      ? findColExact('số bằng lái (dl#)', 'dl#', 'dl', 'driver license', "driver's license", 'dl_num', 'dl no', 'bằng lái', 'driver', 'license', 'id number')
+      : findCol('dl', 'driver', 'bằng lái', 'license')
     const colDlExp = findColExact('ngày hết hạn dl (exp)', 'exp', 'hết hạn', 'dl exp')
     const colShopName = findColExact('shop name / tên shop', 'shop name', 'tên shop')
     const colNotes = findColExact('ghi chú chi tiết', 'ghi chú', 'notes', 'note')
@@ -781,12 +882,14 @@ function generateValidDl(stateCode: string, lastName: string = ''): string {
           firstName = parts[0]
           lastName = parts[0]
         } else if (parts.length === 2) {
-          lastName = parts[0]
-          firstName = parts[1]
+          // American standard: First Name is parts[0], Last Name is parts[1]
+          firstName = parts[0]
+          lastName = parts[1]
         } else if (parts.length >= 3) {
-          lastName = parts[0]
-          firstName = parts.slice(1).join(' ')
+          // American standard: First Name is parts[0], Middle Name is parts[1..N-1], Last Name is parts[N-1]
+          firstName = parts[0]
           middleName = parts.slice(1, -1).join(' ')
+          lastName = parts[parts.length - 1]
         }
       }
 
@@ -1114,7 +1217,7 @@ function generateValidDl(stateCode: string, lastName: string = ''): string {
     }
   })
 
-  // 2.3 Fetch SMS OTP from Phone Code URL
+  // 2.3 Fetch SMS OTP from Phone Code URL (Strict 6-digit candidate & waiting state handling)
   ipcMain.handle('tts:phone:fetch-code', async (_event, params: { phone?: string; phoneCodeUrl?: string }) => {
     const { phone, phoneCodeUrl } = params || {}
     if (!phoneCodeUrl || !phoneCodeUrl.trim()) {
@@ -1136,26 +1239,72 @@ function generateValidDl(stateCode: string, lastName: string = ''): string {
       const rawText = await res.text()
       let code: string | null = null
 
+      // Strictly 6 digits; strictly disallow year numbers (2024..2027) or status integers (0, 1)
+      const checkCandidate = (val: any): string | null => {
+        if (val === undefined || val === null) return null
+        const s = String(val).trim()
+        if (/^\d{6}$/.test(s) && !/^202[4-7]$/.test(s)) return s
+        return null
+      }
+
+      let parsedJson: any = null
       try {
-        const data = JSON.parse(rawText)
-        code = data.code || data.otp || data.sms_code || data.verification_code || (data.data && (data.data.code || data.data.otp)) || null
-        if (!code && (data.sms || data.text || data.message || data.content)) {
-          const match = String(data.sms || data.text || data.message || data.content).match(/\b(\d{4,6})\b/)
-          if (match) code = match[1]
-        }
+        parsedJson = JSON.parse(rawText)
       } catch {}
 
-      if (!code) {
-        const explicitMatch = rawText.match(/(?:code|mã|verification|tiktok)[^\d]*(\d{4,6})/i)
-        if (explicitMatch) {
+      if (parsedJson) {
+        // 1. Direct candidate fields in JSON
+        const candidates = [
+          parsedJson.data?.code,
+          parsedJson.data?.sms_code,
+          parsedJson.data?.otp,
+          parsedJson.data?.verification_code,
+          parsedJson.otp,
+          parsedJson.sms_code,
+          parsedJson.verification_code
+        ]
+        for (const cand of candidates) {
+          const valid = checkCandidate(cand)
+          if (valid) {
+            code = valid
+            break
+          }
+        }
+
+        // 2. Scan text body in JSON payload
+        if (!code) {
+          const smsBody = String(
+            parsedJson.data?.sms ||
+            parsedJson.data?.text ||
+            parsedJson.data?.message ||
+            parsedJson.sms ||
+            parsedJson.text ||
+            parsedJson.message ||
+            ''
+          )
+          if (smsBody) {
+            const matchTikTok = smsBody.match(/(?:tiktok|verification|code|mã)[^\d]*(\d{6})/i)
+            if (matchTikTok && checkCandidate(matchTikTok[1])) {
+              code = matchTikTok[1]
+            } else {
+              const all6 = smsBody.match(/\b\d{6}\b/g)
+              if (all6) {
+                const valid = all6.find(checkCandidate)
+                if (valid) code = valid
+              }
+            }
+          }
+        }
+      } else {
+        // Plain text response
+        const explicitMatch = rawText.match(/(?:code|mã|verification|tiktok)[^\d]*(\d{6})/i)
+        if (explicitMatch && checkCandidate(explicitMatch[1])) {
           code = explicitMatch[1]
         } else {
-          const match6 = rawText.match(/\b\d{6}\b/)
-          if (match6) {
-            code = match6[0]
-          } else {
-            const match4 = rawText.match(/\b\d{4}\b/)
-            if (match4) code = match4[0]
+          const all6 = rawText.match(/\b\d{6}\b/g)
+          if (all6) {
+            const valid = all6.find(checkCandidate)
+            if (valid) code = valid
           }
         }
       }
@@ -1165,17 +1314,28 @@ function generateValidDl(stateCode: string, lastName: string = ''): string {
           ok: true,
           phone,
           code,
-          raw: rawText.slice(0, 200),
-          message: `Lấy mã thành công: ${code}`
+          raw: rawText.slice(0, 300),
+          message: `Lấy mã SMS thành công: ${code}`
         }
       } else {
-        const isWaiting = rawText.toLowerCase().includes('wait') || rawText.toLowerCase().includes('pending') || rawText.length < 50
+        const lower = rawText.toLowerCase()
+        const isWaiting =
+          lower.includes('no verification code') ||
+          lower.includes('wait') ||
+          lower.includes('pending') ||
+          lower.includes('chưa có') ||
+          (parsedJson && parsedJson.code === 0 && !parsedJson.data?.code) ||
+          (parsedJson && String(parsedJson.msg || '').toLowerCase().includes('no verification')) ||
+          rawText.trim().length < 50
+
         return {
           ok: false,
           phone,
           isWaiting,
-          error: isWaiting ? 'Đang đợi mã SMS từ nhà mạng... (Bấm lại sau vài giây)' : `Chưa tìm thấy mã: ${rawText.slice(0, 100)}`,
-          raw: rawText.slice(0, 200)
+          error: isWaiting
+            ? 'Đang đợi mã SMS từ TikTok... (Nhà mạng chưa nhận được tin nhắn, vui lòng bấm lấy lại sau vài giây)'
+            : `Chưa tìm thấy mã hợp lệ: ${rawText.slice(0, 120)}`,
+          raw: rawText.slice(0, 300)
         }
       }
     } catch (err: any) {
@@ -1541,19 +1701,41 @@ function generateValidDl(stateCode: string, lastName: string = ''): string {
       const rawExtensionPath = join(foxAutoRoot, 'additions', 'tts_bot', 'extension')
       const extensionPath = rawExtensionPath.replace(/\\/g, '/')
       const registerUrl = 'https://seller-us.tiktok.com/account/register'
+
+      let globalSettings: any = {}
+      if (existsSync(stateFile)) {
+        try {
+          const s = JSON.parse(readFileSync(stateFile, 'utf-8'))
+          globalSettings = s.globalSettings || {}
+        } catch {}
+      }
+      const targetGroupId = payload.groupId || globalSettings.defaultGroupId || '0'
+      const isIos = (payload.profileType || globalSettings.profileType || 'ios') === 'ios'
+
+      const fingerprintConfig: any = {
+        language: ['en-US', 'en'],
+        flash: 'block',
+        ...payload.fingerprintConfig
+      }
+
+      if (isIos) {
+        fingerprintConfig.random_ua = {
+          ua_system_version: ['iOS 17', 'iOS 18']
+        }
+        fingerprintConfig.screen_resolution = '390_844'
+      } else {
+        fingerprintConfig.screen_resolution = 'none'
+      }
+
       const profileData = {
         name: payload.name,
-        group_id: payload.groupId || '0', // 0 = Ungrouped
+        group_id: targetGroupId,
         tabs: [registerUrl],
         user_proxy_config: payload.proxyConfig || { proxy_soft: 'no_proxy' },
-        fingerprint_config: {
-          screen_resolution: 'none', // Full desktop screen default (no distortion)
-          language: ['en-US', 'en'],
-          flash: 'block',
-          ...payload.fingerprintConfig
-        },
+        fingerprint_config: fingerprintConfig,
         launch_args: [
           `--load-extension=${extensionPath}`,
+          `--disable-extensions-except=${extensionPath}`,
           '--start-maximized'
         ]
       }
@@ -1610,6 +1792,51 @@ function generateValidDl(stateCode: string, lastName: string = ''): string {
     return null
   }
 
+  // Guaranteed Copilot Injection via Chrome DevTools Protocol (CDP) WebSocket
+  async function injectCopilotViaCdp(debugPort: number) {
+    try {
+      const contentJsPath = join(foxAutoRoot, 'additions', 'tts_bot', 'extension', 'content.js')
+      if (!existsSync(contentJsPath)) return
+      const contentJsCode = readFileSync(contentJsPath, 'utf-8')
+
+      const injectIntoTargets = async () => {
+        try {
+          const targets = await fetch(`http://127.0.0.1:${debugPort}/json/list`).then(r => r.json()).catch(() => [])
+          if (!Array.isArray(targets)) return
+          for (const target of targets) {
+            if (target.type === 'page' && target.webSocketDebuggerUrl) {
+              try {
+                // @ts-ignore Node 22 native WebSocket
+                const ws = new globalThis.WebSocket(target.webSocketDebuggerUrl)
+                ws.onopen = () => {
+                  ws.send(JSON.stringify({ id: 1, method: 'Page.enable' }))
+                  ws.send(JSON.stringify({
+                    id: 2,
+                    method: 'Page.addScriptToEvaluateOnNewDocument',
+                    params: { source: contentJsCode }
+                  }))
+                  ws.send(JSON.stringify({
+                    id: 3,
+                    method: 'Runtime.evaluate',
+                    params: { expression: contentJsCode, returnByValue: false }
+                  }))
+                  setTimeout(() => {
+                    try { ws.close() } catch {}
+                  }, 1200)
+                }
+                ws.onerror = () => {}
+              } catch {}
+            }
+          }
+        } catch {}
+      }
+
+      setTimeout(injectIntoTargets, 800)
+      setTimeout(injectIntoTargets, 2500)
+      setTimeout(injectIntoTargets, 5000)
+    } catch {}
+  }
+
   async function startAdsPowerBrowser(targetId: string, recordId?: string) {
     try {
       const baseUrl = getAdsBaseUrl()
@@ -1627,6 +1854,9 @@ function generateValidDl(stateCode: string, lastName: string = ''): string {
           .then((r) => r.json())
           .catch(() => null)
         if (activeRes && activeRes.code === 0 && activeRes.data && activeRes.data.status === 'Active') {
+          if (activeRes.data.debug_port) {
+            injectCopilotViaCdp(activeRes.data.debug_port)
+          }
           return { ok: true, data: activeRes.data, adspowerId: effectiveUserId, isAlreadyActive: true }
         }
       } catch {}
@@ -1636,6 +1866,7 @@ function generateValidDl(stateCode: string, lastName: string = ''): string {
       const registerUrl = 'https://seller-us.tiktok.com/account/register'
       const launchArgs = JSON.stringify([
         `--load-extension=${extensionPath}`,
+        `--disable-extensions-except=${extensionPath}`,
         '--start-maximized'
       ])
 
@@ -1644,9 +1875,11 @@ function generateValidDl(stateCode: string, lastName: string = ''): string {
       const data = await res.json()
 
       if (data && data.code === 0) {
-        // Auto-navigate to TikTok Seller Register tab via CDP if not already open
+        // Auto-navigate to TikTok Seller Register tab via CDP if not already open & inject copilot script
         if (data.data?.debug_port) {
           const debugPort = data.data.debug_port
+          injectCopilotViaCdp(debugPort)
+
           setTimeout(async () => {
             try {
               const targetsRes = await fetch(`http://127.0.0.1:${debugPort}/json/list`).then((r) => r.json()).catch(() => [])
@@ -1941,19 +2174,35 @@ function generateValidDl(stateCode: string, lastName: string = ''): string {
         : { proxy_soft: 'no_proxy' }
 
       const registerUrl = 'https://seller-us.tiktok.com/account/register'
+      const globalSettings = stateData.globalSettings || {}
+      const targetGroupId = globalSettings.defaultGroupId || '0'
+      const isIos = (globalSettings.profileType || 'ios') === 'ios'
+
+      const fingerprintConfig: any = {
+        language: ['en-US', 'en'],
+        flash: 'block'
+      }
+      if (isIos) {
+        fingerprintConfig.random_ua = {
+          ua_system_version: ['iOS 17', 'iOS 18']
+        }
+        fingerprintConfig.screen_resolution = '390_844'
+      } else {
+        fingerprintConfig.screen_resolution = 'none'
+      }
+
       if (existingProfile) {
         adspowerId = existingProfile.user_id
-        // Keep proxy, extension, default desktop full-screen and register tab synchronized!
+        // Keep proxy, extension, iOS mobile / screen resolution and register tab synchronized!
         await fetch(`${adsBase}/api/v1/user/update`, {
           method: 'POST',
           headers: adsHeaders,
           body: JSON.stringify({
             profile_id: adspowerId,
+            group_id: targetGroupId !== '0' ? targetGroupId : undefined,
             user_proxy_config: proxyConfig,
             tabs: [registerUrl],
-            fingerprint_config: {
-              screen_resolution: 'none'
-            },
+            fingerprint_config: fingerprintConfig,
             launch_args: [
               `--load-extension=${extensionPath}`,
               `--disable-extensions-except=${extensionPath}`,
@@ -1968,14 +2217,10 @@ function generateValidDl(stateCode: string, lastName: string = ''): string {
           headers: adsHeaders,
           body: JSON.stringify({
             name: `${record.id} - ${record.fullName || 'TTS'}`,
-            group_id: '0', // Mặc định Ungrouped (không phân nhóm)
+            group_id: targetGroupId,
             tabs: [registerUrl],
             user_proxy_config: proxyConfig,
-            fingerprint_config: {
-              screen_resolution: 'none', // Full desktop screen default (no mobile ratio)
-              language: ['en-US', 'en'],
-              flash: 'block'
-            },
+            fingerprint_config: fingerprintConfig,
             launch_args: [
               `--load-extension=${extensionPath}`,
               `--disable-extensions-except=${extensionPath}`,
@@ -3087,18 +3332,21 @@ function generateValidDl(stateCode: string, lastName: string = ''): string {
 
   // ─── 8. Document & Statement Generation IPC Handlers (CP575, Verizon) ───
   ipcMain.handle('tts:pdf:generate-cp575', async (_event, record: any) => {
+    const tempJsonPath = join(runtimeDir, `temp_cp575_${Date.now()}.json`)
     try {
       const cliScript = join(foxAutoRoot, 'additions', 'tts_bot', 'doc_generator.py')
       const outDir = join(foxAutoRoot, 'outputs', 'ein_notices')
       mkdirSync(outDir, { recursive: true })
+
+      writeFileSync(tempJsonPath, JSON.stringify(record, null, 2), 'utf-8')
 
       const pyArgs = [
         '-u',
         cliScript,
         '--type',
         'cp575',
-        '--data',
-        JSON.stringify(record),
+        '--file',
+        tempJsonPath,
         '--output-dir',
         outDir
       ]
@@ -3107,7 +3355,7 @@ function generateValidDl(stateCode: string, lastName: string = ''): string {
       return await new Promise((resolve) => {
         const child = spawn(launch.cmd, launch.args, {
           cwd: join(foxAutoRoot, 'additions', 'tts_bot'),
-          env: { ...process.env, PYTHONUNBUFFERED: '1' }
+          env: { ...process.env, PYTHONUNBUFFERED: '1', PYTHONIOENCODING: 'utf-8' }
         })
 
         let stdout = ''
@@ -3116,16 +3364,27 @@ function generateValidDl(stateCode: string, lastName: string = ''): string {
         child.stderr?.on('data', (d) => { stderr += d.toString() })
 
         child.on('close', async (code) => {
+          try {
+            const { unlinkSync } = await import('fs')
+            if (existsSync(tempJsonPath)) unlinkSync(tempJsonPath)
+          } catch {}
+
           if (code === 0) {
-            try {
-              const res = JSON.parse(stdout.trim())
-              if (res.ok && res.filePath) {
-                try { await shell.openPath(res.filePath) } catch {}
-                try { shell.showItemInFolder(res.filePath) } catch {}
-              }
+            let res: any = null
+            const jsonMatch = stdout.match(/\{[\s\S]*"ok"[\s\S]*\}/)
+            if (jsonMatch) {
+              try { res = JSON.parse(jsonMatch[0]) } catch {}
+            }
+            if (!res) {
+              try { res = JSON.parse(stdout.trim()) } catch {}
+            }
+
+            if (res && res.ok && res.filePath) {
+              try { await shell.openPath(res.filePath) } catch {}
+              try { shell.showItemInFolder(res.filePath) } catch {}
               resolve(res)
-            } catch {
-              resolve({ ok: true, stdout })
+            } else {
+              resolve(res || { ok: true, stdout })
             }
           } else {
             resolve({ ok: false, error: stderr || stdout || `Doc generator failed with code ${code}` })
@@ -3133,23 +3392,30 @@ function generateValidDl(stateCode: string, lastName: string = ''): string {
         })
       })
     } catch (err: any) {
+      try {
+        const { unlinkSync } = await import('fs')
+        if (existsSync(tempJsonPath)) unlinkSync(tempJsonPath)
+      } catch {}
       return { ok: false, error: String(err?.message || err) }
     }
   })
 
   ipcMain.handle('tts:pdf:generate-verizon', async (_event, record: any) => {
+    const tempJsonPath = join(runtimeDir, `temp_verizon_${Date.now()}.json`)
     try {
       const cliScript = join(foxAutoRoot, 'additions', 'tts_bot', 'doc_generator.py')
       const outDir = join(foxAutoRoot, 'outputs', 'statements')
       mkdirSync(outDir, { recursive: true })
+
+      writeFileSync(tempJsonPath, JSON.stringify(record, null, 2), 'utf-8')
 
       const pyArgs = [
         '-u',
         cliScript,
         '--type',
         'verizon',
-        '--data',
-        JSON.stringify(record),
+        '--file',
+        tempJsonPath,
         '--output-dir',
         outDir
       ]
@@ -3158,7 +3424,7 @@ function generateValidDl(stateCode: string, lastName: string = ''): string {
       return await new Promise((resolve) => {
         const child = spawn(launch.cmd, launch.args, {
           cwd: join(foxAutoRoot, 'additions', 'tts_bot'),
-          env: { ...process.env, PYTHONUNBUFFERED: '1' }
+          env: { ...process.env, PYTHONUNBUFFERED: '1', PYTHONIOENCODING: 'utf-8' }
         })
 
         let stdout = ''
@@ -3167,22 +3433,59 @@ function generateValidDl(stateCode: string, lastName: string = ''): string {
         child.stderr?.on('data', (d) => { stderr += d.toString() })
 
         child.on('close', async (code) => {
+          try {
+            const { unlinkSync } = await import('fs')
+            if (existsSync(tempJsonPath)) unlinkSync(tempJsonPath)
+          } catch {}
+
           if (code === 0) {
-            try {
-              const res = JSON.parse(stdout.trim())
-              if (res.ok && res.filePath) {
-                try { await shell.openPath(res.filePath) } catch {}
-                try { shell.showItemInFolder(res.filePath) } catch {}
-              }
+            let res: any = null
+            const jsonMatch = stdout.match(/\{[\s\S]*"ok"[\s\S]*\}/)
+            if (jsonMatch) {
+              try { res = JSON.parse(jsonMatch[0]) } catch {}
+            }
+            if (!res) {
+              try { res = JSON.parse(stdout.trim()) } catch {}
+            }
+
+            if (res && res.ok && res.filePath) {
+              try { await shell.openPath(res.filePath) } catch {}
+              try { shell.showItemInFolder(res.filePath) } catch {}
               resolve(res)
-            } catch {
-              resolve({ ok: true, stdout })
+            } else {
+              resolve(res || { ok: true, stdout })
             }
           } else {
             resolve({ ok: false, error: stderr || stdout || `Doc generator failed with code ${code}` })
           }
         })
       })
+    } catch (err: any) {
+      try {
+        const { unlinkSync } = await import('fs')
+        if (existsSync(tempJsonPath)) unlinkSync(tempJsonPath)
+      } catch {}
+      return { ok: false, error: String(err?.message || err) }
+    }
+  })
+
+  ipcMain.handle('tts:doc:download-dialog', async (_event, params: { filePath: string; defaultName?: string }) => {
+    try {
+      const { filePath, defaultName } = params || {}
+      if (!filePath || !existsSync(filePath)) {
+        return { ok: false, error: 'Tệp nguồn không tồn tại' }
+      }
+      const result = await dialog.showSaveDialog({
+        title: 'Tải Về & Lưu Tệp PDF',
+        defaultPath: defaultName || basename(filePath),
+        filters: [{ name: 'Tài liệu PDF (*.pdf)', extensions: ['pdf'] }]
+      })
+      if (result.canceled || !result.filePath) {
+        return { ok: false, canceled: true }
+      }
+      const { copyFileSync } = await import('fs')
+      copyFileSync(filePath, result.filePath)
+      return { ok: true, savedPath: result.filePath }
     } catch (err: any) {
       return { ok: false, error: String(err?.message || err) }
     }

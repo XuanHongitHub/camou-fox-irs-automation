@@ -48,7 +48,9 @@ import {
   Download,
   ClipboardCheck,
   ClipboardCopy,
-  Package
+  Package,
+  ArrowLeftRight,
+  Edit3
 } from 'lucide-react'
 
 export interface RecordItem {
@@ -426,6 +428,31 @@ const ttsIpc = {
     if ((window.api?.tts as any)?.proxy?.poolPopNext) return await (window.api.tts as any).proxy.poolPopNext(payload)
     if (window.electron?.ipcRenderer) return await window.electron.ipcRenderer.invoke('tts:proxy:pool:pop-next', payload)
     return { ok: false, error: 'IPC unavailable' }
+  },
+  adspowerGroups: async () => {
+    if ((window.api?.tts as any)?.adspower?.groups) return await (window.api.tts as any).adspower.groups()
+    if (window.electron?.ipcRenderer) return await window.electron.ipcRenderer.invoke('tts:adspower:groups')
+    return { ok: false, data: [] }
+  },
+  settingsGet: async () => {
+    if ((window.api?.tts as any)?.settings?.get) return await (window.api.tts as any).settings.get()
+    if (window.electron?.ipcRenderer) return await window.electron.ipcRenderer.invoke('tts:settings:get')
+    return { ok: false, settings: {} }
+  },
+  settingsSet: async (settings: any) => {
+    if ((window.api?.tts as any)?.settings?.set) return await (window.api.tts as any).settings.set(settings)
+    if (window.electron?.ipcRenderer) return await window.electron.ipcRenderer.invoke('tts:settings:set', settings)
+    return { ok: false }
+  },
+  mailGetDetails: async (params: { email: string; pass?: string; twoFactor?: string }) => {
+    if ((window.api?.tts as any)?.mail?.getDetails) return await (window.api.tts as any).mail.getDetails(params)
+    if (window.electron?.ipcRenderer) return await window.electron.ipcRenderer.invoke('tts:mail:get-details', params)
+    return { ok: false, error: 'IPC unavailable' }
+  },
+  docDownloadDialog: async (params: { filePath: string; defaultName?: string }) => {
+    if ((window.api?.tts as any)?.doc?.downloadDialog) return await (window.api.tts as any).doc.downloadDialog(params)
+    if (window.electron?.ipcRenderer) return await window.electron.ipcRenderer.invoke('tts:doc:download-dialog', params)
+    return { ok: false, error: 'IPC unavailable' }
   }
 }
 
@@ -689,6 +716,62 @@ export function TtsBotView() {
   } | null>(null)
   const [isUpdatingProxy, setIsUpdatingProxy] = useState<boolean>(false)
   const [proxyUpdateNotice, setProxyUpdateNotice] = useState<{ ok: boolean; msg: string } | null>(null)
+
+  // AdsPower Groups & Global Defaults
+  const [adspowerGroupsList, setAdspowerGroupsList] = useState<Array<{ group_id: string; group_name: string }>>([])
+  const [globalGroupId, setGlobalGroupId] = useState<string>('0')
+  const [globalProfileType, setGlobalProfileType] = useState<'ios' | 'desktop'>('ios')
+  const [globalProxyMode, setGlobalProxyMode] = useState<'hideproxy' | 'no_proxy' | 'custom'>('hideproxy')
+
+  // Mail Details Modal (All messages inspection)
+  const [mailDetailsModal, setMailDetailsModal] = useState<{
+    open: boolean
+    record?: RecordItem
+    messages?: any[]
+    count?: number
+    isLoading?: boolean
+    error?: string
+  }>({
+    open: false
+  })
+
+  // Raw Phone SMS & Editable DL states
+  const [showRawPhoneSms, setShowRawPhoneSms] = useState(false)
+  const [rawPhoneSmsText, setRawPhoneSmsText] = useState('')
+  const [editableDl, setEditableDl] = useState<string>('')
+  const [isEditingDl, setIsEditingDl] = useState<boolean>(false)
+
+  // Load Groups and Global Settings on mount
+  useEffect(() => {
+    ttsIpc.adspowerGroups().then((res) => {
+      if (res && res.ok && Array.isArray(res.data)) {
+        setAdspowerGroupsList(res.data)
+      }
+    }).catch(() => {})
+
+    ttsIpc.settingsGet().then((res) => {
+      if (res && res.ok && res.settings) {
+        if (res.settings.defaultGroupId !== undefined) setGlobalGroupId(res.settings.defaultGroupId)
+        if (res.settings.profileType !== undefined) setGlobalProfileType(res.settings.profileType)
+        if (res.settings.defaultProxyMode !== undefined) setGlobalProxyMode(res.settings.defaultProxyMode)
+      }
+    }).catch(() => {})
+  }, [])
+
+  const handleChangeGlobalGroup = async (groupId: string) => {
+    setGlobalGroupId(groupId)
+    await ttsIpc.settingsSet({ defaultGroupId: groupId })
+  }
+
+  const handleChangeGlobalProfileType = async (type: 'ios' | 'desktop') => {
+    setGlobalProfileType(type)
+    await ttsIpc.settingsSet({ profileType: type })
+  }
+
+  const handleChangeGlobalProxyMode = async (mode: 'hideproxy' | 'no_proxy' | 'custom') => {
+    setGlobalProxyMode(mode)
+    await ttsIpc.settingsSet({ defaultProxyMode: mode })
+  }
 
   const parseProxyInputString = (raw: string) => {
     let str = raw.trim()
@@ -1104,11 +1187,15 @@ export function TtsBotView() {
   const handleFetchPhoneOtp = async (record: RecordItem) => {
     setIsFetchingPhoneOtp(true)
     setPhoneOtpError(null)
+    setRawPhoneSmsText('')
     try {
       const res = await ttsIpc.phoneFetchCode({
         phone: record.phone,
         phoneCodeUrl: record.phoneCodeUrl
       })
+      if (res && res.raw) {
+        setRawPhoneSmsText(res.raw)
+      }
       if (res && res.code) {
         setLivePhoneOtp(res.code)
         handleCopyField('phone_otp', res.code)
@@ -1227,6 +1314,106 @@ export function TtsBotView() {
       }
     }
     handleCopyField('full_json', JSON.stringify(payload, null, 2))
+  }
+
+  const handleOpenMailDetails = async (record: RecordItem) => {
+    setMailDetailsModal({
+      open: true,
+      record,
+      messages: [],
+      count: 0,
+      isLoading: true,
+      error: undefined
+    })
+    try {
+      const res = await ttsIpc.mailGetDetails({
+        email: record.email,
+        pass: record.mailPass,
+        twoFactor: record.twoFactor
+      })
+      if (res && res.ok) {
+        setMailDetailsModal({
+          open: true,
+          record,
+          messages: res.messages || [],
+          count: res.count || 0,
+          isLoading: false
+        })
+      } else {
+        setMailDetailsModal({
+          open: true,
+          record,
+          messages: [],
+          count: 0,
+          isLoading: false,
+          error: res?.error || 'Không thể lấy danh sách email'
+        })
+      }
+    } catch (err: any) {
+      setMailDetailsModal({
+        open: true,
+        record,
+        messages: [],
+        count: 0,
+        isLoading: false,
+        error: String(err?.message || err)
+      })
+    }
+  }
+
+  const handleSwapNames = () => {
+    if (!formModalRecord) return
+    const curFirst = formModalRecord.firstName || formModalRecord.fullName.split(' ')[0] || ''
+    const curLast = formModalRecord.lastName || formModalRecord.fullName.split(' ').pop() || ''
+    const updated = {
+      ...formModalRecord,
+      firstName: curLast,
+      lastName: curFirst
+    }
+    setFormModalRecord(updated)
+    setRecords((prev) =>
+      prev.map((r) => (r.id === updated.id ? { ...r, firstName: curLast, lastName: curFirst } : r))
+    )
+  }
+
+  const handleSaveDl = () => {
+    if (!formModalRecord || !editableDl.trim()) return
+    const updated = {
+      ...formModalRecord,
+      dl: editableDl.trim()
+    }
+    setFormModalRecord(updated)
+    setRecords((prev) =>
+      prev.map((r) => (r.id === updated.id ? { ...r, dl: editableDl.trim() } : r))
+    )
+    setIsEditingDl(false)
+  }
+
+  const handleDownloadDoc = async (record: RecordItem, docType: 'cp575' | 'verizon') => {
+    setGeneratingDocType(docType)
+    setDocNotice(null)
+    try {
+      const genRes = docType === 'cp575' ? await ttsIpc.generateCp575(record) : await ttsIpc.generateVerizon(record)
+      if (genRes && genRes.ok && genRes.filePath) {
+        const dlRes = await ttsIpc.docDownloadDialog({
+          filePath: genRes.filePath,
+          defaultName: genRes.fileName
+        })
+        if (dlRes && dlRes.ok) {
+          setDocNotice(`✓ Đã lưu file thành công: ${dlRes.savedPath}`)
+        } else if (dlRes && dlRes.cancelled) {
+          // Cancelled by user
+        } else {
+          setDocNotice(`❌ Lỗi lưu file: ${dlRes?.error || 'Thất bại'}`)
+        }
+      } else {
+        setDocNotice(`❌ Lỗi tạo PDF: ${genRes?.error || 'Thất bại'}`)
+      }
+    } catch (err: any) {
+      setDocNotice(`❌ Lỗi: ${err?.message || err}`)
+    } finally {
+      setGeneratingDocType(null)
+    }
   }
 
   // 1. Check API Status
@@ -3195,6 +3382,53 @@ export function TtsBotView() {
                   <Zap className="w-3.5 h-3.5 text-amber-400" />
                   <span>Setup Hàng Loạt</span>
                 </button>
+
+                {/* Global Settings Toolbar Dropdowns */}
+                <div className="flex items-center space-x-1.5 pl-2 border-l border-slate-800">
+                  {/* AdsPower Group Selector */}
+                  <div className="flex items-center space-x-1 bg-slate-900 border border-slate-700/80 rounded-lg px-2 py-0.5" title="Nhóm AdsPower khi tạo profile">
+                    <span className="text-[10px] text-slate-400 font-semibold uppercase">Nhóm:</span>
+                    <select
+                      value={globalGroupId}
+                      onChange={(e) => handleChangeGlobalGroup(e.target.value)}
+                      className="bg-transparent text-xs text-sky-300 font-medium focus:outline-none cursor-pointer max-w-[120px] truncate"
+                    >
+                      <option value="0" className="bg-slate-900 text-slate-200">0 - Ungrouped</option>
+                      {adspowerGroupsList.map((g) => (
+                        <option key={g.group_id} value={g.group_id} className="bg-slate-900 text-slate-200">
+                          {g.group_name} ({g.group_id})
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+
+                  {/* Profile Device Type */}
+                  <div className="flex items-center space-x-1 bg-slate-900 border border-slate-700/80 rounded-lg px-2 py-0.5" title="Loại Profile AdsPower (iOS Phone / Desktop)">
+                    <span className="text-[10px] text-slate-400 font-semibold uppercase">Thiết bị:</span>
+                    <select
+                      value={globalProfileType}
+                      onChange={(e) => handleChangeGlobalProfileType(e.target.value as 'ios' | 'desktop')}
+                      className="bg-transparent text-xs text-emerald-400 font-medium focus:outline-none cursor-pointer"
+                    >
+                      <option value="ios" className="bg-slate-900 text-emerald-400">📱 iOS (iPhone 15)</option>
+                      <option value="desktop" className="bg-slate-900 text-slate-200">💻 Desktop</option>
+                    </select>
+                  </div>
+
+                  {/* Proxy Default Mode */}
+                  <div className="flex items-center space-x-1 bg-slate-900 border border-slate-700/80 rounded-lg px-2 py-0.5" title="Chế độ proxy mặc định">
+                    <span className="text-[10px] text-slate-400 font-semibold uppercase">Proxy:</span>
+                    <select
+                      value={globalProxyMode}
+                      onChange={(e) => handleChangeGlobalProxyMode(e.target.value as any)}
+                      className="bg-transparent text-xs text-amber-300 font-medium focus:outline-none cursor-pointer"
+                    >
+                      <option value="hideproxy" className="bg-slate-900 text-amber-300">⚡ HideProxy (Bang)</option>
+                      <option value="no_proxy" className="bg-slate-900 text-slate-200">⚪ No Proxy</option>
+                      <option value="custom" className="bg-slate-900 text-cyan-300">📦 Kho Proxy</option>
+                    </select>
+                  </div>
+                </div>
               </div>
             </div>
 
@@ -7283,14 +7517,24 @@ export function TtsBotView() {
                           <Mail className="w-3.5 h-3.5" />
                           <span>Mã OTP Hòm Thư (Mail OTP)</span>
                         </span>
-                        <button
-                          onClick={() => handleFetchMailOtp(formModalRecord)}
-                          disabled={isFetchingMailOtp}
-                          className="px-2.5 py-1 bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold rounded-lg text-xs shadow flex items-center space-x-1 cursor-pointer disabled:opacity-50"
-                        >
-                          <RefreshCw className={`w-3 h-3 ${isFetchingMailOtp ? 'animate-spin' : ''}`} />
-                          <span>{isFetchingMailOtp ? 'Đang đọc mail...' : '⚡ Lấy OTP Mail Ngay'}</span>
-                        </button>
+                        <div className="flex items-center space-x-1.5">
+                          <button
+                            onClick={() => handleOpenMailDetails(formModalRecord)}
+                            className="px-2 py-1 bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 font-semibold rounded-lg text-xs shadow flex items-center space-x-1 cursor-pointer transition-all"
+                            title="Xem tất cả email trong hòm thư"
+                          >
+                            <Mail className="w-3 h-3 text-amber-400" />
+                            <span>📋 Chi Tiết Hòm Thư</span>
+                          </button>
+                          <button
+                            onClick={() => handleFetchMailOtp(formModalRecord)}
+                            disabled={isFetchingMailOtp}
+                            className="px-2.5 py-1 bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold rounded-lg text-xs shadow flex items-center space-x-1 cursor-pointer disabled:opacity-50"
+                          >
+                            <RefreshCw className={`w-3 h-3 ${isFetchingMailOtp ? 'animate-spin' : ''}`} />
+                            <span>{isFetchingMailOtp ? 'Đang đọc mail...' : '⚡ Lấy OTP Mail Ngay'}</span>
+                          </button>
+                        </div>
                       </div>
 
                       {liveMailOtp ? (
@@ -7395,6 +7639,27 @@ export function TtsBotView() {
                           Bấm nút trên để tự động gọi link API lấy mã SMS trực tiếp từ nhà mạng SIM.
                         </div>
                       )}
+
+                      {/* Raw SMS Feedback Viewer */}
+                      {rawPhoneSmsText && (
+                        <div className="pt-1.5 border-t border-pink-900/30">
+                          <div className="flex items-center justify-between">
+                            <button
+                              type="button"
+                              onClick={() => setShowRawPhoneSms((prev) => !prev)}
+                              className="text-[10px] text-pink-400 hover:text-pink-300 underline cursor-pointer flex items-center space-x-1"
+                            >
+                              <span>{showRawPhoneSms ? '▼ Ẩn phản hồi gốc SMS' : '▶ Xem phản hồi gốc SMS API (JSON / Text)'}</span>
+                            </button>
+                            <span className="text-[9px] text-slate-500 font-mono">Độ dài: {rawPhoneSmsText.length} ký tự</span>
+                          </div>
+                          {showRawPhoneSms && (
+                            <pre className="mt-1.5 text-[10px] font-mono p-2 bg-slate-950 border border-pink-900/40 rounded-lg text-pink-200/90 whitespace-pre-wrap select-all max-h-24 overflow-y-auto">
+                              {rawPhoneSmsText}
+                            </pre>
+                          )}
+                        </div>
+                      )}
                     </div>
                   </div>
                 </div>
@@ -7427,32 +7692,51 @@ export function TtsBotView() {
                       </button>
                     </div>
 
-                    {/* Split Names */}
-                    <div className="grid grid-cols-2 gap-2">
-                      <div className="flex items-center justify-between p-2 rounded-lg bg-slate-900 border border-slate-800">
-                        <div className="flex flex-col min-w-0 pr-1">
-                          <span className="text-[10px] text-slate-400">First Name</span>
-                          <span className="font-mono text-slate-200 truncate select-all">{formModalRecord.firstName || formModalRecord.fullName.split(' ')[0]}</span>
-                        </div>
+                    {/* Split Names with 1-Click Swap Button */}
+                    <div className="space-y-1">
+                      <div className="flex items-center justify-between px-0.5">
+                        <span className="text-[10px] text-slate-400 font-medium">Tách Họ & Tên Riêng Biệt (Split Names)</span>
                         <button
-                          onClick={() => handleCopyField('first_name', formModalRecord.firstName || formModalRecord.fullName.split(' ')[0])}
-                          className="px-1.5 py-1 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded text-[11px] cursor-pointer"
+                          type="button"
+                          onClick={handleSwapNames}
+                          className="px-2 py-0.5 bg-emerald-950/70 hover:bg-emerald-900 border border-emerald-800 text-emerald-300 rounded text-[10px] font-semibold flex items-center space-x-1 cursor-pointer transition-colors shadow-sm"
+                          title="Hoán đổi First Name và Last Name nếu bị ngược thứ tự"
                         >
-                          {copiedField === 'first_name' ? <Check className="w-3 h-3 text-emerald-400" /> : <Copy className="w-3 h-3" />}
+                          <ArrowLeftRight className="w-3 h-3 text-emerald-400" />
+                          <span>⇄ Đảo Họ & Tên</span>
                         </button>
                       </div>
 
-                      <div className="flex items-center justify-between p-2 rounded-lg bg-slate-900 border border-slate-800">
-                        <div className="flex flex-col min-w-0 pr-1">
-                          <span className="text-[10px] text-slate-400">Last Name</span>
-                          <span className="font-mono text-slate-200 truncate select-all">{formModalRecord.lastName || formModalRecord.fullName.split(' ').pop()}</span>
+                      <div className="grid grid-cols-2 gap-2">
+                        <div className="flex items-center justify-between p-2 rounded-lg bg-slate-900 border border-slate-800">
+                          <div className="flex flex-col min-w-0 pr-1">
+                            <span className="text-[10px] text-slate-400">First Name</span>
+                            <span className="font-mono text-slate-200 truncate select-all font-semibold">
+                              {formModalRecord.firstName || formModalRecord.fullName.split(' ')[0]}
+                            </span>
+                          </div>
+                          <button
+                            onClick={() => handleCopyField('first_name', formModalRecord.firstName || formModalRecord.fullName.split(' ')[0])}
+                            className="px-1.5 py-1 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded text-[11px] cursor-pointer"
+                          >
+                            {copiedField === 'first_name' ? <Check className="w-3 h-3 text-emerald-400" /> : <Copy className="w-3 h-3" />}
+                          </button>
                         </div>
-                        <button
-                          onClick={() => handleCopyField('last_name', formModalRecord.lastName || formModalRecord.fullName.split(' ').pop() || '')}
-                          className="px-1.5 py-1 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded text-[11px] cursor-pointer"
-                        >
-                          {copiedField === 'last_name' ? <Check className="w-3 h-3 text-emerald-400" /> : <Copy className="w-3 h-3" />}
-                        </button>
+
+                        <div className="flex items-center justify-between p-2 rounded-lg bg-slate-900 border border-slate-800">
+                          <div className="flex flex-col min-w-0 pr-1">
+                            <span className="text-[10px] text-slate-400">Last Name</span>
+                            <span className="font-mono text-slate-200 truncate select-all font-semibold">
+                              {formModalRecord.lastName || formModalRecord.fullName.split(' ').pop()}
+                            </span>
+                          </div>
+                          <button
+                            onClick={() => handleCopyField('last_name', formModalRecord.lastName || formModalRecord.fullName.split(' ').pop() || '')}
+                            className="px-1.5 py-1 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded text-[11px] cursor-pointer"
+                          >
+                            {copiedField === 'last_name' ? <Check className="w-3 h-3 text-emerald-400" /> : <Copy className="w-3 h-3" />}
+                          </button>
+                        </div>
                       </div>
                     </div>
 
@@ -7546,20 +7830,71 @@ export function TtsBotView() {
                     })()}
 
                     {/* Driver License Number (DL#) */}
-                    <div className="flex items-center justify-between p-2 rounded-lg bg-slate-900 border border-slate-800">
-                      <div className="flex flex-col min-w-0 pr-2">
-                        <span className="text-[10px] text-slate-400 font-medium">Số Bằng Lái (DL# - Chuẩn DMV {formModalRecord.state})</span>
-                        <span className="font-mono text-emerald-400 font-bold select-all">{formModalRecord.dl}</span>
+                    <div className="p-2 rounded-lg bg-slate-900 border border-slate-800 space-y-1.5">
+                      <div className="flex items-center justify-between">
+                        <span className="text-[10px] text-slate-400 font-medium">
+                          Số Bằng Lái (DL# - Chuẩn DMV {formModalRecord.state})
+                        </span>
+                        {!isEditingDl ? (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setEditableDl(formModalRecord.dl)
+                              setIsEditingDl(true)
+                            }}
+                            className="text-[10px] text-slate-400 hover:text-emerald-400 flex items-center space-x-1 cursor-pointer"
+                            title="Chỉnh sửa số DL# trực tiếp nếu cần tùy biến"
+                          >
+                            <Edit3 className="w-3 h-3" />
+                            <span>Sửa DL#</span>
+                          </button>
+                        ) : (
+                          <div className="flex items-center space-x-1">
+                            <button
+                              type="button"
+                              onClick={handleSaveDl}
+                              className="px-1.5 py-0.5 bg-emerald-600 hover:bg-emerald-500 text-white rounded text-[10px] font-bold cursor-pointer"
+                            >
+                              Lưu
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => setIsEditingDl(false)}
+                              className="px-1.5 py-0.5 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded text-[10px] cursor-pointer"
+                            >
+                              Hủy
+                            </button>
+                          </div>
+                        )}
                       </div>
-                      <button
-                        onClick={() => handleCopyField('dl', formModalRecord.dl)}
-                        className={`px-2 py-1 rounded text-[11px] font-medium flex items-center space-x-1 cursor-pointer transition-all ${
-                          copiedField === 'dl' ? 'bg-emerald-600 text-white' : 'bg-slate-800 hover:bg-slate-700 text-slate-300'
-                        }`}
-                      >
-                        {copiedField === 'dl' ? <Check className="w-3 h-3 text-white" /> : <Copy className="w-3 h-3" />}
-                        <span>{copiedField === 'dl' ? 'Đã copy!' : 'Copy DL#'}</span>
-                      </button>
+
+                      {isEditingDl ? (
+                        <div className="flex items-center space-x-2">
+                          <input
+                            type="text"
+                            value={editableDl}
+                            onChange={(e) => setEditableDl(e.target.value)}
+                            placeholder={`Số DL# chuẩn ${formModalRecord.state}...`}
+                            className="flex-1 px-2 py-1 bg-slate-950 border border-emerald-500 rounded text-xs font-mono text-emerald-300 focus:outline-none"
+                            autoFocus
+                          />
+                        </div>
+                      ) : (
+                        <div className="flex items-center justify-between">
+                          <span className="font-mono text-emerald-400 font-bold select-all text-sm">
+                            {formModalRecord.dl}
+                          </span>
+                          <button
+                            onClick={() => handleCopyField('dl', formModalRecord.dl)}
+                            className={`px-2 py-1 rounded text-[11px] font-medium flex items-center space-x-1 cursor-pointer transition-all ${
+                              copiedField === 'dl' ? 'bg-emerald-600 text-white' : 'bg-slate-800 hover:bg-slate-700 text-slate-300'
+                            }`}
+                          >
+                            {copiedField === 'dl' ? <Check className="w-3 h-3 text-white" /> : <Copy className="w-3 h-3" />}
+                            <span>{copiedField === 'dl' ? 'Đã copy!' : 'Copy DL#'}</span>
+                          </button>
+                        </div>
+                      )}
                     </div>
                   </div>
                 </div>
@@ -7777,6 +8112,15 @@ export function TtsBotView() {
                         <span>{generatingDocType === 'cp575' ? 'Đang tạo PDF...' : '📄 Tạo & Mở IRS CP 575 PDF'}</span>
                       </button>
                       <button
+                        onClick={() => handleDownloadDoc(formModalRecord, 'cp575')}
+                        disabled={generatingDocType === 'cp575'}
+                        className="px-2.5 py-2 bg-slate-800 hover:bg-slate-700 text-sky-300 border border-sky-800/60 rounded-lg text-xs font-semibold flex items-center space-x-1 cursor-pointer disabled:opacity-50 transition-all"
+                        title="Tải file PDF về thư mục tùy chọn trên máy tính"
+                      >
+                        <Download className="w-3.5 h-3.5" />
+                        <span>Tải về...</span>
+                      </button>
+                      <button
                         onClick={() => ttsIpc.docOpenFolder('outputs/ein_notices')}
                         className="p-2 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-lg cursor-pointer"
                         title="Mở Folder Thư Mục IRS"
@@ -7808,6 +8152,15 @@ export function TtsBotView() {
                       >
                         <Building className={`w-4 h-4 ${generatingDocType === 'verizon' ? 'animate-spin' : ''}`} />
                         <span>{generatingDocType === 'verizon' ? 'Đang tạo Bill...' : '📄 Tạo & Mở Verizon Bill PDF'}</span>
+                      </button>
+                      <button
+                        onClick={() => handleDownloadDoc(formModalRecord, 'verizon')}
+                        disabled={generatingDocType === 'verizon'}
+                        className="px-2.5 py-2 bg-slate-800 hover:bg-slate-700 text-emerald-300 border border-emerald-800/60 rounded-lg text-xs font-semibold flex items-center space-x-1 cursor-pointer disabled:opacity-50 transition-all"
+                        title="Tải file PDF về thư mục tùy chọn trên máy tính"
+                      >
+                        <Download className="w-3.5 h-3.5" />
+                        <span>Tải về...</span>
                       </button>
                       <button
                         onClick={() => ttsIpc.docOpenFolder('outputs/statements')}
@@ -8341,6 +8694,175 @@ export function TtsBotView() {
                 <Check className={`w-4 h-4 ${isUpdatingProxy ? 'animate-spin' : ''}`} />
                 <span>{isUpdatingProxy ? 'Đang cập nhật...' : '⚡ Áp Dụng & Đồng Bộ AdsPower'}</span>
               </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ─── MODAL CHI TIẾT HÒM THƯ (ALL EMAILS & OTP INSPECTOR) ─── */}
+      {mailDetailsModal.open && mailDetailsModal.record && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm p-4 animate-in fade-in duration-150">
+          <div className="bg-slate-900 border border-slate-800 rounded-2xl w-full max-w-3xl shadow-2xl overflow-hidden flex flex-col my-auto max-h-[88vh]">
+            {/* Header */}
+            <div className="px-6 py-4 bg-slate-950 border-b border-slate-800 flex items-center justify-between shrink-0">
+              <div className="flex items-center space-x-3">
+                <div className="w-9 h-9 rounded-xl bg-amber-500/10 border border-amber-500/30 flex items-center justify-center text-amber-400">
+                  <Mail className="w-5 h-5" />
+                </div>
+                <div>
+                  <div className="flex items-center space-x-2">
+                    <h3 className="text-sm font-bold text-white">Chi Tiết Hòm Thư & Danh Sách Email</h3>
+                    <span className="font-mono text-xs px-2 py-0.5 rounded bg-amber-500/10 border border-amber-500/20 text-amber-300 font-semibold">
+                      {mailDetailsModal.record.email}
+                    </span>
+                  </div>
+                  <p className="text-xs text-slate-400 mt-0.5">
+                    Hồ sơ: <strong className="text-slate-200">{mailDetailsModal.record.id}</strong> ({mailDetailsModal.record.fullName})
+                  </p>
+                </div>
+              </div>
+
+              <div className="flex items-center space-x-2">
+                <button
+                  type="button"
+                  onClick={() => mailDetailsModal.record && handleOpenMailDetails(mailDetailsModal.record)}
+                  disabled={mailDetailsModal.isLoading}
+                  className="px-2.5 py-1 bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 rounded-lg text-xs font-semibold flex items-center space-x-1 cursor-pointer disabled:opacity-50 transition-all"
+                  title="Tải lại hòm thư"
+                >
+                  <RefreshCw className={`w-3.5 h-3.5 ${mailDetailsModal.isLoading ? 'animate-spin' : ''}`} />
+                  <span>Làm Mới</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setMailDetailsModal({ open: false })}
+                  className="p-1.5 rounded-lg text-slate-400 hover:text-white hover:bg-slate-800 transition-colors cursor-pointer"
+                >
+                  <X className="w-5 h-5" />
+                </button>
+              </div>
+            </div>
+
+            {/* Body */}
+            <div className="flex-1 overflow-y-auto p-5 space-y-3">
+              {mailDetailsModal.isLoading ? (
+                <div className="py-16 text-center space-y-3">
+                  <RefreshCw className="w-8 h-8 text-amber-400 animate-spin mx-auto" />
+                  <p className="text-xs text-slate-300 font-medium">Đang kết nối IMAP / Webmail và tải danh sách thư...</p>
+                  <p className="text-[11px] text-slate-500">Quá trình này thường mất 1 - 3 giây tùy theo phản hồi từ máy chủ.</p>
+                </div>
+              ) : mailDetailsModal.error ? (
+                <div className="p-4 bg-rose-950/60 border border-rose-800 rounded-xl space-y-2 text-rose-200">
+                  <div className="flex items-center space-x-2 text-xs font-bold text-rose-300">
+                    <AlertTriangle className="w-4 h-4 text-rose-400 shrink-0" />
+                    <span>Lỗi kiểm tra hòm thư:</span>
+                  </div>
+                  <p className="text-xs font-mono">{mailDetailsModal.error}</p>
+                  <button
+                    type="button"
+                    onClick={() => mailDetailsModal.record && handleOpenMailDetails(mailDetailsModal.record)}
+                    className="mt-2 px-3 py-1 bg-rose-800 hover:bg-rose-700 text-white rounded text-xs font-semibold cursor-pointer"
+                  >
+                    Thử Lại Ngay
+                  </button>
+                </div>
+              ) : !mailDetailsModal.messages || mailDetailsModal.messages.length === 0 ? (
+                <div className="py-16 text-center space-y-2">
+                  <div className="w-12 h-12 rounded-full bg-slate-800/80 border border-slate-700 flex items-center justify-center mx-auto text-slate-500">
+                    <Mail className="w-6 h-6" />
+                  </div>
+                  <p className="text-xs text-slate-300 font-medium">Hòm thư chưa có thư nào gần đây</p>
+                  <p className="text-[11px] text-slate-500">
+                    Hãy bấm gửi mã xác minh trên TikTok Shop rồi bấm nút "Làm Mới" ở góc trên.
+                  </p>
+                </div>
+              ) : (
+                <div className="space-y-3">
+                  <div className="flex items-center justify-between text-xs text-slate-400 px-1">
+                    <span>Tìm thấy {mailDetailsModal.messages.length} thư trong hộp đến:</span>
+                    <span className="text-[11px] text-slate-500">Xếp theo thứ tự mới nhất</span>
+                  </div>
+
+                  {mailDetailsModal.messages.map((msg: any, idx: number) => {
+                    const isTikTok =
+                      (msg.subject && /tiktok/i.test(msg.subject)) ||
+                      (msg.from && /tiktok/i.test(msg.from)) ||
+                      (msg.snippet && /tiktok/i.test(msg.snippet))
+                    const otpCode = msg.otp || (msg.snippet && msg.snippet.match(/\b\d{6}\b/)?.[0])
+
+                    return (
+                      <div
+                        key={msg.id || idx}
+                        className={`p-4 rounded-xl border transition-all space-y-2 ${
+                          isTikTok
+                            ? 'bg-slate-950 border-amber-500/40 shadow-md'
+                            : 'bg-slate-950/70 border-slate-800 hover:border-slate-700'
+                        }`}
+                      >
+                        <div className="flex items-start justify-between gap-3">
+                          <div className="min-w-0 flex-1">
+                            <div className="flex items-center space-x-2">
+                              {isTikTok && (
+                                <span className="px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-300 border border-amber-500/30 text-[10px] font-bold">
+                                  TikTok Shop
+                                </span>
+                              )}
+                              <h4 className="text-xs font-bold text-white truncate">{msg.subject || '(Không có tiêu đề)'}</h4>
+                            </div>
+                            <div className="flex items-center space-x-2 text-[11px] text-slate-400 mt-0.5">
+                              <span>Từ: <strong className="text-slate-300 font-mono">{msg.from || 'N/A'}</strong></span>
+                              <span>•</span>
+                              <span>{msg.date || 'N/A'}</span>
+                            </div>
+                          </div>
+
+                          {otpCode && (
+                            <div className="flex items-center space-x-2 shrink-0">
+                              <div className="bg-emerald-950/80 border border-emerald-500/60 rounded-lg px-2.5 py-1 text-center">
+                                <span className="text-[9px] uppercase tracking-wider block text-emerald-400 font-bold">MÃ OTP</span>
+                                <span className="font-mono text-base font-extrabold text-emerald-300 tracking-widest">{otpCode}</span>
+                              </div>
+                              <button
+                                type="button"
+                                onClick={() => handleCopyField('mail_otp_item', otpCode)}
+                                className={`px-2.5 py-2 rounded-lg text-xs font-bold flex items-center space-x-1 cursor-pointer transition-all ${
+                                  copiedField === 'mail_otp_item'
+                                    ? 'bg-emerald-600 text-white'
+                                    : 'bg-emerald-700 hover:bg-emerald-600 text-white'
+                                }`}
+                              >
+                                {copiedField === 'mail_otp_item' ? <Check className="w-3.5 h-3.5 text-white" /> : <Copy className="w-3.5 h-3.5" />}
+                                <span>Copy</span>
+                              </button>
+                            </div>
+                          )}
+                        </div>
+
+                        {msg.snippet && (
+                          <p className="text-[11px] text-slate-400 bg-slate-900 p-2.5 rounded-lg border border-slate-800/80 font-mono leading-relaxed select-all">
+                            {msg.snippet}
+                          </p>
+                        )}
+                      </div>
+                    )
+                  })}
+                </div>
+              )}
+            </div>
+
+            {/* Footer */}
+            <div className="px-6 py-3 bg-slate-950 border-t border-slate-800 flex items-center justify-between shrink-0">
+              <span className="text-xs text-slate-400">
+                Giao thức: IMAP SSL Port 993 / Webmail API
+              </span>
+              <Button
+                variant="secondary"
+                size="sm"
+                onClick={() => setMailDetailsModal({ open: false })}
+                className="text-xs px-4 cursor-pointer"
+              >
+                Đóng
+              </Button>
             </div>
           </div>
         </div>
