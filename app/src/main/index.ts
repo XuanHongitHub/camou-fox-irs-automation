@@ -172,7 +172,7 @@ function cliBinaryPath() {
 
 function pythonDevLaunch(baseArgs: string[]) {
   if (process.platform === 'win32') {
-    return { cmd: 'py', args: ['-3', ...baseArgs] }
+    return { cmd: 'python', args: baseArgs }
   }
   return { cmd: 'python3', args: baseArgs }
 }

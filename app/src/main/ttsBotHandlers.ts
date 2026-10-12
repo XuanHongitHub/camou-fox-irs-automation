@@ -1,6 +1,6 @@
 import { IpcMain, dialog, shell, app } from 'electron'
 import { join, basename, extname } from 'path'
-import { existsSync, mkdirSync, readFileSync, writeFileSync, readdirSync, statSync } from 'fs'
+import { existsSync, mkdirSync, readFileSync, writeFileSync, readdirSync, statSync, unlinkSync } from 'fs'
 import { spawn } from 'child_process'
 import tls from 'tls'
 import net from 'net'
@@ -3390,7 +3390,163 @@ function generateValidDl(stateCode: string, lastName: string = ''): string {
   })
 
   // ─── 8. Document & Statement Generation IPC Handlers (CP575, Verizon) ───
+  function findExistingDoc(record: any, type: 'cp575' | 'verizon'): string | null {
+    const fullName = String(record?.fullName || '').trim()
+    const ein = String(record?.ein || '').trim()
+    const ssn = String(record?.ssn || '').trim()
+    const pid = String(record?.id || '').trim()
+    const safeName = fullName.replace(/ /g, '_')
+
+    const explicitName = type === 'cp575' ? String(record?.pdfDoc || '').trim() : String(record?.bankStatement || '').trim()
+
+    const searchDirs = [
+      join(foxAutoRoot, 'output_bank_statements'),
+      join(foxAutoRoot, 'outputs', 'statements'),
+      join(foxAutoRoot, 'outputs', 'ein_notices'),
+      join(foxAutoRoot, 'additions', 'tts_bot', 'runtime', 'generated_docs'),
+      'G:\\RTTS\\19-08-2026\\output_bank_statements',
+      'G:\\RTTS\\19-08-2026\\output_cp575',
+      'G:\\RTTS\\dotpsd\\engine\\output_bank_statements',
+      'G:\\RTTS\\dotpsd\\outputs\\output_bank_statements',
+      'G:\\RTTS\\dotpsd\\runtime\\generated_docs',
+      'D:\\Download',
+      'D:\\Download\\TikTokShop_Appeal_ThreadVanta_PDFs'
+    ]
+
+    // 1. Check explicit filename if given in sheet
+    if (explicitName && !explicitName.startsWith('http')) {
+      for (const dir of searchDirs) {
+        if (!existsSync(dir)) continue
+        const direct = join(dir, explicitName)
+        if (existsSync(direct)) return direct
+      }
+    }
+
+    // 2. Candidate patterns
+    const patterns: string[] = []
+    if (type === 'cp575') {
+      if (fullName && ein && ssn) patterns.push(`${fullName} - ${ein} - ${ssn}.pdf`)
+      if (fullName && ein) patterns.push(`${fullName} - ${ein}.pdf`)
+      if (fullName) patterns.push(`${fullName}.pdf`)
+      if (pid) patterns.push(`CP575_${pid}.pdf`)
+      if (safeName && ein) patterns.push(`${safeName}_${ein}_CP575.pdf`)
+    } else {
+      if (fullName && ein) {
+        patterns.push(`${fullName} - ${ein} - Verizon.pdf`)
+        patterns.push(`${fullName} - ${ein} - Chase.pdf`)
+      }
+      if (fullName) {
+        patterns.push(`${fullName} - Verizon.pdf`)
+        patterns.push(`${fullName} - Chase.pdf`)
+      }
+      if (pid) patterns.push(`Verizon_${pid}.pdf`)
+      if (safeName && ein) patterns.push(`${safeName}_${ein}_Verizon.pdf`)
+    }
+
+    for (const dir of searchDirs) {
+      if (!existsSync(dir)) continue
+      for (const pat of patterns) {
+        const full = join(dir, pat)
+        if (existsSync(full)) return full
+      }
+    }
+
+    return null
+  }
+
+  function executeSafePythonSpawn(pyArgs: string[]): Promise<any> {
+    return new Promise((resolve) => {
+      const candidateCommands = [
+        pythonLaunchFn(pyArgs),
+        { cmd: 'python', args: pyArgs },
+        { cmd: 'py', args: ['-3', ...pyArgs] }
+      ]
+
+      let attemptIdx = 0
+
+      function trySpawn() {
+        if (attemptIdx >= candidateCommands.length) {
+          return resolve({ ok: false, error: 'Không tìm thấy Python trên hệ thống để sinh PDF. Hãy kiểm tra cài đặt Python.' })
+        }
+
+        const candidate = candidateCommands[attemptIdx++]
+        let hasHandled = false
+
+        try {
+          const child = spawn(candidate.cmd, candidate.args, {
+            cwd: join(foxAutoRoot, 'additions', 'tts_bot'),
+            env: { ...process.env, PYTHONUNBUFFERED: '1', PYTHONIOENCODING: 'utf-8' }
+          })
+
+          let stdout = ''
+          let stderr = ''
+          child.stdout?.on('data', (d) => { stdout += d.toString() })
+          child.stderr?.on('data', (d) => { stderr += d.toString() })
+
+          child.on('error', (err) => {
+            if (hasHandled) return
+            hasHandled = true
+            console.warn(`[DocGen] Spawn ${candidate.cmd} failed:`, err?.message || err)
+            trySpawn()
+          })
+
+          child.on('close', (code) => {
+            if (hasHandled) return
+            hasHandled = true
+
+            if (code === 0) {
+              let res: any = null
+              const jsonMatch = stdout.match(/\{[\s\S]*"ok"[\s\S]*\}/)
+              if (jsonMatch) {
+                try { res = JSON.parse(jsonMatch[0]) } catch {}
+              }
+              if (!res) {
+                try { res = JSON.parse(stdout.trim()) } catch {}
+              }
+              resolve(res || { ok: true, stdout })
+            } else {
+              resolve({ ok: false, error: stderr || stdout || `Doc generator failed with code ${code}` })
+            }
+          })
+        } catch {
+          if (!hasHandled) {
+            hasHandled = true
+            trySpawn()
+          }
+        }
+      }
+
+      trySpawn()
+    })
+  }
+
   ipcMain.handle('tts:pdf:generate-cp575', async (_event, record: any) => {
+    // 1. Check existing local PDF first
+    const existing = findExistingDoc(record, 'cp575')
+    if (existing) {
+      try { await shell.openPath(existing) } catch {}
+      try { shell.showItemInFolder(existing) } catch {}
+      return {
+        ok: true,
+        filePath: existing,
+        fileName: basename(existing),
+        isExisting: true
+      }
+    }
+
+    // 2. Check if sheet row contains a direct Google Drive or HTTP URL
+    const explicit = String(record?.pdfDoc || '').trim()
+    if (explicit && (explicit.startsWith('http://') || explicit.startsWith('https://'))) {
+      try { await shell.openExternal(explicit) } catch {}
+      return {
+        ok: true,
+        driveUrl: explicit,
+        fileName: basename(explicit),
+        isDrive: true
+      }
+    }
+
+    // 3. Fallback to generating via safe python runner
     const tempJsonPath = join(runtimeDir, `temp_cp575_${Date.now()}.json`)
     try {
       const cliScript = join(foxAutoRoot, 'additions', 'tts_bot', 'doc_generator.py')
@@ -3410,49 +3566,18 @@ function generateValidDl(stateCode: string, lastName: string = ''): string {
         outDir
       ]
 
-      const launch = pythonLaunchFn(pyArgs)
-      return await new Promise((resolve) => {
-        const child = spawn(launch.cmd, launch.args, {
-          cwd: join(foxAutoRoot, 'additions', 'tts_bot'),
-          env: { ...process.env, PYTHONUNBUFFERED: '1', PYTHONIOENCODING: 'utf-8' }
-        })
+      const res = await executeSafePythonSpawn(pyArgs)
+      try {
+        if (existsSync(tempJsonPath)) unlinkSync(tempJsonPath)
+      } catch {}
 
-        let stdout = ''
-        let stderr = ''
-        child.stdout?.on('data', (d) => { stdout += d.toString() })
-        child.stderr?.on('data', (d) => { stderr += d.toString() })
-
-        child.on('close', async (code) => {
-          try {
-            const { unlinkSync } = await import('fs')
-            if (existsSync(tempJsonPath)) unlinkSync(tempJsonPath)
-          } catch {}
-
-          if (code === 0) {
-            let res: any = null
-            const jsonMatch = stdout.match(/\{[\s\S]*"ok"[\s\S]*\}/)
-            if (jsonMatch) {
-              try { res = JSON.parse(jsonMatch[0]) } catch {}
-            }
-            if (!res) {
-              try { res = JSON.parse(stdout.trim()) } catch {}
-            }
-
-            if (res && res.ok && res.filePath) {
-              try { await shell.openPath(res.filePath) } catch {}
-              try { shell.showItemInFolder(res.filePath) } catch {}
-              resolve(res)
-            } else {
-              resolve(res || { ok: true, stdout })
-            }
-          } else {
-            resolve({ ok: false, error: stderr || stdout || `Doc generator failed with code ${code}` })
-          }
-        })
-      })
+      if (res && res.ok && res.filePath) {
+        try { await shell.openPath(res.filePath) } catch {}
+        try { shell.showItemInFolder(res.filePath) } catch {}
+      }
+      return res
     } catch (err: any) {
       try {
-        const { unlinkSync } = await import('fs')
         if (existsSync(tempJsonPath)) unlinkSync(tempJsonPath)
       } catch {}
       return { ok: false, error: String(err?.message || err) }
@@ -3460,6 +3585,32 @@ function generateValidDl(stateCode: string, lastName: string = ''): string {
   })
 
   ipcMain.handle('tts:pdf:generate-verizon', async (_event, record: any) => {
+    // 1. Check existing local PDF first
+    const existing = findExistingDoc(record, 'verizon')
+    if (existing) {
+      try { await shell.openPath(existing) } catch {}
+      try { shell.showItemInFolder(existing) } catch {}
+      return {
+        ok: true,
+        filePath: existing,
+        fileName: basename(existing),
+        isExisting: true
+      }
+    }
+
+    // 2. Check if sheet row contains a direct Google Drive or HTTP URL
+    const explicit = String(record?.bankStatement || '').trim()
+    if (explicit && (explicit.startsWith('http://') || explicit.startsWith('https://'))) {
+      try { await shell.openExternal(explicit) } catch {}
+      return {
+        ok: true,
+        driveUrl: explicit,
+        fileName: basename(explicit),
+        isDrive: true
+      }
+    }
+
+    // 3. Fallback to generating via safe python runner
     const tempJsonPath = join(runtimeDir, `temp_verizon_${Date.now()}.json`)
     try {
       const cliScript = join(foxAutoRoot, 'additions', 'tts_bot', 'doc_generator.py')
@@ -3479,49 +3630,18 @@ function generateValidDl(stateCode: string, lastName: string = ''): string {
         outDir
       ]
 
-      const launch = pythonLaunchFn(pyArgs)
-      return await new Promise((resolve) => {
-        const child = spawn(launch.cmd, launch.args, {
-          cwd: join(foxAutoRoot, 'additions', 'tts_bot'),
-          env: { ...process.env, PYTHONUNBUFFERED: '1', PYTHONIOENCODING: 'utf-8' }
-        })
+      const res = await executeSafePythonSpawn(pyArgs)
+      try {
+        if (existsSync(tempJsonPath)) unlinkSync(tempJsonPath)
+      } catch {}
 
-        let stdout = ''
-        let stderr = ''
-        child.stdout?.on('data', (d) => { stdout += d.toString() })
-        child.stderr?.on('data', (d) => { stderr += d.toString() })
-
-        child.on('close', async (code) => {
-          try {
-            const { unlinkSync } = await import('fs')
-            if (existsSync(tempJsonPath)) unlinkSync(tempJsonPath)
-          } catch {}
-
-          if (code === 0) {
-            let res: any = null
-            const jsonMatch = stdout.match(/\{[\s\S]*"ok"[\s\S]*\}/)
-            if (jsonMatch) {
-              try { res = JSON.parse(jsonMatch[0]) } catch {}
-            }
-            if (!res) {
-              try { res = JSON.parse(stdout.trim()) } catch {}
-            }
-
-            if (res && res.ok && res.filePath) {
-              try { await shell.openPath(res.filePath) } catch {}
-              try { shell.showItemInFolder(res.filePath) } catch {}
-              resolve(res)
-            } else {
-              resolve(res || { ok: true, stdout })
-            }
-          } else {
-            resolve({ ok: false, error: stderr || stdout || `Doc generator failed with code ${code}` })
-          }
-        })
-      })
+      if (res && res.ok && res.filePath) {
+        try { await shell.openPath(res.filePath) } catch {}
+        try { shell.showItemInFolder(res.filePath) } catch {}
+      }
+      return res
     } catch (err: any) {
       try {
-        const { unlinkSync } = await import('fs')
         if (existsSync(tempJsonPath)) unlinkSync(tempJsonPath)
       } catch {}
       return { ok: false, error: String(err?.message || err) }

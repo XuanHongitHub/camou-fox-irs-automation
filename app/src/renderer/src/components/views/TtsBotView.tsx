@@ -1215,12 +1215,18 @@ export function TtsBotView() {
     try {
       const res = await ttsIpc.generateCp575(record)
       if (res && res.ok) {
-        setDocNotice(`✓ Đã tạo IRS CP575 Notice thành công: ${res.fileName}`)
+        if (res.isExisting) {
+          setDocNotice(`✓ Đã mở tệp IRS CP575 có sẵn: ${res.fileName}`)
+        } else if (res.isDrive) {
+          setDocNotice(`✓ Đã mở tệp IRS CP575 từ Google Drive: ${res.fileName}`)
+        } else {
+          setDocNotice(`✓ Đã tạo IRS CP575 Notice thành công: ${res.fileName}`)
+        }
       } else {
-        setDocNotice(`❌ Lỗi tạo CP575: ${res?.error || 'Thất bại'}`)
+        setDocNotice(`❌ Lỗi mở/tạo CP575: ${res?.error || 'Thất bại'}`)
       }
     } catch (err: any) {
-      setDocNotice(`❌ Lỗi tạo CP575: ${err?.message || err}`)
+      setDocNotice(`❌ Lỗi: ${err?.message || err}`)
     } finally {
       setGeneratingDocType(null)
     }
@@ -1232,12 +1238,18 @@ export function TtsBotView() {
     try {
       const res = await ttsIpc.generateVerizon(record)
       if (res && res.ok) {
-        setDocNotice(`✓ Đã tạo Verizon Statement thành công: ${res.fileName}`)
+        if (res.isExisting) {
+          setDocNotice(`✓ Đã mở tệp Verizon Statement có sẵn: ${res.fileName}`)
+        } else if (res.isDrive) {
+          setDocNotice(`✓ Đã mở tệp Verizon Statement từ Google Drive: ${res.fileName}`)
+        } else {
+          setDocNotice(`✓ Đã tạo Verizon Statement thành công: ${res.fileName}`)
+        }
       } else {
-        setDocNotice(`❌ Lỗi tạo Verizon: ${res?.error || 'Thất bại'}`)
+        setDocNotice(`❌ Lỗi mở/tạo Verizon: ${res?.error || 'Thất bại'}`)
       }
     } catch (err: any) {
-      setDocNotice(`❌ Lỗi tạo Verizon: ${err?.message || err}`)
+      setDocNotice(`❌ Lỗi: ${err?.message || err}`)
     } finally {
       setGeneratingDocType(null)
     }
@@ -1394,20 +1406,24 @@ export function TtsBotView() {
     setDocNotice(null)
     try {
       const genRes = docType === 'cp575' ? await ttsIpc.generateCp575(record) : await ttsIpc.generateVerizon(record)
-      if (genRes && genRes.ok && genRes.filePath) {
-        const dlRes = await ttsIpc.docDownloadDialog({
-          filePath: genRes.filePath,
-          defaultName: genRes.fileName
-        })
-        if (dlRes && dlRes.ok) {
-          setDocNotice(`✓ Đã lưu file thành công: ${dlRes.savedPath}`)
-        } else if (dlRes && dlRes.cancelled) {
-          // Cancelled by user
-        } else {
-          setDocNotice(`❌ Lỗi lưu file: ${dlRes?.error || 'Thất bại'}`)
+      if (genRes && genRes.ok) {
+        if (genRes.filePath) {
+          const dlRes = await ttsIpc.docDownloadDialog({
+            filePath: genRes.filePath,
+            defaultName: genRes.fileName
+          })
+          if (dlRes && dlRes.ok) {
+            setDocNotice(`✓ Đã lưu file thành công: ${dlRes.savedPath}`)
+          } else if (dlRes && dlRes.cancelled) {
+            // Cancelled by user
+          } else {
+            setDocNotice(`❌ Lỗi lưu file: ${dlRes?.error || 'Thất bại'}`)
+          }
+        } else if (genRes.isDrive) {
+          setDocNotice(`✓ Đã mở link tải từ Google Drive: ${genRes.fileName}`)
         }
       } else {
-        setDocNotice(`❌ Lỗi tạo PDF: ${genRes?.error || 'Thất bại'}`)
+        setDocNotice(`❌ Lỗi tìm/tạo PDF: ${genRes?.error || 'Thất bại'}`)
       }
     } catch (err: any) {
       setDocNotice(`❌ Lỗi: ${err?.message || err}`)
@@ -8126,13 +8142,31 @@ export function TtsBotView() {
                     <FileText className="w-4 h-4 text-sky-400" />
                     <span>5. Giấy Tờ Xác Minh & Proof of Address (1-Click Tải & Mở File)</span>
                   </h4>
-                  <button
-                    onClick={() => ttsIpc.docOpenFolder()}
-                    className="text-xs text-sky-400 hover:text-sky-300 flex items-center space-x-1 cursor-pointer"
-                  >
-                    <FolderOpen className="w-3.5 h-3.5" />
-                    <span>Mở Folder Lưu Trữ PDF</span>
-                  </button>
+                  <div className="flex items-center space-x-3">
+                    {formModalRecord.folderUrl && (
+                      <button
+                        onClick={() => {
+                          const fUrl = String(formModalRecord.folderUrl || '').trim()
+                          const url = fUrl.startsWith('http')
+                            ? fUrl
+                            : `https://drive.google.com/drive/search?q=${encodeURIComponent(fUrl)}`
+                          window.open(url, '_blank')
+                        }}
+                        className="text-xs text-amber-400 hover:text-amber-300 flex items-center space-x-1 cursor-pointer bg-amber-950/40 border border-amber-800/60 px-2.5 py-1 rounded-lg"
+                        title="Mở Thư Mục Google Drive của hồ sơ này"
+                      >
+                        <FolderOpen className="w-3.5 h-3.5" />
+                        <span>Mở Drive ({String(formModalRecord.folderUrl).slice(0, 16)})</span>
+                      </button>
+                    )}
+                    <button
+                      onClick={() => ttsIpc.docOpenFolder()}
+                      className="text-xs text-sky-400 hover:text-sky-300 flex items-center space-x-1 cursor-pointer"
+                    >
+                      <FolderOpen className="w-3.5 h-3.5" />
+                      <span>Mở Folder Lưu Trữ PDF</span>
+                    </button>
+                  </div>
                 </div>
 
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
