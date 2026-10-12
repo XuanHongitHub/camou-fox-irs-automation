@@ -547,9 +547,27 @@
   }
 
   // 6. Load Profile Detail from Fox-Auto Backend
-  async function loadProfileDetail(pid) {
+  async function loadProfileDetail(pid, detectedName = null) {
     try {
-      const res = await fetch(`${BACKEND_BASE}/profile/${pid}`);
+      // Sync select dropdown immediately
+      const select = shadow.getElementById("select-profile");
+      if (select) {
+        let opt = select.querySelector(`option[value="${pid}"]`);
+        if (!opt) {
+          opt = document.createElement("option");
+          opt.value = pid;
+          opt.textContent = `${pid} (Active)`;
+          select.prepend(opt);
+        }
+        select.value = pid;
+      }
+
+      if (detectedName) {
+        shadow.getElementById("txt-name").textContent = detectedName;
+      }
+
+      const url = `${BACKEND_BASE}/profile/${pid}` + (detectedName ? `?name=${encodeURIComponent(detectedName)}` : "");
+      const res = await fetch(url);
       const data = await res.json();
       if (data.code === 200 && data.profile) {
         profileData = data.profile;
@@ -843,15 +861,31 @@
   // 13. AUTO-DETECT ACTIVE PROFILE FROM TABS / WINDOW
   try {
     chrome.runtime?.sendMessage?.({ action: "DETECT_ACTIVE_PROFILE" }, (res) => {
+      let detectedName = null;
       if (res && res.detectedId) {
         console.log("[Fox Copilot] Auto-detected Profile from browser tab/window:", res.detectedId, res.detectedName);
         currentProfileId = res.detectedId;
+        detectedName = res.detectedName;
         localStorage.setItem("fox_selected_profile", currentProfileId);
+
+        // 1. Force update dropdown immediately so it never stays stuck on wrong profile
+        const select = shadow.getElementById("select-profile");
+        if (select) {
+          select.innerHTML = `<option value="${currentProfileId}" selected>${currentProfileId} (Đang mở)</option>`;
+          select.value = currentProfileId;
+        }
+
+        // 2. Update status tag
         const tag = shadow.getElementById("detected-tag");
-        if (tag) tag.textContent = `KHỚP: ${currentProfileId}`;
+        if (tag) {
+          tag.textContent = `KHỚP: ${currentProfileId}`;
+          tag.style.background = "#065f46";
+          tag.style.color = "#34d399";
+          tag.onclick = () => { loadProfileDetail(currentProfileId, detectedName); };
+        }
       }
-      // Initialize Dropdown & Load Data
-      initProfilesDropdown().then(() => loadProfileDetail(currentProfileId));
+      // Initialize Dropdown & Load Data with detectedName
+      initProfilesDropdown().then(() => loadProfileDetail(currentProfileId, detectedName));
     });
   } catch (e) {
     initProfilesDropdown().then(() => loadProfileDetail(currentProfileId));

@@ -720,7 +720,7 @@ export function TtsBotView() {
   // AdsPower Groups & Global Defaults
   const [adspowerGroupsList, setAdspowerGroupsList] = useState<Array<{ group_id: string; group_name: string }>>([])
   const [globalGroupId, setGlobalGroupId] = useState<string>('0')
-  const [globalProfileType, setGlobalProfileType] = useState<'ios' | 'desktop'>('desktop')
+  const [globalProfileType, setGlobalProfileType] = useState<'ios' | 'desktop'>('ios')
   const [globalProxyMode, setGlobalProxyMode] = useState<'hideproxy' | 'no_proxy' | 'custom'>('hideproxy')
 
   // Mail Details Modal (All messages inspection)
@@ -3410,8 +3410,8 @@ export function TtsBotView() {
                       onChange={(e) => handleChangeGlobalProfileType(e.target.value as 'ios' | 'desktop')}
                       className="bg-transparent text-xs text-emerald-400 font-medium focus:outline-none cursor-pointer"
                     >
-                      <option value="desktop" className="bg-slate-900 text-emerald-400">💻 Desktop (Chuẩn Mặc Định)</option>
-                      <option value="ios" className="bg-slate-900 text-slate-200">📱 iOS (iPhone 15 Mobile)</option>
+                      <option value="ios" className="bg-slate-900 text-emerald-400">📱 iOS (iPhone 15 Mobile)</option>
+                      <option value="desktop" className="bg-slate-900 text-slate-200">💻 Desktop</option>
                     </select>
                   </div>
 

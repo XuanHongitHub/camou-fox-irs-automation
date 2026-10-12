@@ -351,12 +351,117 @@ def get_all_profiles_state():
         })
     return {"code": 200, "count": len(result), "profiles": result}
 
+def find_or_create_profile_by_lead(record_id: str, name: Optional[str] = None) -> Optional[Dict[str, Any]]:
+    candidates = [BATCH_PRIME_CSV, FL_611_CSV]
+    found_row = None
+    target_name = (name or "").strip().upper()
+
+    for cpath in candidates:
+        if os.path.exists(cpath):
+            with open(cpath, "r", encoding="utf-8", errors="ignore") as f:
+                reader = csv.reader(f)
+                header = next(reader, None)
+                for row in reader:
+                    if not row or len(row) < 5:
+                        continue
+                    row_name = row[0].strip().upper()
+                    if target_name and (row_name == target_name or target_name in row_name or row_name in target_name):
+                        found_row = row
+                        break
+                    if len(row) > 10 and row[10].strip().upper() == record_id.upper():
+                        found_row = row
+                        break
+            if found_row:
+                break
+
+    if not found_row and not target_name:
+        return None
+
+    if found_row:
+        full_name = found_row[0].strip().upper()
+        ssn = found_row[1].strip()
+        raw_dob = found_row[2].strip()
+        dob = raw_dob.split()[0] if raw_dob else "01/01/1990"
+        if "-" in dob:
+            parts = dob.split("-")
+            if len(parts) == 3 and len(parts[0]) == 4:
+                dob = f"{parts[1]}/{parts[2]}/{parts[0]}"
+        gender = found_row[3].strip() or "F"
+        address = found_row[4].strip()
+        city = found_row[5].strip()
+        state = found_row[6].strip() or "FL"
+        zip_code = found_row[7].strip()
+        phone = found_row[8].strip()
+    else:
+        full_name = target_name
+        ssn = "592645366"
+        dob = "07/18/1986"
+        gender = "F"
+        address = "31 SE 5TH ST APT 1706"
+        city = "MIAMI"
+        state = "FL"
+        zip_code = "33101"
+        phone = "3057424564"
+
+    email = ""
+    cached_otp = ""
+    if os.path.exists(TTS_STATE_JSON):
+        try:
+            with open(TTS_STATE_JSON, "r", encoding="utf-8") as f:
+                st = json.load(f)
+                ms = st.get("mailStatuses", {}).get(record_id, {})
+                email = ms.get("email", "")
+                cached_otp = ms.get("otp", "")
+        except Exception:
+            pass
+
+    ein = "42-5299908"
+    parts = full_name.split()
+    first_name = parts[0] if parts else ""
+    last_name = " ".join(parts[1:]) if len(parts) > 1 else ""
+
+    prof = {
+        "id": record_id,
+        "name": full_name,
+        "first_name": first_name,
+        "last_name": last_name,
+        "email": email or f"{first_name.lower()}{record_id.lower().replace('-', '')}@hotmail.com",
+        "email_pass": "fiwhxlacr0",
+        "oauth_token": "",
+        "shop_pass": "T2!vK8$rJ5@nH1",
+        "phone": phone,
+        "sms_api": "",
+        "ssn": ssn,
+        "ein": ein,
+        "address": address,
+        "city": city,
+        "state": state,
+        "zip": zip_code,
+        "dob": dob,
+        "gender": gender,
+        "dl": generate_state_dl(state, f"{record_id}_{ssn}"),
+        "files": find_profile_files(record_id, full_name, ein, ssn),
+        "cached_mail_otp": cached_otp or "521839"
+    }
+    return prof
+
 @router.get("/profile/{record_id}")
-def get_single_profile_detail(record_id: str):
+def get_single_profile_detail(record_id: str, name: Optional[str] = None):
     sheet_data = load_sheet_profiles()
-    prof = sheet_data.get(record_id)
+    prof = sheet_data.get(record_id.upper())
     if not prof:
-        raise HTTPException(status_code=404, detail=f"Profile {record_id} not found in sheet")
+        alt = record_id.upper().replace("BAM-", "AM-") if record_id.upper().startswith("BAM-") else record_id.upper().replace("AM-", "BAM-")
+        prof = sheet_data.get(alt)
+    if not prof and name:
+        target_name = name.strip().upper()
+        for p in sheet_data.values():
+            if p.get("name", "").strip().upper() == target_name:
+                prof = p
+                break
+    if not prof:
+        prof = find_or_create_profile_by_lead(record_id.upper(), name)
+    if not prof:
+        raise HTTPException(status_code=404, detail=f"Profile {record_id} not found")
     
     live_state = StateManager.get_profile(record_id)
     return {

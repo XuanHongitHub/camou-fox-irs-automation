@@ -107,18 +107,4 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   }
 });
 
-// ==============================================================================
-// AUTO-LOCK MOBILE VIEWPORT (LOCK CTRL + SHIFT + M ACROSS ALL TABS)
-// ==============================================================================
-function enforceMobileWindowSize() {
-  chrome.windows.getCurrent({ populate: false }, (win) => {
-    if (chrome.runtime.lastError || !win) return;
-    // Only safely clamp if window is not maximized/fullscreen and wider than 500px
-    if (win.state === "normal" && win.width > 500) {
-      chrome.windows.update(win.id, { width: 430, height: 932 });
-    }
-  });
-}
-
-// Auto-lock when browser starts up
-enforceMobileWindowSize();
+// Natural window size preserved without forced clamping.

@@ -1710,7 +1710,7 @@ function generateValidDl(stateCode: string, lastName: string = ''): string {
         } catch {}
       }
       const targetGroupId = payload.groupId || globalSettings.defaultGroupId || '0'
-      const isIos = (payload.profileType || globalSettings.profileType || 'desktop') === 'ios'
+      const isIos = (payload.profileType || globalSettings.profileType || 'ios') === 'ios'
 
       const fingerprintConfig: any = {
         language: ['en-US', 'en'],
@@ -1722,7 +1722,7 @@ function generateValidDl(stateCode: string, lastName: string = ''): string {
         fingerprintConfig.random_ua = {
           ua_system_version: ['iOS 17', 'iOS 18']
         }
-        fingerprintConfig.screen_resolution = '390_844'
+        fingerprintConfig.screen_resolution = 'none'
       } else {
         fingerprintConfig.screen_resolution = 'none'
       }
@@ -2176,7 +2176,7 @@ function generateValidDl(stateCode: string, lastName: string = ''): string {
       const registerUrl = 'https://seller-us.tiktok.com/account/register'
       const globalSettings = stateData.globalSettings || {}
       const targetGroupId = globalSettings.defaultGroupId || '0'
-      const isIos = (globalSettings.profileType || 'desktop') === 'ios'
+      const isIos = (globalSettings.profileType || 'ios') === 'ios'
 
       const fingerprintConfig: any = {
         language: ['en-US', 'en'],
@@ -2186,7 +2186,7 @@ function generateValidDl(stateCode: string, lastName: string = ''): string {
         fingerprintConfig.random_ua = {
           ua_system_version: ['iOS 17', 'iOS 18']
         }
-        fingerprintConfig.screen_resolution = '390_844'
+        fingerprintConfig.screen_resolution = 'none'
       } else {
         fingerprintConfig.screen_resolution = 'none'
       }
