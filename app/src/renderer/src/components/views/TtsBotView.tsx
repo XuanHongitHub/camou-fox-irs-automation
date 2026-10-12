@@ -1472,6 +1472,7 @@ export function TtsBotView() {
             }
           })
         )
+        return setups
       }
 
       // Also query current live config from main process
@@ -1485,6 +1486,7 @@ export function TtsBotView() {
     } catch (err) {
       console.error('Failed to load state:', err)
     }
+    return {}
   }, [])
 
   // Save AdsPower Local API Config Handler
@@ -2109,6 +2111,7 @@ export function TtsBotView() {
     }))
 
     const updatedList: RecordItem[] = []
+    let nextSetups = { ...profileSetups }
     try {
       for (let i = 0; i < targetRecords.length; i++) {
         const rec = targetRecords[i]
@@ -2116,7 +2119,7 @@ export function TtsBotView() {
         setSetupModalConfig((prev) => ({
           ...prev,
           progress: {
-            current: i,
+            current: i + 1,
             total: targetRecords.length,
             currentRecordId: rec.id,
             currentStatus: `Đang xử lý ${rec.id} (${rec.fullName || ''}) [Bang: ${rec.state} | Port: ${assignedPortForRec || 'Tự động'}]...`
@@ -2135,8 +2138,8 @@ export function TtsBotView() {
             updatedList.push(res.record)
             setRecords((prev) => prev.map((r) => (r.id === res.record.id ? res.record : r)))
             setActiveRuns((prev) => prev.map((r) => (r.id === res.record.id ? res.record : r)))
-            setProfileSetups((prev) => ({
-              ...prev,
+            nextSetups = {
+              ...nextSetups,
               [res.record.id]: {
                 assignedPort: res.record.assignedPort,
                 adspowerId: res.record.adspowerId,
@@ -2144,7 +2147,8 @@ export function TtsBotView() {
                 readinessScore: res.record.readinessScore,
                 updatedAt: Date.now()
               }
-            }))
+            }
+            setProfileSetups(nextSetups)
           } else {
             updatedList.push(rec)
           }
@@ -2153,6 +2157,7 @@ export function TtsBotView() {
         }
       }
 
+      persistState(undefined, undefined, undefined, undefined, undefined, undefined, nextSetups)
       refreshHideProxyPorts()
       refreshAdsPowerProfiles()
       setSetupModalConfig((prev) => ({
@@ -2162,10 +2167,10 @@ export function TtsBotView() {
         progress: {
           current: targetRecords.length,
           total: targetRecords.length,
-          currentStatus: `Đã hoàn tất toàn bộ ${targetRecords.length} hồ sơ!`
+          currentStatus: `✓ ĐÃ HOÀN TẤT THIẾT LẬP TOÀN BỘ ${targetRecords.length} HỒ SƠ!`
         }
       }))
-      setSetupFeedback(`⚡ Đã hoàn tất Smart Setup cho ${targetRecords.length} hồ sơ!`)
+      setSetupFeedback(`✅ ĐÃ HOÀN TẤT: Smart Setup thành công cho ${targetRecords.length} hồ sơ!`)
     } finally {
       setIsBatchSettingUp(false)
     }
@@ -2369,7 +2374,7 @@ export function TtsBotView() {
   }
 
   // 4. Fetch Google Sheet Records
-  const fetchSheetRecords = useCallback(async (tabToFetch?: string) => {
+  const fetchSheetRecords = useCallback(async (tabToFetch?: string, setupsOverride?: Record<string, any>) => {
     const activeTabName = tabToFetch || (isCustomTab ? customTabInput : selectedSheetTab)
     if (!activeTabName) return
 
@@ -2393,8 +2398,9 @@ export function TtsBotView() {
       })
 
       if (res && res.ok && res.records) {
+        const setupsToUse = setupsOverride || profileSetups
         const merged = res.records.map((r: RecordItem) => {
-          const s = profileSetups[r.id]
+          const s = setupsToUse[r.id]
           if (!s) return r
           return {
             ...r,
@@ -2472,8 +2478,8 @@ export function TtsBotView() {
   // Initial Boot (Automatic load and sheet sync so state is never reset on reload)
   useEffect(() => {
     refreshStatus()
-    loadSavedState().then(() => {
-      fetchSheetRecords()
+    loadSavedState().then((loadedSetups) => {
+      fetchSheetRecords(undefined, loadedSetups)
     })
     refreshInboxFiles()
     refreshHideProxyPorts()
@@ -3587,12 +3593,17 @@ export function TtsBotView() {
                       const isConsumed = !!consumedRecords[r.id]
                       const isSettingUpThis = isSettingUpId === r.id
                       const setupMeta = profileSetups[r.id] || {}
-                      const adsProfile = adspowerProfiles.find(
-                        (p) =>
-                          p.name === r.id ||
+                      const rIdLower = (r.id || '').toLowerCase()
+                      const adsProfile = adspowerProfiles.find((p) => {
+                        const pName = (p.name || '').toLowerCase()
+                        return (
+                          pName === rIdLower ||
+                          pName.startsWith(`${rIdLower} `) ||
+                          pName.startsWith(`${rIdLower}-`) ||
                           p.user_id === r.adspowerId ||
                           (setupMeta.adspowerId && p.user_id === setupMeta.adspowerId)
-                      )
+                        )
+                      })
                       const effectivePort = r.assignedPort || setupMeta.assignedPort
                       const effectiveAdsId = r.adspowerId || setupMeta.adspowerId || adsProfile?.user_id
                       const hasAds = !!effectiveAdsId
@@ -6590,30 +6601,46 @@ export function TtsBotView() {
                     </div>
                   </div>
 
-                  {/* Progress Tracker when Executing */}
-                  {setupModalConfig.isExecuting && setupModalConfig.progress && (
-                    <div className="bg-slate-950 p-4 rounded-xl border border-cyan-800 space-y-2">
-                      <div className="flex justify-between text-xs">
-                        <span className="text-cyan-300 font-semibold flex items-center space-x-2">
-                          <RefreshCw className="w-3.5 h-3.5 animate-spin" />
-                          <span>{setupModalConfig.progress.currentStatus}</span>
+                  {/* Progress Tracker when Executing or Completed */}
+                  {setupModalConfig.progress && (
+                    <div className={`p-4 rounded-xl border space-y-2 transition-all ${
+                      setupModalConfig.isExecuting
+                        ? 'bg-slate-950 border-cyan-800'
+                        : 'bg-emerald-950/60 border-emerald-600/80 shadow-lg shadow-emerald-950/40'
+                    }`}>
+                      <div className="flex justify-between items-center text-xs">
+                        <span className={`font-semibold flex items-center space-x-2 ${
+                          setupModalConfig.isExecuting ? 'text-cyan-300' : 'text-emerald-300'
+                        }`}>
+                          {setupModalConfig.isExecuting ? (
+                            <RefreshCw className="w-4 h-4 animate-spin text-cyan-400" />
+                          ) : (
+                            <CheckCircle2 className="w-5 h-5 text-emerald-400 shrink-0" />
+                          )}
+                          <span className={setupModalConfig.isExecuting ? '' : 'text-sm font-bold'}>
+                            {setupModalConfig.progress.currentStatus}
+                          </span>
                         </span>
-                        <span className="font-mono text-white font-bold">
+                        <span className="font-mono text-white font-bold text-sm">
                           {Math.round(
                             ((setupModalConfig.progress.current || 0) /
-                              setupModalConfig.records.length) *
+                              (setupModalConfig.records.length || 1)) *
                               100
                           )}
-                          %
+                          % ({setupModalConfig.progress.current || 0}/{setupModalConfig.records.length})
                         </span>
                       </div>
-                      <div className="w-full bg-slate-800 rounded-full h-2 overflow-hidden">
+                      <div className="w-full bg-slate-800 rounded-full h-2.5 overflow-hidden">
                         <div
-                          className="bg-gradient-to-r from-amber-500 to-cyan-500 h-2 transition-all duration-300"
+                          className={`h-2.5 transition-all duration-300 ${
+                            setupModalConfig.isExecuting
+                              ? 'bg-gradient-to-r from-amber-500 to-cyan-500'
+                              : 'bg-emerald-500'
+                          }`}
                           style={{
                             width: `${Math.round(
                               ((setupModalConfig.progress.current || 0) /
-                                setupModalConfig.records.length) *
+                                (setupModalConfig.records.length || 1)) *
                                 100
                             )}%`
                           }}
@@ -6718,8 +6745,19 @@ export function TtsBotView() {
                               recStateNorm &&
                               pStateNorm &&
                               recStateNorm === pStateNorm
+                            const recIdLower = (rec.id || '').toLowerCase()
+                            const bulkAdsProfile = adspowerProfiles.find((p) => {
+                              const pName = (p.name || '').toLowerCase()
+                              return (
+                                pName === recIdLower ||
+                                pName.startsWith(`${recIdLower} `) ||
+                                pName.startsWith(`${recIdLower}-`) ||
+                                p.user_id === rec.adspowerId ||
+                                (profileSetups[rec.id]?.adspowerId && p.user_id === profileSetups[rec.id]?.adspowerId)
+                              )
+                            })
                             const hasAds = !!(
-                              rec.adspowerId || profileSetups[rec.id]?.adspowerId
+                              rec.adspowerId || profileSetups[rec.id]?.adspowerId || bulkAdsProfile?.user_id
                             )
 
                             return (
@@ -6862,6 +6900,16 @@ export function TtsBotView() {
                       </span>
                     </Button>
                   </>
+                ) : !setupModalConfig.isExecuting && setupModalConfig.progress && setupModalConfig.progress.current === setupModalConfig.records.length ? (
+                  <Button
+                    variant="primary"
+                    size="sm"
+                    onClick={() => setSetupModalConfig((prev) => ({ ...prev, isOpen: false }))}
+                    className="bg-emerald-600 hover:bg-emerald-500 text-white font-bold shadow px-5"
+                  >
+                    <CheckCircle2 className="w-4 h-4 mr-1.5 text-white" />
+                    <span>Đã Hoàn Tất ({setupModalConfig.records.length} Profiles) - Đóng</span>
+                  </Button>
                 ) : (
                   <Button
                     variant="primary"
@@ -6877,7 +6925,7 @@ export function TtsBotView() {
                     )}
                     <span>
                       {setupModalConfig.isExecuting
-                        ? 'Đang Thiết Lập Hàng Loạt...'
+                        ? `Đang Thiết Lập (${setupModalConfig.progress?.current || 0}/${setupModalConfig.records.length})...`
                         : `Bắt Đầu Thiết Lập (${setupModalConfig.records.length} Profiles)`}
                     </span>
                   </Button>
