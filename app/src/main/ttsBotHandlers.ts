@@ -1,4 +1,4 @@
-import { IpcMain, dialog, shell } from 'electron'
+import { IpcMain, dialog, shell, app } from 'electron'
 import { join, basename, extname } from 'path'
 import { existsSync, mkdirSync, readFileSync, writeFileSync, readdirSync, statSync } from 'fs'
 import { spawn } from 'child_process'
@@ -424,6 +424,55 @@ export function registerTtsBotHandlers(
     const key = getAdsApiKey()
     return { Authorization: `Bearer ${key}`, 'Content-Type': 'application/json' }
   }
+
+  let copilotServiceProcess: any = null
+
+  async function ensureCopilotHubRunning(): Promise<boolean> {
+    try {
+      const res = await fetch('http://127.0.0.1:8787/api/status', { signal: AbortSignal.timeout(1200) })
+      if (res.ok) return true
+    } catch {}
+
+    const serviceScript = join(foxAutoRoot, 'additions', 'tts_bot', 'service.py')
+    if (!existsSync(serviceScript)) return false
+
+    try {
+      const launch = pythonLaunchFn([serviceScript])
+      copilotServiceProcess = spawn(launch.cmd, launch.args, {
+        cwd: join(foxAutoRoot, 'additions', 'tts_bot'),
+        env: { ...process.env, PYTHONUNBUFFERED: '1', PYTHONIOENCODING: 'utf-8' },
+        windowsHide: true,
+        stdio: 'ignore'
+      })
+
+      for (let i = 0; i < 12; i++) {
+        await new Promise((r) => setTimeout(r, 500))
+        try {
+          const res = await fetch('http://127.0.0.1:8787/api/status', { signal: AbortSignal.timeout(800) })
+          if (res.ok) return true
+        } catch {}
+      }
+    } catch (e) {
+      console.error('[Copilot Service] Auto-spawn failed:', e)
+    }
+    return false
+  }
+
+  // Auto-boot Copilot Hub in background when handlers are registered
+  ensureCopilotHubRunning().catch(() => {})
+
+  app.on('will-quit', () => {
+    if (copilotServiceProcess && !copilotServiceProcess.killed) {
+      try {
+        copilotServiceProcess.kill()
+      } catch {}
+    }
+  })
+
+  ipcMain.handle('tts:service:ensure-running', async () => {
+    const online = await ensureCopilotHubRunning()
+    return { ok: online }
+  })
 
   // 1. Status & Health
   ipcMain.handle('tts:status', async () => {
@@ -3162,8 +3211,18 @@ function generateValidDl(stateCode: string, lastName: string = ''): string {
     // ─── 4. Copilot Hub & State Bus (:8787) ───
     const tHubStart = Date.now()
     try {
+      let isOnline = false
+      try {
+        const ping = await fetch(`http://127.0.0.1:8787/api/status`, { signal: AbortSignal.timeout(1000) })
+        if (ping.ok) isOnline = true
+      } catch {}
+
+      if (!isOnline) {
+        await ensureCopilotHubRunning()
+      }
+
       const controller = new AbortController()
-      const to = setTimeout(() => controller.abort(), 2000)
+      const to = setTimeout(() => controller.abort(), 2500)
       const res = await fetch(`http://127.0.0.1:8787/api/status`, { signal: controller.signal })
       clearTimeout(to)
       const data = await res.json()
@@ -3177,7 +3236,7 @@ function generateValidDl(stateCode: string, lastName: string = ''): string {
         latencyMs: tHub,
         message: `Copilot Hub FastAPI Online (${tHub}ms, Zero-Desync Bus sẵn sàng)`,
         detail: { status: data?.status, presets: data?.presets?.length || 0 },
-        fixGuide: 'Dịch vụ Copilot Hub đang chạy tốt. Trên máy mới, chạy file start_tts_service.bat hoặc `python additions/tts_bot/service.py`.'
+        fixGuide: 'Dịch vụ Copilot Hub đang tự động chạy ngầm trong hệ thống.'
       })
     } catch (err: any) {
       checks.push({

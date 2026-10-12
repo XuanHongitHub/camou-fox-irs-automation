@@ -27,6 +27,33 @@
   let profileData = null;
   let isMinimized = false;
 
+  // Safe backend proxy via Background Service Worker (Bypasses Mixed-Content & PNA)
+  async function backendCall(pathOrUrl, options = {}) {
+    const fullUrl = pathOrUrl.startsWith("http") ? pathOrUrl : `${BACKEND_BASE}${pathOrUrl}`;
+    try {
+      const res = await new Promise((resolve, reject) => {
+        chrome.runtime.sendMessage({
+          action: "FETCH_BACKEND",
+          url: fullUrl,
+          options: options
+        }, (response) => {
+          if (chrome.runtime.lastError) {
+            return reject(new Error(chrome.runtime.lastError.message));
+          }
+          if (!response || !response.success) {
+            return reject(new Error(response?.error || `HTTP error ${response?.status || 'unknown'}`));
+          }
+          resolve(response.data);
+        });
+      });
+      return res;
+    } catch (err) {
+      console.warn("[Copilot] Background fetch failed, attempting direct fetch:", err);
+      const resp = await fetch(fullUrl, options);
+      return await resp.json();
+    }
+  }
+
   // 1. Create Shadow DOM Host
   const host = document.createElement("div");
   host.id = "fox-copilot-host";
@@ -642,9 +669,8 @@
       }
 
       const url = `${BACKEND_BASE}/profile/${pid}` + (detectedName ? `?name=${encodeURIComponent(detectedName)}` : "");
-      const res = await fetch(url);
-      const data = await res.json();
-      if (data.code === 200 && data.profile) {
+      const data = await backendCall(url);
+      if (data && data.code === 200 && data.profile) {
         profileData = data.profile;
         const live = data.live_state || {};
 
@@ -682,18 +708,24 @@
           if (codeMail) codeMail.textContent = profileData.cached_mail_otp;
         }
 
-        // Direct Download Buttons
+        // Direct Download Buttons (Routed safely via background.js)
         const btnDlEin = shadow.getElementById("btn-download-ein");
         if (btnDlEin) {
           btnDlEin.onclick = () => {
-            window.open(`${BACKEND_BASE}/download/${currentProfileId}/ein`, "_blank");
+            chrome.runtime.sendMessage({
+              action: "OPEN_URL",
+              url: `${BACKEND_BASE}/download/${currentProfileId}/ein`
+            });
           };
         }
 
         const btnDlBank = shadow.getElementById("btn-download-bank");
         if (btnDlBank) {
           btnDlBank.onclick = () => {
-            window.open(`${BACKEND_BASE}/download/${currentProfileId}/bank`, "_blank");
+            chrome.runtime.sendMessage({
+              action: "OPEN_URL",
+              url: `${BACKEND_BASE}/download/${currentProfileId}/bank`
+            });
           };
         }
 
@@ -731,9 +763,8 @@
   // 7. Load All Profiles for Dropdown (Deduplicated)
   async function initProfilesDropdown() {
     try {
-      const res = await fetch(`${BACKEND_BASE}/profiles`);
-      const data = await res.json();
-      if (data.code === 200 && Array.isArray(data.profiles)) {
+      const data = await backendCall("/profiles");
+      if (data && data.code === 200 && Array.isArray(data.profiles)) {
         const select = shadow.getElementById("select-profile");
         if (!select) return;
 
@@ -774,9 +805,8 @@
     const codeEl = shadow.getElementById("code-mail");
     if (codeEl) codeEl.textContent = "...";
     try {
-      const res = await fetch(`${BACKEND_BASE}/otp/${currentProfileId}?otp_type=mail`);
-      const data = await res.json();
-      if (codeEl) codeEl.textContent = data.mail_otp || "Chưa có";
+      const data = await backendCall(`/otp/${currentProfileId}?otp_type=mail`);
+      if (codeEl) codeEl.textContent = data?.mail_otp || "Chưa có";
     } catch (e) {
       if (codeEl) codeEl.textContent = "Lỗi";
     }
@@ -800,9 +830,8 @@
     const codeEl = shadow.getElementById("code-sms");
     if (codeEl) codeEl.textContent = "...";
     try {
-      const res = await fetch(`${BACKEND_BASE}/otp/${currentProfileId}?otp_type=sms`);
-      const data = await res.json();
-      if (codeEl) codeEl.textContent = data.sms_otp || "Chưa có";
+      const data = await backendCall(`/otp/${currentProfileId}?otp_type=sms`);
+      if (codeEl) codeEl.textContent = data?.sms_otp || "Chưa có";
     } catch (e) {
       if (codeEl) codeEl.textContent = "Lỗi";
     }
@@ -834,7 +863,7 @@
           reader.onload = async () => {
             try {
               const b64 = reader.result.split(",")[1];
-              const resp = await fetch(`${BACKEND_BASE}/archive_upload`, {
+              const rjson = await backendCall("/archive_upload", {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({
@@ -846,8 +875,7 @@
                   round: 1
                 })
               });
-              const rjson = await resp.json();
-              if (rjson.code === 200) {
+              if (rjson && rjson.code === 200) {
                 const box = shadow.getElementById("archive-status-container");
                 if (box) box.innerHTML = `<span style="font-size: 10px; color: #34d399; background: #064e3b; padding: 2px 6px; border-radius: 4px; display: inline-block; margin-top: 4px;">💾 Đã sao lưu: ${file.name.slice(0, 22)}...</span>`;
               }

@@ -105,6 +105,34 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     });
     return true;
   }
+
+  if (message.action === "FETCH_BACKEND") {
+    const { url, options } = message;
+    fetch(url, options || {})
+      .then(async (res) => {
+        const text = await res.text();
+        let data = null;
+        try {
+          data = JSON.parse(text);
+        } catch {
+          data = text;
+        }
+        sendResponse({ success: res.ok, status: res.status, data });
+      })
+      .catch((err) => {
+        console.error("[Watchdog Background] FETCH_BACKEND failed:", err);
+        sendResponse({ success: false, error: err.message || String(err) });
+      });
+    return true;
+  }
+
+  if (message.action === "OPEN_URL") {
+    if (message.url) {
+      chrome.tabs.create({ url: message.url });
+      sendResponse({ success: true });
+    }
+    return true;
+  }
 });
 
 // Natural window size preserved without forced clamping.

@@ -18,6 +18,8 @@ from typing import Optional, List, Dict, Any
 from fastapi import FastAPI, HTTPException, Body
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, FileResponse, HTMLResponse
+from starlette.requests import Request
+from starlette.responses import Response
 import uvicorn
 import requests
 
@@ -38,6 +40,20 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+@app.middleware("http")
+async def add_cors_and_pna_headers(request: Request, call_next):
+    if request.method == "OPTIONS":
+        res = Response(status_code=204)
+        res.headers["Access-Control-Allow-Origin"] = "*"
+        res.headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, DELETE, OPTIONS, HEAD"
+        res.headers["Access-Control-Allow-Headers"] = "*"
+        res.headers["Access-Control-Allow-Private-Network"] = "true"
+        return res
+    res = await call_next(request)
+    res.headers["Access-Control-Allow-Origin"] = "*"
+    res.headers["Access-Control-Allow-Private-Network"] = "true"
+    return res
 
 DEFAULT_ADS_API_KEY = "c9ea96522fba29ee72f2fee511b77868008da729dcdcc201"
 DEFAULT_ADS_BASE = "http://127.0.0.1:50325"
