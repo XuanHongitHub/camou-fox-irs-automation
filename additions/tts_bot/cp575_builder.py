@@ -12,10 +12,10 @@ from typing import Dict, Any, Optional
 import pymupdf
 
 POSSIBLE_TEMPLATES = [
-    Path(r"F:\Herd\fox-auto\templates\CP575.pdf"),
     Path(r"G:\RTTS\dotpsd\templates\CP575.pdf"),
     Path(r"G:\RTTS\19-08-2026\templates\CP575.pdf"),
-    Path(r"G:\RTTS\19-08-2026\ein_irs\_OLD_ARCHIVE_NO_TOUCH\ein_irs_master\PDFs\15-04-2026 - 71 DONE-20260819T025416Z-1-001\Albert Yu - 42-1927237 - 216177698.pdf")
+    Path(r"G:\RTTS\19-08-2026\ein_irs\_OLD_ARCHIVE_NO_TOUCH\ein_irs_master\PDFs\15-04-2026 - 71 DONE-20260819T025416Z-1-001\Albert Yu - 42-1927237 - 216177698.pdf"),
+    Path(r"F:\Herd\fox-auto\templates\CP575.pdf")
 ]
 
 class CP575Builder:
@@ -39,7 +39,7 @@ class CP575Builder:
         output_dir = Path(output_dir)
         output_dir.mkdir(parents=True, exist_ok=True)
 
-        full_name = str(profile.get("fullName") or profile.get("full_name") or "JOHN DOE").strip().upper()
+        full_name = str(profile.get("fullName") or profile.get("full_name") or profile.get("name") or "JOHN DOE").strip().upper()
         biz_name = str(profile.get("businessName") or profile.get("nameLlc") or profile.get("business_name") or full_name).strip().upper()
         addr = str(profile.get("address") or "123 MAIN ST").strip().upper()
         city = str(profile.get("city") or "SPRINGFIELD").strip().upper()
@@ -120,7 +120,12 @@ class CP575Builder:
         page.insert_text(pymupdf.Point(84.0, 279), ein_formatted, fontname=font_name, fontsize=8.5, color=BLACK)
         page.insert_text(pymupdf.Point(316.8, 279), name_control, fontname=font_name, fontsize=8.5, color=BLACK)
 
-        doc.save(str(target_pdf_path))
+        if target_pdf_path.exists():
+            try:
+                target_pdf_path.unlink()
+            except Exception:
+                pass
+        doc.save(str(target_pdf_path), garbage=4, deflate=True)
         doc.close()
 
         return target_pdf_path

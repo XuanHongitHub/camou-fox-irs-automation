@@ -1710,7 +1710,7 @@ function generateValidDl(stateCode: string, lastName: string = ''): string {
         } catch {}
       }
       const targetGroupId = payload.groupId || globalSettings.defaultGroupId || '0'
-      const isIos = (payload.profileType || globalSettings.profileType || 'ios') === 'ios'
+      const isIos = (payload.profileType || globalSettings.profileType || 'desktop') === 'ios'
 
       const fingerprintConfig: any = {
         language: ['en-US', 'en'],
@@ -2176,7 +2176,7 @@ function generateValidDl(stateCode: string, lastName: string = ''): string {
       const registerUrl = 'https://seller-us.tiktok.com/account/register'
       const globalSettings = stateData.globalSettings || {}
       const targetGroupId = globalSettings.defaultGroupId || '0'
-      const isIos = (globalSettings.profileType || 'ios') === 'ios'
+      const isIos = (globalSettings.profileType || 'desktop') === 'ios'
 
       const fingerprintConfig: any = {
         language: ['en-US', 'en'],

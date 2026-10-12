@@ -1,31 +1,36 @@
-// Fox-Auto Copilot & 6-Minute Watchdog - Content Script
-// Injected into TikTok Seller tabs with Shadow DOM Isolation & Real-Time Sync Bus
+// Fox-Auto Copilot - Ultra Fast-Copy & SSOT Document Hub
+// Zero-Flake Pure 1-Click Copy, Pure OTP Resolver, Direct PDF Downloads & Auto-Profile Matching
 
 (function() {
-  if (window.__FOX_COPILOT_INJECTED__) return;
+  // ==============================================================================
+  // 1. SINGLETON GUARDS (Eliminate ALL duplicates across iframes, worlds & reloads)
+  // ==============================================================================
+  // Guard A: Strict Top-Level Frame Enforcement (Never inject UI into iframes)
+  if (window.top !== window.self) {
+    return;
+  }
+
+  // Guard B: In-Memory Context Guard
+  if (window.__FOX_COPILOT_INJECTED__) {
+    return;
+  }
   window.__FOX_COPILOT_INJECTED__ = true;
 
-  // 0. Auto-lock Mobile Viewport (Never lose mobile layout on new tabs)
-  try {
-    let vpMeta = document.querySelector('meta[name="viewport"]');
-    if (!vpMeta) {
-      vpMeta = document.createElement('meta');
-      vpMeta.name = 'viewport';
-      (document.head || document.documentElement).appendChild(vpMeta);
-    }
-    vpMeta.content = 'width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no';
-  } catch (e) {}
+  // Guard C: DOM-Level Host Cleanup (Purge any existing or stale hosts before mounting)
+  const staleHosts = document.querySelectorAll("#fox-copilot-host, [data-fox-copilot-host]");
+  staleHosts.forEach(el => el.remove());
+
+  // Top-level frame verified. Maintain natural page viewport and screen dimensions.
 
   const BACKEND_BASE = "http://127.0.0.1:8787/api/copilot";
-  let currentProfileId = localStorage.getItem("fox_selected_profile") || "AM-01";
+  let currentProfileId = localStorage.getItem("fox_selected_profile") || "BAM-34";
   let profileData = null;
   let isMinimized = false;
-  let remainingWatchdogSeconds = 0;
-  let watchdogInterval = null;
 
   // 1. Create Shadow DOM Host
   const host = document.createElement("div");
   host.id = "fox-copilot-host";
+  host.setAttribute("data-fox-copilot-host", "active");
   document.documentElement.appendChild(host);
   const shadow = host.attachShadow({ mode: "open" });
 
@@ -36,7 +41,7 @@
     pill.innerHTML = `
       <div style="display:flex;align-items:center;gap:8px;">
         <span style="display:inline-block;width:10px;height:10px;background:#10b981;border-radius:50%;box-shadow:0 0 8px #10b981;"></span>
-        <span style="font-weight:700;color:#38bdf8;">Fox Copilot: Đã Tự Động Nạp!</span>
+        <span style="font-weight:700;color:#38bdf8;">Fox Copilot: Đã Sẵn Sàng!</span>
       </div>
       <button id="fox-quick-launch-btn" style="background:#2563eb;color:#fff;border:none;border-radius:8px;padding:8px 14px;font-weight:600;font-size:12px;cursor:pointer;transition:all 0.15s;display:flex;align-items:center;gap:6px;">
         <span>🚀</span> Mở Form Đăng Ký TikTok Shop
@@ -49,13 +54,16 @@
     return;
   }
 
-  // Listen for popup messages
+  // Listen for popup toggle messages
   try {
     chrome.runtime?.onMessage?.addListener((msg) => {
       if (msg.type === "FOX_TOGGLE_PANEL") {
         const panel = shadow.getElementById("copilot-panel");
         if (panel) {
-          panel.classList.toggle("minimized");
+          isMinimized = !panel.classList.contains("minimized");
+          panel.classList.toggle("minimized", isMinimized);
+          const btnMin = shadow.getElementById("btn-toggle-min");
+          if (btnMin) btnMin.textContent = isMinimized ? "+" : "_";
         }
       }
     });
@@ -67,110 +75,103 @@
     * { box-sizing: border-box; margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
     #copilot-panel {
       position: fixed;
-      top: 20px;
-      right: 20px;
+      top: 14px;
+      right: 14px;
       width: 360px;
-      background: #0f172a;
-      color: #f8fafc;
-      border: 1px solid #334155;
-      border-radius: 14px;
-      box-shadow: 0 20px 25px -5px rgba(0,0,0,0.5), 0 8px 10px -6px rgba(0,0,0,0.5);
+      max-width: calc(100vw - 20px);
+      max-height: calc(100vh - 28px);
+      background: #090d16;
+      color: #f1f5f9;
+      border: 1px solid #1e293b;
+      border-radius: 12px;
+      box-shadow: 0 25px 50px -12px rgba(0,0,0,0.7), 0 0 0 1px rgba(255,255,255,0.05);
       z-index: 2147483647;
       overflow: hidden;
       font-size: 12px;
-      transition: width 0.2s, height 0.2s;
+      transition: width 0.2s cubic-bezier(0.4, 0, 0.2, 1), height 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+      touch-action: none;
     }
     #copilot-panel.minimized {
-      width: 220px;
-      height: 44px;
+      width: auto !important;
+      min-width: 170px;
+      max-width: 250px;
+      height: 38px !important;
+      border-radius: 19px !important;
+      box-shadow: 0 6px 16px rgba(0,0,0,0.6);
+      background: #0f172a;
+      border: 1px solid #3b82f6;
+    }
+    #copilot-panel.minimized .body { display: none !important; }
+    #copilot-panel.minimized .header {
+      padding: 6px 12px;
+      border-bottom: none;
+      background: transparent;
+      height: 38px;
+    }
+    @media (max-width: 500px) {
+      #copilot-panel:not(.minimized) {
+        top: 8px;
+        right: 8px;
+        left: 8px;
+        width: auto;
+        max-width: none;
+        max-height: 88vh;
+      }
     }
     .header {
-      background: #1e293b;
-      padding: 10px 14px;
+      background: #0f172a;
+      padding: 9px 12px;
       display: flex;
       align-items: center;
       justify-content: space-between;
-      border-bottom: 1px solid #334155;
+      border-bottom: 1px solid #1e293b;
       cursor: grab;
       user-select: none;
     }
     .header:active { cursor: grabbing; }
-    .title-row { display: flex; align-items: center; gap: 8px; }
-    .badge {
-      font-size: 10px;
-      font-weight: 700;
-      padding: 2px 6px;
-      border-radius: 6px;
-      background: #3b82f6;
-      color: white;
-    }
+    .title-row { display: flex; align-items: center; gap: 6px; }
     .status-badge {
       font-size: 10px;
       font-weight: 700;
-      padding: 2px 6px;
-      border-radius: 12px;
+      padding: 2px 7px;
+      border-radius: 10px;
       background: #10b981;
       color: white;
+      white-space: nowrap;
     }
     .btn-icon {
       background: none;
       border: none;
       color: #94a3b8;
       cursor: pointer;
-      font-size: 14px;
-      padding: 2px;
+      font-size: 13px;
+      padding: 2px 6px;
+      border-radius: 4px;
+      transition: all 0.15s;
     }
-    .btn-icon:hover { color: #f8fafc; }
+    .btn-icon:hover { color: #f8fafc; background: #334155; }
     .body {
-      padding: 12px;
+      padding: 10px 12px;
       display: flex;
       flex-direction: column;
       gap: 10px;
-      max-height: 85vh;
+      max-height: calc(88vh - 44px);
       overflow-y: auto;
     }
-    .minimized .body { display: none; }
     .section-title {
-      font-size: 11px;
+      font-size: 10.5px;
       font-weight: 700;
       text-transform: uppercase;
-      letter-spacing: 0.5px;
+      letter-spacing: 0.6px;
       color: #94a3b8;
-      margin-bottom: 4px;
+      margin-bottom: 3px;
       display: flex;
       justify-content: space-between;
       align-items: center;
     }
-    .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
-    .btn-action {
-      background: #1e293b;
-      border: 1px solid #334155;
-      color: #e2e8f0;
-      padding: 7px 10px;
-      border-radius: 8px;
-      font-weight: 600;
-      font-size: 11px;
-      cursor: pointer;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      gap: 6px;
-      transition: all 0.15s;
-    }
-    .btn-action:hover {
-      background: #2563eb;
-      border-color: #3b82f6;
-      color: white;
-    }
-    .btn-action.primary {
-      background: #2563eb;
-      border-color: #3b82f6;
-      color: white;
-    }
-    .btn-action.primary:hover { background: #1d4ed8; }
     .card-box {
-      background: #1e293b;
-      border: 1px solid #334155;
+      background: #0f172a;
+      border: 1px solid #1e293b;
       border-radius: 8px;
       padding: 8px 10px;
       display: flex;
@@ -181,79 +182,150 @@
       display: flex;
       align-items: center;
       justify-content: space-between;
+      gap: 6px;
     }
     .otp-code {
       font-family: monospace;
-      font-size: 14px;
-      font-weight: 700;
+      font-size: 18px;
+      font-weight: 800;
       color: #38bdf8;
-      background: #0f172a;
-      padding: 3px 8px;
+      letter-spacing: 2.5px;
+      background: #020617;
+      padding: 2px 10px;
       border-radius: 6px;
-      border: 1px dashed #0284c7;
+      border: 1px solid #334155;
+      min-width: 100px;
+      text-align: center;
     }
-    .fast-copy-grid {
+    .btn-sm {
+      background: #1e293b;
+      border: 1px solid #334155;
+      color: #e2e8f0;
+      padding: 4px 8px;
+      border-radius: 6px;
+      font-size: 11px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: all 0.15s;
+      white-space: nowrap;
+    }
+    .btn-sm:hover { background: #334155; color: #fff; }
+    .btn-sm.primary { background: #2563eb; border-color: #3b82f6; color: #fff; }
+    .btn-sm.primary:hover { background: #1d4ed8; }
+
+    /* PURE COPY MATRIX */
+    .copy-grid {
       display: grid;
-      grid-template-columns: repeat(3, 1fr);
+      grid-template-columns: 1fr 1fr;
       gap: 4px;
     }
-    .pill {
+    .copy-row-full {
+      grid-column: span 2;
+    }
+    .copy-btn {
       background: #0f172a;
-      border: 1px solid #334155;
+      border: 1px solid #1e293b;
       color: #cbd5e1;
-      padding: 4px 6px;
+      padding: 6px 8px;
       border-radius: 6px;
-      font-size: 10px;
+      font-size: 11px;
       cursor: pointer;
-      text-align: center;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 6px;
+      transition: all 0.15s ease;
+      text-align: left;
+      user-select: none;
+    }
+    .copy-btn:hover {
+      background: #1e293b;
+      border-color: #475569;
+      color: #fff;
+    }
+    .copy-btn .lbl {
+      color: #94a3b8;
+      font-size: 9.5px;
+      font-weight: 700;
+      text-transform: uppercase;
+      white-space: nowrap;
+    }
+    .copy-btn .val {
+      font-weight: 600;
+      color: #f1f5f9;
       white-space: nowrap;
       overflow: hidden;
       text-overflow: ellipsis;
+      flex: 1;
+      text-align: right;
+    }
+    .copy-btn.copied {
+      background: #065f46 !important;
+      border-color: #10b981 !important;
+      color: #fff !important;
+    }
+    .copy-btn.copied .lbl, .copy-btn.copied .val {
+      color: #fff !important;
+    }
+
+    /* DOWNLOAD BUTTONS */
+    .dl-btn {
+      background: #1e1b4b;
+      border: 1px solid #4338ca;
+      color: #e0e7ff;
+      padding: 7px 10px;
+      border-radius: 6px;
+      font-size: 11px;
+      font-weight: 600;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 6px;
       transition: all 0.15s;
+      text-decoration: none;
     }
-    .pill:hover {
-      background: #334155;
-      color: white;
-      border-color: #64748b;
+    .dl-btn:hover {
+      background: #312e81;
+      border-color: #6366f1;
+      color: #fff;
     }
-    .pill.copied {
-      background: #10b981 !important;
-      color: white !important;
-      border-color: #059669 !important;
+    .dl-btn.bank {
+      background: #064e3b;
+      border-color: #059669;
+      color: #ecfdf5;
+    }
+    .dl-btn.bank:hover {
+      background: #047857;
+      color: #fff;
+    }
+
+    select.profile-select {
+      background: #020617;
+      color: #f8fafc;
+      border: 1px solid #3b82f6;
+      border-radius: 6px;
+      padding: 2px 6px;
+      font-size: 11px;
+      font-weight: 700;
+      outline: none;
+      max-width: 140px;
     }
     .watchdog-banner {
       background: #451a03;
       border: 1px solid #b45309;
       color: #fde68a;
-      padding: 8px 10px;
-      border-radius: 8px;
+      padding: 6px 10px;
+      border-radius: 6px;
       display: flex;
-      flex-direction: column;
-      gap: 4px;
+      justify-content: space-between;
+      align-items: center;
     }
     .watchdog-timer {
       font-family: monospace;
-      font-size: 15px;
+      font-size: 14px;
       font-weight: 800;
       color: #fbbf24;
-    }
-    select.profile-select {
-      background: #0f172a;
-      color: #f8fafc;
-      border: 1px solid #475569;
-      border-radius: 6px;
-      padding: 3px 6px;
-      font-size: 11px;
-      outline: none;
-    }
-    .archive-tag {
-      font-size: 10px;
-      color: #34d399;
-      background: #064e3b;
-      padding: 2px 6px;
-      border-radius: 4px;
-      display: inline-block;
-      margin-top: 4px;
     }
   `;
   shadow.appendChild(styleEl);
@@ -270,88 +342,137 @@
         </select>
         <span class="status-badge" id="panel-status">READY</span>
       </div>
-      <div style="display: flex; gap: 6px;">
+      <div style="display: flex; gap: 4px; align-items: center;">
+        <button class="btn-icon" id="btn-refresh-profile" title="Nạp lại hồ sơ">🔄</button>
         <button class="btn-icon" id="btn-toggle-min" title="Thu nhỏ/Mở rộng">_</button>
       </div>
     </div>
     <div class="body">
       <!-- INFO BANNER -->
-      <div style="background: #1e293b; padding: 6px 10px; border-radius: 6px; border: 1px solid #334155;">
-        <div style="font-weight: 700; color: #fff;" id="txt-name">Đang tải...</div>
-        <div style="font-size: 10px; color: #94a3b8;" id="txt-sub">Đang đồng bộ từ Fox-Auto Backend :8787</div>
+      <div style="background: #0f172a; padding: 7px 10px; border-radius: 8px; border: 1px solid #1e293b; display: flex; justify-content: space-between; align-items: center;">
+        <div>
+          <div style="font-weight: 800; font-size: 13px; color: #fff;" id="txt-name">Đang tải...</div>
+          <div style="font-size: 10px; color: #94a3b8;" id="txt-sub">Đang tự động nhận diện từ Profile AdsPower</div>
+        </div>
+        <span id="detected-tag" style="background: #1e293b; color: #38bdf8; font-size: 9.5px; font-weight: 700; padding: 2px 6px; border-radius: 4px; border: 1px solid #334155;">AUTO MATCH</span>
       </div>
 
-      <!-- WATCHDOG LIVE RADAR -->
+      <!-- WATCHDOG LIVE RADAR (Hidden by default) -->
       <div class="watchdog-banner" id="box-watchdog" style="display: none;">
-        <div style="display: flex; justify-content: space-between; align-items: center;">
-          <span style="font-weight: 700;">⏱️ WATCHDOG 6 PHÚT:</span>
-          <span class="watchdog-timer" id="txt-watchdog-countdown">06:00</span>
+        <div style="display: flex; align-items: center; gap: 6px;">
+          <span>⏱️</span>
+          <span style="font-weight: 700; font-size: 11px;">Watchdog 6 Phút:</span>
         </div>
-        <div style="font-size: 10px;">Quét kết quả 10s/lần • Tự động đóng tab phụ</div>
+        <span class="watchdog-timer" id="txt-watchdog-countdown">06:00</span>
       </div>
 
-      <!-- 1-CLICK AUTOFILL -->
+      <!-- PURE OTP RESOLVER (ĐỌC & COPY MÃ TỨC THÌ) -->
       <div>
-        <div class="section-title">⚡ ĐIỀN FORM TỰ ĐỘNG</div>
-        <div class="grid-2">
-          <button class="btn-action primary" id="btn-fill-step1">📝 Bước 1 (Mail+Pass)</button>
-          <button class="btn-action primary" id="btn-fill-step2">🏢 Bước 2 (Sole Prop)</button>
-        </div>
-        <div style="margin-top: 6px;">
-          <button class="btn-action" style="width: 100%;" id="btn-fill-address">📍 Điền Riêng Địa Chỉ (Street/City/Zip)</button>
-        </div>
-      </div>
-
-      <!-- OTP RESOLVER -->
-      <div>
-        <div class="section-title">🔑 LẤY MÃ OTP TỨC THÌ</div>
+        <div class="section-title">🔑 ĐỌC MÃ OTP THUẦN TÚY</div>
         <div class="card-box">
+          <!-- MAIL OTP -->
           <div class="otp-row">
-            <span>📧 Mail OTP:</span>
+            <span style="font-weight: 600; color: #e2e8f0;">📧 Mail OTP:</span>
             <span class="otp-code" id="code-mail">------</span>
             <div style="display: flex; gap: 4px;">
-              <button class="btn-action" id="btn-get-mail-otp">🔄 Lấy</button>
-              <button class="btn-action" id="btn-fill-mail-otp">Điền</button>
+              <button class="btn-sm" id="btn-get-mail-otp">🔄 Đọc</button>
+              <button class="btn-sm primary" id="btn-copy-mail-otp">📋 Copy</button>
             </div>
           </div>
-          <div class="otp-row" style="border-top: 1px solid #334155; padding-top: 6px;">
-            <span>📱 Phone SMS:</span>
+          <!-- PHONE SMS -->
+          <div class="otp-row" style="border-top: 1px solid #1e293b; padding-top: 6px;">
+            <span style="font-weight: 600; color: #e2e8f0;">📱 SMS OTP:</span>
             <span class="otp-code" id="code-sms">------</span>
             <div style="display: flex; gap: 4px;">
-              <button class="btn-action" id="btn-get-sms-otp">🔄 Lấy</button>
-              <button class="btn-action" id="btn-fill-sms-otp">Điền</button>
+              <button class="btn-sm" id="btn-get-sms-otp">🔄 Đọc</button>
+              <button class="btn-sm primary" id="btn-copy-sms-otp">📋 Copy</button>
             </div>
           </div>
         </div>
       </div>
 
-      <!-- FAST COPY PILLS -->
+      <!-- PURE 1-CLICK FAST-COPY MATRIX -->
       <div>
-        <div class="section-title">📋 KHAY FAST-COPY (BẤM ĐỂ COPY)</div>
-        <div class="fast-copy-grid">
-          <div class="pill" id="pill-name" title="Họ tên">Họ Tên</div>
-          <div class="pill" id="pill-dob" title="Ngày sinh">DOB</div>
-          <div class="pill" id="pill-ssn" title="SSN">SSN</div>
-          <div class="pill" id="pill-ein" title="EIN">EIN</div>
-          <div class="pill" id="pill-street" title="Địa chỉ">Đ/Chỉ</div>
-          <div class="pill" id="pill-city" title="Thành phố">City</div>
-          <div class="pill" id="pill-state" title="Bang">Bang</div>
-          <div class="pill" id="pill-zip" title="Mã Zip">Zip</div>
-          <div class="pill" id="pill-pass" title="Mật khẩu TikTok">Pass</div>
+        <div class="section-title">📋 NÚT COPY THUẦN TÚY (BẤM ĐỂ COPY)</div>
+        <div class="copy-grid">
+          <!-- EMAIL -->
+          <div class="copy-btn copy-row-full" id="btn-copy-email">
+            <span class="lbl">Email:</span>
+            <span class="val" id="val-email">--</span>
+          </div>
+          <!-- PASS -->
+          <div class="copy-btn copy-row-full" id="btn-copy-pass">
+            <span class="lbl">Pass TTS:</span>
+            <span class="val" id="val-pass">--</span>
+          </div>
+
+          <!-- NAME -->
+          <div class="copy-btn" id="btn-copy-fname">
+            <span class="lbl">Tên:</span>
+            <span class="val" id="val-fname">--</span>
+          </div>
+          <div class="copy-btn" id="btn-copy-lname">
+            <span class="lbl">Họ:</span>
+            <span class="val" id="val-lname">--</span>
+          </div>
+          <div class="copy-btn copy-row-full" id="btn-copy-fullname">
+            <span class="lbl">Cả họ tên:</span>
+            <span class="val" id="val-fullname">--</span>
+          </div>
+
+          <!-- IDENTITY -->
+          <div class="copy-btn" id="btn-copy-dob">
+            <span class="lbl">DOB:</span>
+            <span class="val" id="val-dob">--</span>
+          </div>
+          <div class="copy-btn" id="btn-copy-ssn">
+            <span class="lbl">SSN:</span>
+            <span class="val" id="val-ssn">--</span>
+          </div>
+          <div class="copy-btn" id="btn-copy-ein">
+            <span class="lbl">EIN:</span>
+            <span class="val" id="val-ein">--</span>
+          </div>
+          <div class="copy-btn" id="btn-copy-dl">
+            <span class="lbl">DL#:</span>
+            <span class="val" id="val-dl">--</span>
+          </div>
+
+          <!-- ADDRESS -->
+          <div class="copy-btn copy-row-full" id="btn-copy-street">
+            <span class="lbl">Đ/Chỉ:</span>
+            <span class="val" id="val-street">--</span>
+          </div>
+          <div class="copy-btn" id="btn-copy-city">
+            <span class="lbl">City:</span>
+            <span class="val" id="val-city">--</span>
+          </div>
+          <div class="copy-btn" id="btn-copy-state">
+            <span class="lbl">Bang:</span>
+            <span class="val" id="val-state">--</span>
+          </div>
+          <div class="copy-btn" id="btn-copy-zip">
+            <span class="lbl">Zip:</span>
+            <span class="val" id="val-zip">--</span>
+          </div>
+          <div class="copy-btn" id="btn-copy-phone">
+            <span class="lbl">Phone:</span>
+            <span class="val" id="val-phone">--</span>
+          </div>
         </div>
       </div>
 
-      <!-- UPLOAD & ASSETS -->
+      <!-- TẢI / MỞ FILE TỪ SHEET (DIRECT DOWNLOAD & PATHS) -->
       <div>
-        <div class="section-title">📁 TỆP TIN & DRIVER LICENSE</div>
-        <div class="card-box">
-          <div style="display: flex; justify-content: space-between; align-items: center;">
-            <span>DL#: <strong id="txt-dl" style="color: #38bdf8;">--</strong></span>
-            <button class="btn-action" id="btn-copy-dl" style="padding: 2px 6px;">Copy</button>
+        <div class="section-title">📁 TÀI LIỆU SHEET & DRIVER LICENSE</div>
+        <div style="display: flex; flex-direction: column; gap: 5px;">
+          <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 5px;">
+            <button class="dl-btn" id="btn-download-ein">📄 Tải EIN (CP575)</button>
+            <button class="dl-btn bank" id="btn-download-bank">🏦 Tải Sao Kê Bank</button>
           </div>
-          <div style="display: flex; justify-content: space-between; align-items: center; border-top: 1px solid #334155; padding-top: 4px;">
-            <span>Ảnh Trước / Sau:</span>
-            <button class="btn-action" id="btn-copy-front-path" style="padding: 2px 6px;">Copy Path</button>
+          <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 5px;">
+            <button class="btn-sm" id="btn-copy-path-front" style="padding: 6px;">🪪 Copy Path Ảnh Trước</button>
+            <button class="btn-sm" id="btn-copy-path-back" style="padding: 6px;">🪪 Copy Path Ảnh Sau</button>
           </div>
           <div id="archive-status-container"></div>
         </div>
@@ -362,279 +483,377 @@
 
   // 4. Panel Minimizing & Dragging
   const btnMin = shadow.getElementById("btn-toggle-min");
-  btnMin.addEventListener("click", () => {
+  btnMin.addEventListener("click", (e) => {
+    e.stopPropagation();
     isMinimized = !isMinimized;
     panel.classList.toggle("minimized", isMinimized);
     btnMin.textContent = isMinimized ? "+" : "_";
   });
 
-  // 5. Native Value Setter (React Fiber Compatible)
-  function setReactInputValue(input, value) {
-    if (!input) return;
-    input.focus();
-    const nativeSetter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value")?.set ||
-                         Object.getOwnPropertyDescriptor(input.__proto__, "value")?.set;
-    if (nativeSetter) {
-      nativeSetter.call(input, value);
-    } else {
-      input.value = value;
-    }
-    input.dispatchEvent(new Event("input", { bubbles: true }));
-    input.dispatchEvent(new Event("change", { bubbles: true }));
-    input.dispatchEvent(new Event("blur", { bubbles: true }));
-  }
+  // Smooth Dragging on Header
+  let isDragging = false;
+  let startX = 0, startY = 0, initLeft = 0, initTop = 0;
+  const headerEl = shadow.getElementById("panel-header");
 
-  // 6. Fast Copy Helper
-  function copyText(text, el) {
-    if (!text) return;
+  headerEl.addEventListener("mousedown", (e) => {
+    if (e.target.tagName === "SELECT" || e.target.tagName === "BUTTON" || e.target.closest("button") || e.target.closest("select")) {
+      return;
+    }
+    isDragging = true;
+    startX = e.clientX;
+    startY = e.clientY;
+    const rect = panel.getBoundingClientRect();
+    initLeft = rect.left;
+    initTop = rect.top;
+    panel.style.right = "auto";
+    panel.style.left = `${initLeft}px`;
+    panel.style.top = `${initTop}px`;
+    panel.style.transition = "none";
+    e.preventDefault();
+  });
+
+  document.addEventListener("mousemove", (e) => {
+    if (!isDragging) return;
+    const dx = e.clientX - startX;
+    const dy = e.clientY - startY;
+    const maxLeft = Math.max(0, window.innerWidth - panel.offsetWidth);
+    const maxTop = Math.max(0, window.innerHeight - panel.offsetHeight);
+    panel.style.left = `${Math.min(maxLeft, Math.max(0, initLeft + dx))}px`;
+    panel.style.top = `${Math.min(maxTop, Math.max(0, initTop + dy))}px`;
+  });
+
+  document.addEventListener("mouseup", () => {
+    if (isDragging) {
+      isDragging = false;
+      panel.style.transition = "width 0.2s, height 0.2s";
+    }
+  });
+
+  // 5. Fast Copy Helper with Instant Visual Feedback
+  function copyText(text, containerEl) {
+    if (!text || text === "--") return;
     navigator.clipboard.writeText(text).then(() => {
-      if (el) {
-        el.classList.add("copied");
-        const orig = el.textContent;
-        el.textContent = "✓ Copy";
+      if (containerEl) {
+        containerEl.classList.add("copied");
+        const valSpan = containerEl.querySelector(".val");
+        const origVal = valSpan ? valSpan.textContent : containerEl.textContent;
+        if (valSpan) valSpan.textContent = "✓ ĐÃ COPY!";
         setTimeout(() => {
-          el.classList.remove("copied");
-          el.textContent = orig;
+          containerEl.classList.remove("copied");
+          if (valSpan) valSpan.textContent = origVal;
         }, 1200);
       }
     });
   }
 
-  // 7. Load Profile Detail from Fox-Auto Backend
+  // 6. Load Profile Detail from Fox-Auto Backend
   async function loadProfileDetail(pid) {
     try {
       const res = await fetch(`${BACKEND_BASE}/profile/${pid}`);
       const data = await res.json();
-      if (data.code === 200) {
+      if (data.code === 200 && data.profile) {
         profileData = data.profile;
         const live = data.live_state || {};
+
+        // Top info
         shadow.getElementById("txt-name").textContent = profileData.name || pid;
-        shadow.getElementById("txt-sub").textContent = `${profileData.state} • ${profileData.email}`;
+        shadow.getElementById("txt-sub").textContent = `${profileData.state || ""} • ${profileData.email || ""} • SĐT: ${profileData.phone || "--"}`;
         shadow.getElementById("panel-status").textContent = live.status || "READY";
-        shadow.getElementById("txt-dl").textContent = profileData.dl || "Auto Regex";
 
-        // Bind copy pills
-        shadow.getElementById("pill-name").onclick = (e) => copyText(profileData.name, e.target);
-        shadow.getElementById("pill-dob").onclick = (e) => copyText(profileData.dob, e.target);
-        shadow.getElementById("pill-ssn").onclick = (e) => copyText(profileData.ssn, e.target);
-        shadow.getElementById("pill-ein").onclick = (e) => copyText(profileData.ein, e.target);
-        shadow.getElementById("pill-street").onclick = (e) => copyText(profileData.address, e.target);
-        shadow.getElementById("pill-city").onclick = (e) => copyText(profileData.city, e.target);
-        shadow.getElementById("pill-state").onclick = (e) => copyText(profileData.state, e.target);
-        shadow.getElementById("pill-zip").onclick = (e) => copyText(profileData.zip, e.target);
-        shadow.getElementById("pill-pass").onclick = (e) => copyText(profileData.shop_pass, e.target);
+        // Bind copy values to buttons
+        const setCopyBtn = (btnId, valId, value) => {
+          const valEl = shadow.getElementById(valId);
+          const btnEl = shadow.getElementById(btnId);
+          if (valEl) valEl.textContent = value || "--";
+          if (btnEl) btnEl.onclick = () => copyText(value, btnEl);
+        };
 
-        shadow.getElementById("btn-copy-dl").onclick = () => copyText(profileData.dl || "D542-540-90-041-0", null);
-        shadow.getElementById("btn-copy-front-path").onclick = () => copyText(profileData.files.front, null);
+        setCopyBtn("btn-copy-email", "val-email", profileData.email);
+        setCopyBtn("btn-copy-pass", "val-pass", profileData.shop_pass);
+        setCopyBtn("btn-copy-fname", "val-fname", profileData.first_name);
+        setCopyBtn("btn-copy-lname", "val-lname", profileData.last_name);
+        setCopyBtn("btn-copy-fullname", "val-fullname", profileData.name);
+        setCopyBtn("btn-copy-dob", "val-dob", profileData.dob);
+        setCopyBtn("btn-copy-ssn", "val-ssn", profileData.ssn);
+        setCopyBtn("btn-copy-ein", "val-ein", profileData.ein);
+        setCopyBtn("btn-copy-dl", "val-dl", profileData.dl);
+        setCopyBtn("btn-copy-street", "val-street", profileData.address);
+        setCopyBtn("btn-copy-city", "val-city", profileData.city);
+        setCopyBtn("btn-copy-state", "val-state", profileData.state);
+        setCopyBtn("btn-copy-zip", "val-zip", profileData.zip);
+        setCopyBtn("btn-copy-phone", "val-phone", profileData.phone);
+
+        // Pre-fill cached mail OTP if available
+        if (profileData.cached_mail_otp) {
+          const codeMail = shadow.getElementById("code-mail");
+          if (codeMail) codeMail.textContent = profileData.cached_mail_otp;
+        }
+
+        // Direct Download Buttons
+        const btnDlEin = shadow.getElementById("btn-download-ein");
+        if (btnDlEin) {
+          btnDlEin.onclick = () => {
+            window.open(`${BACKEND_BASE}/download/${currentProfileId}/ein`, "_blank");
+          };
+        }
+
+        const btnDlBank = shadow.getElementById("btn-download-bank");
+        if (btnDlBank) {
+          btnDlBank.onclick = () => {
+            window.open(`${BACKEND_BASE}/download/${currentProfileId}/bank`, "_blank");
+          };
+        }
+
+        // Copy Path Buttons
+        const btnCopyFront = shadow.getElementById("btn-copy-path-front");
+        if (btnCopyFront) {
+          btnCopyFront.onclick = () => {
+            const frontPath = profileData.files?.front || `D:\\Download\\FL_FRONT_${pid}_${profileData.name.replace(/ /g, '_')}.jpg`;
+            navigator.clipboard.writeText(frontPath).then(() => {
+              const orig = btnCopyFront.textContent;
+              btnCopyFront.textContent = "✓ ĐÃ COPY PATH!";
+              setTimeout(() => { btnCopyFront.textContent = orig; }, 1200);
+            });
+          };
+        }
+
+        const btnCopyBack = shadow.getElementById("btn-copy-path-back");
+        if (btnCopyBack) {
+          btnCopyBack.onclick = () => {
+            const backPath = profileData.files?.back || `D:\\Download\\FL_BACK_${pid}_${profileData.name.replace(/ /g, '_')}.jpg`;
+            navigator.clipboard.writeText(backPath).then(() => {
+              const orig = btnCopyBack.textContent;
+              btnCopyBack.textContent = "✓ ĐÃ COPY PATH!";
+              setTimeout(() => { btnCopyBack.textContent = orig; }, 1200);
+            });
+          };
+        }
       }
     } catch (e) {
       console.error("[Copilot] Error loading profile detail:", e);
+      shadow.getElementById("txt-sub").textContent = "Lỗi kết nối Backend :8787 (Hãy chạy service.py)";
     }
   }
 
-  // 8. Load All Profiles for Dropdown
+  // 7. Load All Profiles for Dropdown (Deduplicated)
   async function initProfilesDropdown() {
     try {
       const res = await fetch(`${BACKEND_BASE}/profiles`);
       const data = await res.json();
-      if (data.code === 200) {
+      if (data.code === 200 && Array.isArray(data.profiles)) {
         const select = shadow.getElementById("select-profile");
-        select.innerHTML = data.profiles.map(p => `<option value="${p.id}" ${p.id === currentProfileId ? "selected" : ""}>${p.id} (${p.state})</option>`).join("");
-        select.addEventListener("change", (e) => {
+        if (!select) return;
+
+        const seen = new Set();
+        const uniqueProfiles = data.profiles.filter(p => {
+          if (!p.id || seen.has(p.id)) return false;
+          seen.add(p.id);
+          return true;
+        });
+
+        // Ensure currentProfileId is in the list
+        if (!seen.has(currentProfileId)) {
+          uniqueProfiles.unshift({ id: currentProfileId, state: "" });
+        }
+
+        select.innerHTML = uniqueProfiles.map(p => 
+          `<option value="${p.id}" ${p.id === currentProfileId ? "selected" : ""}>${p.id} ${p.state ? '('+p.state+')' : ''}</option>`
+        ).join("");
+
+        select.onchange = (e) => {
           currentProfileId = e.target.value;
           localStorage.setItem("fox_selected_profile", currentProfileId);
           loadProfileDetail(currentProfileId);
-        });
+        };
       }
     } catch (e) {
       console.error("[Copilot] Error initializing profiles:", e);
     }
   }
 
-  // 9. Autofill Implementations
-  shadow.getElementById("btn-fill-step1").addEventListener("click", () => {
-    if (!profileData) return;
-    const emailInput = document.querySelector('input[type="email"], input[placeholder*="email" i], input[name*="email" i]');
-    const passInput = document.querySelector('input[type="password"], input[placeholder*="password" i]');
-    if (emailInput && profileData.email) setReactInputValue(emailInput, profileData.email);
-    if (passInput && profileData.shop_pass) setReactInputValue(passInput, profileData.shop_pass);
+  // 8. Refresh Button Handler
+  shadow.getElementById("btn-refresh-profile")?.addEventListener("click", () => {
+    initProfilesDropdown().then(() => loadProfileDetail(currentProfileId));
   });
 
-  shadow.getElementById("btn-fill-step2").addEventListener("click", () => {
-    if (!profileData) return;
-    // Names
-    const fNameInput = document.querySelector('input[placeholder*="First name" i], input[name*="firstName" i]');
-    const lNameInput = document.querySelector('input[placeholder*="Last name" i], input[name*="lastName" i]');
-    if (fNameInput) setReactInputValue(fNameInput, profileData.first_name);
-    if (lNameInput) setReactInputValue(lNameInput, profileData.last_name);
-
-    // SSN / EIN
-    const ssnInput = document.querySelector('input[placeholder*="SSN" i], input[placeholder*="Social" i]');
-    if (ssnInput) setReactInputValue(ssnInput, profileData.ssn);
-
-    const einInput = document.querySelector('input[placeholder*="EIN" i], input[placeholder*="Tax" i]');
-    if (einInput && profileData.ein) setReactInputValue(einInput, profileData.ein);
-
-    // Business Name
-    const bizInput = document.querySelector('input[placeholder*="Company" i], input[placeholder*="Business" i], input[placeholder*="Legal name" i]');
-    if (bizInput) setReactInputValue(bizInput, profileData.name);
-
-    // Address
-    fillAddressDOM();
-  });
-
-  function fillAddressDOM() {
-    if (!profileData) return;
-    const streetInput = document.querySelector('input[placeholder*="Street" i], input[placeholder*="Address" i], input[name*="address" i]');
-    const cityInput = document.querySelector('input[placeholder*="City" i], input[name*="city" i]');
-    const zipInput = document.querySelector('input[placeholder*="Zip" i], input[placeholder*="Postal" i], input[name*="zip" i]');
-    if (streetInput) setReactInputValue(streetInput, profileData.address);
-    if (cityInput) setReactInputValue(cityInput, profileData.city);
-    if (zipInput) setReactInputValue(zipInput, profileData.zip);
-  }
-
-  shadow.getElementById("btn-fill-address").addEventListener("click", fillAddressDOM);
-
-  // 10. OTP Actions
-  shadow.getElementById("btn-get-mail-otp").addEventListener("click", async () => {
-    shadow.getElementById("code-mail").textContent = "...";
+  // 9. OTP Read & Copy Handlers
+  shadow.getElementById("btn-get-mail-otp")?.addEventListener("click", async () => {
+    const codeEl = shadow.getElementById("code-mail");
+    if (codeEl) codeEl.textContent = "...";
     try {
       const res = await fetch(`${BACKEND_BASE}/otp/${currentProfileId}?otp_type=mail`);
       const data = await res.json();
-      shadow.getElementById("code-mail").textContent = data.mail_otp || "Chưa có";
+      if (codeEl) codeEl.textContent = data.mail_otp || "Chưa có";
     } catch (e) {
-      shadow.getElementById("code-mail").textContent = "Lỗi";
+      if (codeEl) codeEl.textContent = "Lỗi";
     }
   });
 
-  shadow.getElementById("btn-fill-mail-otp").addEventListener("click", () => {
-    const code = shadow.getElementById("code-mail").textContent;
-    if (code && code.length === 6 && !isNaN(code)) {
-      const otpInputs = document.querySelectorAll('input[type="text"][maxlength="1"], input[placeholder*="code" i], input[name*="code" i]');
-      if (otpInputs.length === 6) {
-        otpInputs.forEach((inp, idx) => setReactInputValue(inp, code[idx]));
-      } else if (otpInputs.length > 0) {
-        setReactInputValue(otpInputs[0], code);
-      }
+  shadow.getElementById("btn-copy-mail-otp")?.addEventListener("click", () => {
+    const code = shadow.getElementById("code-mail")?.textContent;
+    if (code && code !== "------" && code !== "..." && code !== "Lỗi" && code !== "Chưa có") {
+      navigator.clipboard.writeText(code).then(() => {
+        const btn = shadow.getElementById("btn-copy-mail-otp");
+        if (btn) {
+          const orig = btn.textContent;
+          btn.textContent = "✓";
+          setTimeout(() => { btn.textContent = orig; }, 1200);
+        }
+      });
     }
   });
 
-  shadow.getElementById("btn-get-sms-otp").addEventListener("click", async () => {
-    shadow.getElementById("code-sms").textContent = "...";
+  shadow.getElementById("btn-get-sms-otp")?.addEventListener("click", async () => {
+    const codeEl = shadow.getElementById("code-sms");
+    if (codeEl) codeEl.textContent = "...";
     try {
       const res = await fetch(`${BACKEND_BASE}/otp/${currentProfileId}?otp_type=sms`);
       const data = await res.json();
-      shadow.getElementById("code-sms").textContent = data.sms_otp || "Chưa có";
+      if (codeEl) codeEl.textContent = data.sms_otp || "Chưa có";
     } catch (e) {
-      shadow.getElementById("code-sms").textContent = "Lỗi";
+      if (codeEl) codeEl.textContent = "Lỗi";
     }
   });
 
-  shadow.getElementById("btn-fill-sms-otp").addEventListener("click", () => {
-    const code = shadow.getElementById("code-sms").textContent;
-    if (code && code.length === 6 && !isNaN(code)) {
-      const otpInput = document.querySelector('input[placeholder*="SMS" i], input[placeholder*="verification code" i]');
-      if (otpInput) setReactInputValue(otpInput, code);
+  shadow.getElementById("btn-copy-sms-otp")?.addEventListener("click", () => {
+    const code = shadow.getElementById("code-sms")?.textContent;
+    if (code && code !== "------" && code !== "..." && code !== "Lỗi" && code !== "Chưa có") {
+      navigator.clipboard.writeText(code).then(() => {
+        const btn = shadow.getElementById("btn-copy-sms-otp");
+        if (btn) {
+          const orig = btn.textContent;
+          btn.textContent = "✓";
+          setTimeout(() => { btn.textContent = orig; }, 1200);
+        }
+      });
     }
   });
 
-  // 11. Auto-Archive File Upload Interceptor
-  document.addEventListener("change", async (event) => {
-    const target = event.target;
-    if (target && target.tagName === "INPUT" && target.type === "file" && target.files && target.files.length > 0) {
-      for (const file of target.files) {
-        const reader = new FileReader();
-        reader.onload = async () => {
-          try {
-            const b64 = reader.result.split(",")[1];
-            const resp = await fetch(`${BACKEND_BASE}/archive_upload`, {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({
-                record_id: currentProfileId,
-                file_name: file.name,
-                file_size: file.size,
-                file_type: file.type,
-                file_base64: b64,
-                round: 1
-              })
-            });
-            const rjson = await resp.json();
-            if (rjson.code === 200) {
-              const box = shadow.getElementById("archive-status-container");
-              box.innerHTML = `<span class="archive-tag">💾 Đã sao lưu: ${file.name.slice(0, 22)}...</span>`;
+  // 10. Auto-Archive File Upload Interceptor (Registered once per document)
+  if (!document.__FOX_AUTO_LISTENERS_BOUND__) {
+    document.__FOX_AUTO_LISTENERS_BOUND__ = true;
+
+    document.addEventListener("change", async (event) => {
+      const target = event.target;
+      if (target && target.tagName === "INPUT" && target.type === "file" && target.files && target.files.length > 0) {
+        for (const file of target.files) {
+          const reader = new FileReader();
+          reader.onload = async () => {
+            try {
+              const b64 = reader.result.split(",")[1];
+              const resp = await fetch(`${BACKEND_BASE}/archive_upload`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                  record_id: currentProfileId,
+                  file_name: file.name,
+                  file_size: file.size,
+                  file_type: file.type,
+                  file_base64: b64,
+                  round: 1
+                })
+              });
+              const rjson = await resp.json();
+              if (rjson.code === 200) {
+                const box = shadow.getElementById("archive-status-container");
+                if (box) box.innerHTML = `<span style="font-size: 10px; color: #34d399; background: #064e3b; padding: 2px 6px; border-radius: 4px; display: inline-block; margin-top: 4px;">💾 Đã sao lưu: ${file.name.slice(0, 22)}...</span>`;
+              }
+            } catch (err) {
+              console.error("[Archive Interceptor] Failed:", err);
             }
-          } catch (err) {
-            console.error("[Archive Interceptor] Failed:", err);
-          }
-        };
-        reader.readAsDataURL(file);
+          };
+          reader.readAsDataURL(file);
+        }
       }
-    }
-  }, true);
+    }, true);
 
-  // 12. Submit Button Observer -> Triggers 6-Minute Watchdog
-  document.addEventListener("click", (e) => {
-    const btn = e.target.closest("button");
-    if (!btn) return;
-    const text = (btn.innerText || "").toLowerCase();
-    if (text.includes("submit") || text.includes("review application")) {
-      console.log("[Copilot] User clicked Submit! Arming 6-minute Watchdog...");
-      arm6MinWatchdog();
-    }
-  }, true);
+    // 11. Submit Button Observer -> Triggers 6-Minute Watchdog
+    document.addEventListener("click", (e) => {
+      const btn = e.target.closest("button");
+      if (!btn) return;
+      const text = (btn.innerText || "").toLowerCase();
+      if (text.includes("submit") || text.includes("review application")) {
+        console.log("[Copilot] User clicked Submit! Arming 6-minute Watchdog...");
+        arm6MinWatchdog();
+      }
+    }, true);
+  }
 
   function arm6MinWatchdog() {
-    shadow.getElementById("box-watchdog").style.display = "block";
-    chrome.runtime.sendMessage({
+    const box = shadow.getElementById("box-watchdog");
+    if (box) box.style.display = "flex";
+    chrome.runtime?.sendMessage?.({
       action: "START_6MIN_WATCHDOG",
       profileId: currentProfileId
     });
   }
 
-  // 13. Watchdog Radar Listener
-  chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
-    if (msg.action === "WATCHDOG_TICK") {
-      const remaining = msg.remainingSeconds;
-      const m = Math.floor(remaining / 60).toString().padStart(2, "0");
-      const s = (remaining % 60).toString().padStart(2, "0");
-      shadow.getElementById("txt-watchdog-countdown").textContent = `${m}:${s}`;
+  // 12. Watchdog Radar Listener
+  try {
+    chrome.runtime?.onMessage?.addListener((msg, sender, sendResponse) => {
+      if (msg.action === "WATCHDOG_TICK") {
+        const remaining = msg.remainingSeconds;
+        const m = Math.floor(remaining / 60).toString().padStart(2, "0");
+        const s = (remaining % 60).toString().padStart(2, "0");
+        const timerEl = shadow.getElementById("txt-watchdog-countdown");
+        if (timerEl) timerEl.textContent = `${m}:${s}`;
 
-      // Scan DOM for status verdict
-      const pageText = document.body.innerText || "";
-      let verdict = null;
+        const pageText = document.body.innerText || "";
+        let verdict = null;
 
-      if (pageText.includes("Edit application") || pageText.includes("Changes requested") || pageText.includes("Action required")) {
-        verdict = "EDIT_AVAILABLE";
-        shadow.getElementById("panel-status").textContent = "EDIT AVAIL";
-        shadow.getElementById("panel-status").style.background = "#10b981";
-        alert(`[${currentProfileId}] 🎉 TIKTOK YÊU CẦU BỔ SUNG! Có nút Edit Application - Sẵn sàng Resubmit!`);
-      } else if (pageText.includes("Appeal") || pageText.includes("appeal") || pageText.includes("Suspended")) {
-        verdict = "APPEAL_TRIGGERED";
-        shadow.getElementById("panel-status").textContent = "DEAD - APPEAL";
-        shadow.getElementById("panel-status").style.background = "#e11d48";
-        alert(`[${currentProfileId}] 🛑 CẢNH BÁO TỬ ẢI: Phát hiện APPEAL REQUIRED! Hệ thống đang thanh lý Profile...`);
-      } else if (pageText.includes("Your shop is approved") || pageText.includes("Active")) {
-        verdict = "APPROVED";
-        shadow.getElementById("panel-status").textContent = "APPROVED";
-        shadow.getElementById("panel-status").style.background = "#8b5cf6";
-      }
-
-      if (verdict) {
-        chrome.runtime.sendMessage({
-          action: "SYNC_DOM_STATE",
-          payload: {
-            record_id: currentProfileId,
-            status: verdict,
-            sub_status: "Detected from DOM Watchdog"
+        if (pageText.includes("Edit application") || pageText.includes("Changes requested") || pageText.includes("Action required")) {
+          verdict = "EDIT_AVAILABLE";
+          const statusEl = shadow.getElementById("panel-status");
+          if (statusEl) {
+            statusEl.textContent = "EDIT AVAIL";
+            statusEl.style.background = "#10b981";
           }
-        });
+        } else if (pageText.includes("Appeal") || pageText.includes("appeal") || pageText.includes("Suspended")) {
+          verdict = "APPEAL_TRIGGERED";
+          const statusEl = shadow.getElementById("panel-status");
+          if (statusEl) {
+            statusEl.textContent = "DEAD - APPEAL";
+            statusEl.style.background = "#e11d48";
+          }
+        } else if (pageText.includes("Your shop is approved") || pageText.includes("Active")) {
+          verdict = "APPROVED";
+          const statusEl = shadow.getElementById("panel-status");
+          if (statusEl) {
+            statusEl.textContent = "APPROVED";
+            statusEl.style.background = "#8b5cf6";
+          }
+        }
+
+        if (verdict) {
+          chrome.runtime?.sendMessage?.({
+            action: "SYNC_DOM_STATE",
+            payload: {
+              record_id: currentProfileId,
+              status: verdict,
+              sub_status: "Detected from DOM Watchdog"
+            }
+          });
+        }
+
+        sendResponse({ status: verdict });
       }
+    });
+  } catch (e) {}
 
-      sendResponse({ status: verdict });
-    }
-  });
-
-  // Init
-  initProfilesDropdown().then(() => loadProfileDetail(currentProfileId));
+  // 13. AUTO-DETECT ACTIVE PROFILE FROM TABS / WINDOW
+  try {
+    chrome.runtime?.sendMessage?.({ action: "DETECT_ACTIVE_PROFILE" }, (res) => {
+      if (res && res.detectedId) {
+        console.log("[Fox Copilot] Auto-detected Profile from browser tab/window:", res.detectedId, res.detectedName);
+        currentProfileId = res.detectedId;
+        localStorage.setItem("fox_selected_profile", currentProfileId);
+        const tag = shadow.getElementById("detected-tag");
+        if (tag) tag.textContent = `KHỚP: ${currentProfileId}`;
+      }
+      // Initialize Dropdown & Load Data
+      initProfilesDropdown().then(() => loadProfileDetail(currentProfileId));
+    });
+  } catch (e) {
+    initProfilesDropdown().then(() => loadProfileDetail(currentProfileId));
+  }
 })();

@@ -14,10 +14,10 @@ from typing import Dict, Any, Optional
 import pymupdf
 
 POSSIBLE_VERIZON_TEMPLATES = [
-    Path(r"F:\Herd\fox-auto\templates\VERIZON.pdf"),
     Path(r"G:\RTTS\dotpsd\templates\VERIZON.pdf"),
     Path(r"G:\RTTS\19-08-2026\templates\VERIZON.pdf"),
-    Path(r"G:\RTTS\19-08-2026\studio_app\backend\template\VERIZON.pdf")
+    Path(r"G:\RTTS\19-08-2026\studio_app\backend\template\VERIZON.pdf"),
+    Path(r"F:\Herd\fox-auto\templates\VERIZON.pdf")
 ]
 
 FONT_CALIBRI = "C:/Windows/Fonts/calibri.ttf"
@@ -45,7 +45,7 @@ class VerizonStatementBuilder:
         output_dir = Path(output_dir)
         output_dir.mkdir(parents=True, exist_ok=True)
 
-        full_name = str(profile.get("fullName") or profile.get("full_name") or "JOHN DOE").strip().upper()
+        full_name = str(profile.get("fullName") or profile.get("full_name") or profile.get("name") or "JOHN DOE").strip().upper()
         addr = str(profile.get("address") or "123 MAIN ST").strip().upper()
         city = str(profile.get("city") or "SPRINGFIELD").strip().upper()
         state = str(profile.get("state") or "CA").strip().upper()
@@ -141,7 +141,12 @@ class VerizonStatementBuilder:
         page.insert_text(pymupdf.Point(410, sy), "Total Amount Due", fontfile=font_calb, fontsize=10, color=BLACK)
         page.insert_text(pymupdf.Point(525, sy), fmt(total_new), fontfile=font_calb, fontsize=10, color=BLACK)
 
-        doc.save(str(target_pdf_path))
+        if target_pdf_path.exists():
+            try:
+                target_pdf_path.unlink()
+            except Exception:
+                pass
+        doc.save(str(target_pdf_path), garbage=4, deflate=True)
         doc.close()
 
         return target_pdf_path

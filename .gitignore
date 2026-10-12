@@ -48,6 +48,8 @@ closedsrc
 bundle
 *.pem
 .DS_store
+runtime/
+additions/tts_bot/runtime/
 
 # Large files
 .venv*

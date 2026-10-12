@@ -15,15 +15,24 @@ import base64
 import requests
 import datetime
 import asyncio
+from pathlib import Path
 from typing import Dict, Any, Optional
 from fastapi import APIRouter, HTTPException, Body, Request
-from fastapi.responses import StreamingResponse, HTMLResponse, JSONResponse
+from fastapi.responses import StreamingResponse, HTMLResponse, JSONResponse, FileResponse
 
 from live_state_manager import StateManager
+from cp575_builder import CP575Builder
+from verizon_builder import VerizonStatementBuilder
 
 router = APIRouter(prefix="/api/copilot", tags=["Copilot"])
 
 CSV_PATH = r"G:\RTTS\dotpsd\runtime\sheet_am.csv"
+CSV_CURRENT_PATH = r"G:\RTTS\dotpsd\runtime\sheet_current.csv"
+MASTER_ACCOUNTS_CSV = r"G:\RTTS\19-08-2026\fox-auto\Master_Accounts_Standardized.csv"
+TTS_STATE_JSON = r"G:\RTTS\19-08-2026\fox-auto\state\tts_state.json"
+BATCH_PRIME_CSV = r"G:\RTTS\19-08-2026\fox-auto\batch_01_prime_1000.csv"
+FL_611_CSV = r"G:\RTTS\19-08-2026\ein_irs\01_STATES_ACTIVE\FL_611.csv"
+
 MS_CLIENT_ID = "9e5f94bc-e8a4-4e73-b8be-63364c29d753"
 
 # State Regex map for DL generation
@@ -41,80 +50,259 @@ STATE_DL_REGEX = {
     "NC": {"prefix": "", "length": 12, "format": "dddddddddddd"}
 }
 
+def generate_state_dl(state: str, seed: str = "") -> str:
+    import hashlib
+    st = (state or "FL").upper()
+    cfg = STATE_DL_REGEX.get(st, {"prefix": "D", "length": 9, "format": "Ddddddddd"})
+    h = hashlib.md5((seed or "DEFAULT_DL").encode()).hexdigest()
+    digits = "".join([c for c in h if c.isdigit()]) + "1234567890123456"
+    prefix = cfg["prefix"]
+    num_len = max(1, cfg["length"] - len(prefix))
+    body = digits[:num_len]
+    if st == "FL" and len(body) >= 12:
+        return f"{prefix}{body[:3]}-{body[3:6]}-{body[6:8]}-{body[8:11]}-{body[11]}"
+    elif st == "CO" and len(body) >= 9:
+        return f"{body[:2]}-{body[2:5]}-{body[5:9]}"
+    elif st == "PA" and len(body) >= 8:
+        return f"{body[:2]} {body[2:5]} {body[5:8]}"
+    elif st == "NY" and len(body) >= 9:
+        return f"{body[:3]} {body[3:6]} {body[6:9]}"
+    return f"{prefix}{body}"
+
+def find_profile_files(pid: str, full_name: str, ein: str = "", ssn: str = "") -> Dict[str, str]:
+    safe_name = full_name.replace(" ", "_")
+    files = {"front": "", "back": "", "bank": "", "ein": ""}
+
+    # 1. Search Bank Statement
+    bank_candidates = [
+        rf"G:\RTTS\19-08-2026\output_bank_statements\{full_name} - {ein} - Chase.pdf",
+        rf"G:\RTTS\19-08-2026\output_bank_statements\{full_name} - {ein} - Verizon.pdf",
+        rf"G:\RTTS\dotpsd\outputs\output_bank_statements\{full_name} - {ein} - Chase.pdf",
+        rf"G:\RTTS\dotpsd\outputs\output_bank_statements\{full_name} - {ein} - Verizon.pdf",
+        rf"D:\Download\{full_name} - {ein} - {ssn}.pdf",
+        rf"D:\Download\{full_name} - Chase.pdf"
+    ]
+    for b in bank_candidates:
+        if b and os.path.exists(b):
+            files["bank"] = b
+            break
+
+    # 2. Search EIN CP575
+    ein_candidates = [
+        rf"G:\RTTS\19-08-2026\output_cp575\{full_name} - {ein} - {ssn}.pdf",
+        rf"G:\RTTS\19-08-2026\fox-auto\additions\tts_bot\runtime\generated_docs\CP575_{pid}.pdf",
+        rf"D:\Download\{full_name} - {ein} - {ssn}.pdf"
+    ]
+    for e in ein_candidates:
+        if e and os.path.exists(e):
+            files["ein"] = e
+            break
+
+    # 3. Search ID Images
+    front_candidates = [
+        rf"D:\Download\FL_FRONT_{pid}_{safe_name}.jpg",
+        rf"D:\Download\FL_FRONT_{pid.replace('BAM-', 'AM-')}_{safe_name}.jpg",
+        rf"G:\RTTS\dotpsd\outputs\{pid}_front.png",
+        rf"G:\RTTS\dotpsd\outputs\{pid.replace('BAM-', 'AM-')}_front.png"
+    ]
+    for f in front_candidates:
+        if f and os.path.exists(f):
+            files["front"] = f
+            break
+
+    back_candidates = [
+        rf"D:\Download\FL_BACK_{pid}_{safe_name}.jpg",
+        rf"D:\Download\FL_BACK_{pid.replace('BAM-', 'AM-')}_{safe_name}.jpg",
+        rf"G:\RTTS\dotpsd\outputs\{pid}_back.png",
+        rf"G:\RTTS\dotpsd\outputs\{pid.replace('BAM-', 'AM-')}_back.png"
+    ]
+    for b in back_candidates:
+        if b and os.path.exists(b):
+            files["back"] = b
+            break
+
+    return files
+
 def load_sheet_profiles() -> Dict[str, Dict[str, Any]]:
-    profiles = {}
-    if not os.path.exists(CSV_PATH):
-        return profiles
+    profiles: Dict[str, Dict[str, Any]] = {}
 
-    with open(CSV_PATH, "r", encoding="utf-8", errors="ignore") as f:
-        reader = csv.reader(f)
-        rows = list(reader)
-        if len(rows) < 2:
-            return profiles
-            
-        headers = [h.strip() for h in rows[0]]
-        for row in rows[1:]:
-            if not row or not row[0].strip():
-                continue
-            pid = row[0].strip()
-            if pid.lower() in ["profile name", "profile", "id"]:
-                continue
-                
-            mail_raw = row[5].strip() if len(row) > 5 else ""
-            mail_parts = mail_raw.split("|")
-            email = mail_parts[0] if len(mail_parts) > 0 else ""
-            email_pass = mail_parts[1] if len(mail_parts) > 1 else ""
-            oauth_token = mail_parts[2] if len(mail_parts) > 2 else ""
+    # 1. Primary Sheet Loader (sheet_current.csv or sheet_am.csv)
+    target_csv = CSV_CURRENT_PATH if os.path.exists(CSV_CURRENT_PATH) else CSV_PATH
+    if os.path.exists(target_csv):
+        with open(target_csv, "r", encoding="utf-8", errors="ignore") as f:
+            reader = csv.reader(f)
+            rows = list(reader)
+            if len(rows) > 1:
+                for row in rows[1:]:
+                    if not row or not row[0].strip():
+                        continue
+                    pid = row[0].strip().upper()
+                    if pid.lower() in ["profile name", "profile", "id"]:
+                        continue
 
-            phone_raw = row[9].strip() if len(row) > 9 else ""
-            phone_parts = phone_raw.split("----")
-            phone = phone_parts[0] if len(phone_parts) > 0 else ""
-            sms_api = phone_parts[1] if len(phone_parts) > 1 else ""
+                    full_name = row[10].strip() if len(row) > 10 else ""
+                    if not full_name:
+                        continue
+                    names = full_name.split()
+                    first_name = names[0] if names else ""
+                    last_name = " ".join(names[1:]) if len(names) > 1 else ""
 
-            full_name = row[10].strip() if len(row) > 10 else ""
-            names = full_name.split()
-            first_name = names[0] if names else ""
-            last_name = " ".join(names[1:]) if len(names) > 1 else ""
+                    mail_raw = row[5].strip() if len(row) > 5 else ""
+                    mail_parts = mail_raw.split("|")
+                    email = mail_parts[0] if len(mail_parts) > 0 else ""
+                    email_pass = mail_parts[1] if len(mail_parts) > 1 else ""
+                    oauth_token = mail_parts[2] if len(mail_parts) > 2 else ""
 
-            ssn = row[11].strip() if len(row) > 11 else ""
-            address = row[12].strip() if len(row) > 12 else ""
-            city = row[13].strip() if len(row) > 13 else ""
-            state = row[14].strip() if len(row) > 14 else "FL"
-            zip_code = row[15].strip() if len(row) > 15 else ""
-            dob = row[16].strip() if len(row) > 16 else ""
-            gender = row[17].strip() if len(row) > 17 else "M"
-            ein = row[18].strip() if len(row) > 18 else ""
+                    phone_raw = row[9].strip() if len(row) > 9 else ""
+                    phone_parts = phone_raw.split("----")
+                    phone = phone_parts[0] if len(phone_parts) > 0 else ""
+                    sms_api = phone_parts[1] if len(phone_parts) > 1 else ""
 
-            # Check files in D:\Download
-            front_doc = rf"D:\Download\FL_FRONT_{pid}_{full_name.replace(' ', '_')}.jpg"
-            back_doc = rf"D:\Download\FL_BACK_{pid}_{full_name.replace(' ', '_')}.jpg"
-            bank_doc = rf"D:\Download\{full_name} - {ein} - {ssn}.pdf"
+                    ssn = row[11].strip() if len(row) > 11 else ""
+                    address = row[12].strip() if len(row) > 12 else ""
+                    city = row[13].strip() if len(row) > 13 else ""
+                    state = row[14].strip() if len(row) > 14 else "FL"
+                    zip_code = row[15].strip() if len(row) > 15 else ""
+                    dob = row[16].strip() if len(row) > 16 else ""
+                    gender = row[17].strip() if len(row) > 17 else "M"
+                    ein = row[18].strip() if len(row) > 18 else ""
 
-            profiles[pid] = {
-                "id": pid,
-                "name": full_name,
-                "first_name": first_name,
-                "last_name": last_name,
-                "email": email,
-                "email_pass": email_pass,
-                "oauth_token": oauth_token,
-                "shop_pass": row[6].strip() if len(row) > 6 else "T2!vK8$rJ5@nH1",
-                "phone": phone,
-                "sms_api": sms_api,
-                "ssn": ssn,
-                "ein": ein,
-                "address": address,
-                "city": city,
-                "state": state,
-                "zip": zip_code,
-                "dob": dob,
-                "gender": gender,
-                "files": {
-                    "front": front_doc if os.path.exists(front_doc) else "",
-                    "back": back_doc if os.path.exists(back_doc) else "",
-                    "bank": bank_doc if os.path.exists(bank_doc) else ""
-                }
-            }
+                    dl_val = generate_state_dl(state, f"{pid}_{ssn}")
+                    files = find_profile_files(pid, full_name, ein, ssn)
+
+                    prof_obj = {
+                        "id": pid,
+                        "name": full_name,
+                        "first_name": first_name,
+                        "last_name": last_name,
+                        "email": email,
+                        "email_pass": email_pass,
+                        "oauth_token": oauth_token,
+                        "shop_pass": row[6].strip() if len(row) > 6 and row[6].strip() else "T2!vK8$rJ5@nH1",
+                        "phone": phone,
+                        "sms_api": sms_api,
+                        "ssn": ssn,
+                        "ein": ein,
+                        "address": address,
+                        "city": city,
+                        "state": state,
+                        "zip": zip_code,
+                        "dob": dob,
+                        "gender": gender,
+                        "dl": dl_val,
+                        "files": files
+                    }
+                    profiles[pid] = prof_obj
+
+                    # Automatically alias BAM-XX <-> AM-XX
+                    if pid.startswith("AM-"):
+                        bam_id = pid.replace("AM-", "BAM-")
+                        bam_copy = dict(prof_obj)
+                        bam_copy["id"] = bam_id
+                        profiles[bam_id] = bam_copy
+
+    # 2. Master Accounts Standardized (YNP-01..15, LLNN, VNLC, PTML)
+    if os.path.exists(MASTER_ACCOUNTS_CSV):
+        try:
+            with open(MASTER_ACCOUNTS_CSV, "r", encoding="utf-8", errors="ignore") as f:
+                reader = csv.reader(f)
+                rows = list(reader)
+                if len(rows) > 1:
+                    for row in rows[1:]:
+                        if not row or len(row) < 20 or not row[1].strip():
+                            continue
+                        pid = row[1].strip().upper()
+                        full_name = row[20].strip()
+                        if not full_name:
+                            continue
+                        last_name = row[21].strip()
+                        first_name = row[22].strip()
+                        dob = row[23].strip()
+                        gender = row[24].strip()
+                        ssn = row[25].strip()
+                        dl_val = row[26].strip() or generate_state_dl(row[30].strip() if len(row)>30 else "FL", f"{pid}_{ssn}")
+                        address = row[28].strip() if len(row) > 28 else ""
+                        city = row[29].strip() if len(row) > 29 else ""
+                        state = row[30].strip() if len(row) > 30 else "FL"
+                        zip_code = row[31].strip() if len(row) > 31 else ""
+                        ein = row[33].strip() if len(row) > 33 else ""
+                        email = row[8].strip() if len(row) > 8 else ""
+                        shop_pass = row[9].strip() if len(row) > 9 and row[9].strip() else "T2!vK8$rJ5@nH1"
+                        phone = row[13].strip() if len(row) > 13 else ""
+                        sms_api = row[14].strip() if len(row) > 14 else ""
+
+                        files = find_profile_files(pid, full_name, ein, ssn)
+                        profiles[pid] = {
+                            "id": pid,
+                            "name": full_name,
+                            "first_name": first_name or full_name.split()[0],
+                            "last_name": last_name or (" ".join(full_name.split()[1:]) if len(full_name.split()) > 1 else ""),
+                            "email": email,
+                            "email_pass": "",
+                            "oauth_token": "",
+                            "shop_pass": shop_pass,
+                            "phone": phone,
+                            "sms_api": sms_api,
+                            "ssn": ssn,
+                            "ein": ein,
+                            "address": address,
+                            "city": city,
+                            "state": state,
+                            "zip": zip_code,
+                            "dob": dob,
+                            "gender": gender or "M",
+                            "dl": dl_val,
+                            "files": files
+                        }
+        except Exception as e:
+            print(f"[Copilot Load] Error loading Master Accounts: {e}")
+
+    # 3. Integrate BAM Profiles from tts_state.json & Prime / FL Data
+    # Specifically resolve BAM-34 (MIRIAM BEJERANO) and similar profiles
+    if os.path.exists(TTS_STATE_JSON):
+        try:
+            with open(TTS_STATE_JSON, "r", encoding="utf-8", errors="ignore") as f:
+                tts_data = json.load(f)
+                mail_statuses = tts_data.get("mailStatuses", {})
+
+                # Check if BAM-34 needs mapping
+                if "BAM-34" in mail_statuses and "BAM-34" not in profiles:
+                    # Map BAM-34 to MIRIAM BEJERANO (from batch_01_prime_1000 / FL_611)
+                    bam_mail = mail_statuses["BAM-34"].get("email", "joseandresreonna70@hotmail.com")
+                    bam_otp = mail_statuses["BAM-34"].get("otp", "")
+                    profiles["BAM-34"] = {
+                        "id": "BAM-34",
+                        "name": "MIRIAM BEJERANO",
+                        "first_name": "MIRIAM",
+                        "last_name": "BEJERANO",
+                        "email": bam_mail,
+                        "email_pass": "fiwhxlacr0",
+                        "oauth_token": "",
+                        "shop_pass": "T2!vK8$rJ5@nH1",
+                        "phone": "7864161526",
+                        "sms_api": "",
+                        "ssn": "771706761",
+                        "ein": "42-5291905",
+                        "address": "8800 SW 8TH ST APT 403",
+                        "city": "MIAMI",
+                        "state": "FL",
+                        "zip": "33101",
+                        "dob": "04/14/1986",
+                        "gender": "F",
+                        "dl": generate_state_dl("FL", "BAM-34_771706761"),
+                        "files": find_profile_files("BAM-34", "MIRIAM BEJERANO", "42-5291905", "771706761")
+                    }
+
+                # Update live emails & OTPs from mailStatuses into existing profiles
+                for b_pid, b_info in mail_statuses.items():
+                    if b_pid in profiles:
+                        if b_info.get("email"):
+                            profiles[b_pid]["email"] = b_info["email"]
+                        if b_info.get("otp"):
+                            profiles[b_pid]["cached_mail_otp"] = b_info["otp"]
+        except Exception as e:
+            print(f"[Copilot Load] Error integrating tts_state.json: {e}")
+
     return profiles
 
 # ==============================================================================
@@ -280,6 +468,10 @@ def fetch_otp(record_id: str, otp_type: str = "all"):
         except Exception as e:
             print(f"[OTP SMS] Error for {record_id}: {e}")
 
+    # Fallback to cached mail OTP if live read is empty
+    if not mail_otp and prof.get("cached_mail_otp"):
+        mail_otp = prof["cached_mail_otp"]
+
     return {
         "code": 200,
         "record_id": record_id,
@@ -287,6 +479,76 @@ def fetch_otp(record_id: str, otp_type: str = "all"):
         "sms_otp": sms_otp,
         "time": datetime.datetime.now().strftime("%H:%M:%S")
     }
+
+def get_output_docs_dir() -> Path:
+    candidates = [
+        Path(r"G:\RTTS\dotpsd\runtime\generated_docs"),
+        Path(os.environ.get("LOCALAPPDATA", str(Path.home()))) / "fox-auto" / "generated_docs",
+        Path(r"G:\RTTS\19-08-2026\fox-auto\additions\tts_bot\runtime\generated_docs"),
+    ]
+    import shutil
+    for cand in candidates:
+        try:
+            cand.mkdir(parents=True, exist_ok=True)
+            real_cand = Path(os.path.realpath(str(cand)))
+            _, _, free = shutil.disk_usage(real_cand.anchor)
+            if free > 50 * 1024 * 1024:
+                return cand
+        except Exception:
+            continue
+    fallback = Path(os.environ.get("LOCALAPPDATA", str(Path.home()))) / "fox-auto" / "generated_docs"
+    fallback.mkdir(parents=True, exist_ok=True)
+    return fallback
+
+@router.get("/download/{record_id}/{doc_type}")
+def download_document(record_id: str, doc_type: str):
+    sheet_data = load_sheet_profiles()
+    prof = sheet_data.get(record_id.upper())
+    if not prof:
+        alt = record_id.upper().replace("BAM-", "AM-") if record_id.upper().startswith("BAM-") else record_id.upper().replace("AM-", "BAM-")
+        prof = sheet_data.get(alt)
+    if not prof:
+        raise HTTPException(status_code=404, detail=f"Profile {record_id} not found")
+
+    full_name = prof.get("name", "PROFILE")
+    safe_name = full_name.replace(" ", "_")
+    out_dir = get_output_docs_dir()
+
+    if doc_type.lower() in ["ein", "cp575"]:
+        existing_ein = prof.get("files", {}).get("ein")
+        if existing_ein and os.path.exists(existing_ein):
+            return FileResponse(existing_ein, media_type="application/pdf", filename=os.path.basename(existing_ein))
+        try:
+            builder = CP575Builder()
+            pdf_path = builder.build(prof, out_dir)
+            return FileResponse(str(pdf_path), media_type="application/pdf", filename=pdf_path.name)
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"Failed to generate CP575: {e}")
+
+    elif doc_type.lower() in ["bank", "statement"]:
+        existing_bank = prof.get("files", {}).get("bank")
+        if existing_bank and os.path.exists(existing_bank):
+            return FileResponse(existing_bank, media_type="application/pdf", filename=os.path.basename(existing_bank))
+        try:
+            vbuilder = VerizonStatementBuilder()
+            vpath = vbuilder.build(prof, out_dir)
+            return FileResponse(str(vpath), media_type="application/pdf", filename=vpath.name)
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"Failed to generate Statement: {e}")
+
+    elif doc_type.lower() in ["front", "id_front"]:
+        front_file = prof.get("files", {}).get("front")
+        if front_file and os.path.exists(front_file):
+            return FileResponse(front_file, media_type="image/jpeg", filename=os.path.basename(front_file))
+        raise HTTPException(status_code=404, detail="Front ID image not found")
+
+    elif doc_type.lower() in ["back", "id_back"]:
+        back_file = prof.get("files", {}).get("back")
+        if back_file and os.path.exists(back_file):
+            return FileResponse(back_file, media_type="image/jpeg", filename=os.path.basename(back_file))
+        raise HTTPException(status_code=404, detail="Back ID image not found")
+
+    raise HTTPException(status_code=400, detail="Invalid doc_type. Use ein, bank, front, or back.")
 
 # ==============================================================================
 # REAL-TIME SSE STREAM (ZERO LAG STATUS BUS)

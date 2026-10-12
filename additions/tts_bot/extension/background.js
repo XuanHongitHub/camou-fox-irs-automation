@@ -70,16 +70,39 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return true;
   }
 
-  if (message.action === "SYNC_DOM_STATE") {
-    // Forward directly to Backend Live Bus
-    fetch(`${BACKEND_BASE}/state_update`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(message.payload)
-    })
-    .then(r => r.json())
-    .then(data => sendResponse({ success: true, data }))
-    .catch(err => sendResponse({ success: false, error: err.toString() }));
+  if (message.action === "DETECT_ACTIVE_PROFILE") {
+    chrome.tabs.query({ currentWindow: true }, (tabs) => {
+      let detectedId = null;
+      let detectedName = null;
+
+      // 1. Scan tab titles (e.g. "BAM-34 - MIRIAM BEJERANO", "AM-01", "YNP-02", "BCN-01")
+      for (const t of tabs) {
+        const title = (t.title || "").trim();
+        const match = title.match(/\b([A-Za-z0-9]+-\d+)\b/i);
+        if (match) {
+          detectedId = match[1].toUpperCase();
+          const parts = title.split(/\s*[-–—]\s*/);
+          if (parts.length > 1) {
+            detectedName = parts[1].trim();
+          }
+          break;
+        }
+      }
+
+      // 2. Scan URLs for profile serial or name
+      if (!detectedId) {
+        for (const t of tabs) {
+          const u = t.url || "";
+          const m = u.match(/(?:serial|profile_id|name)=([^&]+)/i);
+          if (m) {
+            detectedId = decodeURIComponent(m[1]).trim().toUpperCase();
+            break;
+          }
+        }
+      }
+
+      sendResponse({ detectedId, detectedName });
+    });
     return true;
   }
 });
@@ -90,8 +113,8 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 function enforceMobileWindowSize() {
   chrome.windows.getCurrent({ populate: false }, (win) => {
     if (chrome.runtime.lastError || !win) return;
-    // If window is wider than 500px, clamp it to phone viewport (430 x 932 - iPhone 15 Pro Max)
-    if (win.width > 500) {
+    // Only safely clamp if window is not maximized/fullscreen and wider than 500px
+    if (win.state === "normal" && win.width > 500) {
       chrome.windows.update(win.id, { width: 430, height: 932 });
     }
   });
@@ -99,8 +122,3 @@ function enforceMobileWindowSize() {
 
 // Auto-lock when browser starts up
 enforceMobileWindowSize();
-
-// Auto-lock whenever any new tab is created
-chrome.tabs.onCreated.addListener(() => {
-  enforceMobileWindowSize();
-});
