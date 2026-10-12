@@ -59,11 +59,17 @@
     chrome.runtime?.onMessage?.addListener((msg) => {
       if (msg.type === "FOX_TOGGLE_PANEL") {
         const panel = shadow.getElementById("copilot-panel");
+        const pill = shadow.getElementById("fox-reopen-pill");
         if (panel) {
-          isMinimized = !panel.classList.contains("minimized");
-          panel.classList.toggle("minimized", isMinimized);
-          const btnMin = shadow.getElementById("btn-toggle-min");
-          if (btnMin) btnMin.textContent = isMinimized ? "+" : "_";
+          if (panel.style.display === "none") {
+            panel.style.display = "block";
+            if (pill) pill.style.display = "none";
+            localStorage.removeItem("fox_copilot_closed");
+          } else {
+            panel.style.display = "none";
+            if (pill) pill.style.display = "flex";
+            localStorage.setItem("fox_copilot_closed", "true");
+          }
         }
       }
     });
@@ -150,6 +156,35 @@
       transition: all 0.15s;
     }
     .btn-icon:hover { color: #f8fafc; background: #334155; }
+    .btn-icon.close { color: #ef4444; font-weight: 700; font-size: 14px; }
+    .btn-icon.close:hover { color: #fff; background: #dc2626; }
+
+    /* FLOATING REOPEN PILL */
+    #fox-reopen-pill {
+      position: fixed;
+      bottom: 24px;
+      right: 24px;
+      width: 42px;
+      height: 42px;
+      background: #0f172a;
+      border: 2px solid #3b82f6;
+      border-radius: 50%;
+      color: #fff;
+      display: none;
+      align-items: center;
+      justify-content: center;
+      font-size: 20px;
+      cursor: pointer;
+      box-shadow: 0 8px 24px rgba(0,0,0,0.6);
+      z-index: 2147483647;
+      transition: transform 0.2s, box-shadow 0.2s, border-color 0.2s;
+      user-select: none;
+    }
+    #fox-reopen-pill:hover {
+      transform: scale(1.1);
+      border-color: #60a5fa;
+      box-shadow: 0 12px 28px rgba(37,99,235,0.4);
+    }
     .body {
       padding: 10px 12px;
       display: flex;
@@ -345,6 +380,7 @@
       <div style="display: flex; gap: 4px; align-items: center;">
         <button class="btn-icon" id="btn-refresh-profile" title="Nạp lại hồ sơ">🔄</button>
         <button class="btn-icon" id="btn-toggle-min" title="Thu nhỏ/Mở rộng">_</button>
+        <button class="btn-icon close" id="btn-close-panel" title="Tắt Copilot hoàn toàn (Đóng)">✕</button>
       </div>
     </div>
     <div class="body">
@@ -480,6 +516,45 @@
     </div>
   `;
   shadow.appendChild(panel);
+
+  // Floating Reopen Trigger Pill
+  const reopenPill = document.createElement("div");
+  reopenPill.id = "fox-reopen-pill";
+  reopenPill.title = "Mở lại Fox Copilot";
+  reopenPill.innerHTML = `<span>⚡</span>`;
+  shadow.appendChild(reopenPill);
+
+  // Function: Hide completely / Show panel
+  function closeCopilotPanel() {
+    panel.style.display = "none";
+    reopenPill.style.display = "flex";
+    localStorage.setItem("fox_copilot_closed", "true");
+  }
+
+  function openCopilotPanel() {
+    panel.style.display = "block";
+    reopenPill.style.display = "none";
+    localStorage.removeItem("fox_copilot_closed");
+  }
+
+  // Restore closed state if previously closed by user
+  if (localStorage.getItem("fox_copilot_closed") === "true") {
+    closeCopilotPanel();
+  }
+
+  // Reopen Pill Click Handler
+  reopenPill.addEventListener("click", () => {
+    openCopilotPanel();
+  });
+
+  // Close Button Click Handler
+  const btnClose = shadow.getElementById("btn-close-panel");
+  if (btnClose) {
+    btnClose.addEventListener("click", (e) => {
+      e.stopPropagation();
+      closeCopilotPanel();
+    });
+  }
 
   // 4. Panel Minimizing & Dragging
   const btnMin = shadow.getElementById("btn-toggle-min");

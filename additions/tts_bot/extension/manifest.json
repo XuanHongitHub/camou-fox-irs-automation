@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Fox-Auto Copilot & 6-Min Watchdog",
-  "version": "2.1.0",
+  "version": "2.1.1",
   "description": "Smart Assistant for TikTok Seller Onboarding with Single Source of Truth, Instant OTP, Auto Form Fill & 6-Minute Audit Watchdog.",
   "permissions": [
     "tabs",
