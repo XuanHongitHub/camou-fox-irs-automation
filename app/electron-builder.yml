@@ -24,6 +24,10 @@ extraResources:
     to: "additions"
   - from: "../start_tts_service.bat"
     to: "start_tts_service.bat"
+  - from: "../start_tts_web_tunnel.bat"
+    to: "start_tts_web_tunnel.bat"
+  - from: "../run_tts_tunnel.ps1"
+    to: "run_tts_tunnel.ps1"
 
 
 win:
