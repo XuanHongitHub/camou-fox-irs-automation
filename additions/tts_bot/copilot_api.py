@@ -338,16 +338,27 @@ def get_all_profiles_state():
 
         result.append({
             "id": pid,
-            "name": s_info["name"],
-            "state": s_info["state"],
-            "email": s_info["email"],
-            "phone": s_info["phone"],
+            "name": s_info.get("name", ""),
+            "first_name": s_info.get("first_name", ""),
+            "last_name": s_info.get("last_name", ""),
+            "state": s_info.get("state", "FL"),
+            "email": s_info.get("email", ""),
+            "email_pass": s_info.get("email_pass", ""),
+            "shop_pass": s_info.get("shop_pass", "T2!vK8$rJ5@nH1"),
+            "phone": s_info.get("phone", ""),
+            "ssn": s_info.get("ssn", ""),
+            "ein": s_info.get("ein", ""),
+            "dob": s_info.get("dob", ""),
+            "address": s_info.get("address", ""),
+            "city": s_info.get("city", ""),
+            "zip": s_info.get("zip", ""),
+            "dl": s_info.get("dl", ""),
             "status": status,
             "sub_status": sub_status,
             "updated_at": updated_at,
             "uploads_count": len(uploads),
             "watchdog": watchdog,
-            "has_files": bool(s_info["files"]["front"] and s_info["files"]["back"])
+            "has_files": bool(s_info.get("files", {}).get("front") and s_info.get("files", {}).get("back"))
         })
     return {"code": 200, "count": len(result), "profiles": result}
 
@@ -509,19 +520,81 @@ def archive_uploaded_file(payload: Dict[str, Any] = Body(...)):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+def extract_clean_otp(content: Any) -> tuple:
+    """
+    Extracts pure numeric verification code (4-8 digits) and returns (clean_code, raw_text).
+    Handles:
+    - Pure numbers: '4764', '829103'
+    - Text with code: '[TikTok] Your verification code is 4764, it will expire in 5 minutes...'
+    - Vietnamese: 'Mã xác minh TikTok của bạn là 4764, có hiệu lực...'
+    - Prefixes/Suffixes: 'code: 4764', 'OTP 4764', '4764 is your code'
+    - Ignores minute numbers (5 minutes) and years (2024..2027).
+    """
+    if not content:
+        return None, None
+    raw_str = str(content).strip()
+    if not raw_str:
+        return None, None
+
+    # 1. Direct digits string
+    if re.match(r"^\d{4,8}$", raw_str):
+        return raw_str, raw_str
+
+    # 2. Contextual keyword patterns (highest priority)
+    patterns = [
+        r"(?:verification code|security code|mã xác minh|mã xác thực|mã code|mã|otp|code|pin)\s*(?:is|là|:|-)?\s*(\d{4,8})",
+        r"(\d{4,8})\s*(?:is your|là mã|is the)",
+        r"(?:use|nhập)\s*(\d{4,8})",
+    ]
+    for p in patterns:
+        m = re.search(p, raw_str, re.IGNORECASE)
+        if m:
+            clean = re.sub(r"\D", "", m.group(1))
+            if 4 <= len(clean) <= 8:
+                return clean, raw_str
+
+    # 3. Standalone 6-digit codes (skip years like 19xx, 202x)
+    c6 = re.findall(r"\b\d{6}\b", raw_str)
+    if c6:
+        valid6 = [c for c in c6 if not (c.startswith("202") or c.startswith("19"))]
+        if valid6:
+            return valid6[0], raw_str
+        return c6[0], raw_str
+
+    # 4. Standalone 4-8 digit codes (skip years like 2024..2027, 19xx)
+    c4 = re.findall(r"\b\d{4,8}\b", raw_str)
+    if c4:
+        valid = [c for c in c4 if not (c.startswith("202") or c.startswith("19"))]
+        if valid:
+            return valid[0], raw_str
+
+    return None, raw_str
+
 @router.get("/otp/{record_id}")
 def fetch_otp(record_id: str, otp_type: str = "all"):
     """
     Live OTP Resolver for Email and SMS.
-    Returns immediately with latest 6-digit code.
+    Returns immediately with latest pure numeric code and raw text.
+    Supports BAM- / AM- aliases and fallback search.
     """
     sheet_data = load_sheet_profiles()
-    prof = sheet_data.get(record_id)
+    req_id = record_id.strip().upper()
+    prof = sheet_data.get(req_id)
     if not prof:
-        raise HTTPException(status_code=404, detail="Profile not found")
+        alt = req_id.replace("BAM-", "AM-") if req_id.startswith("BAM-") else req_id.replace("AM-", "BAM-")
+        prof = sheet_data.get(alt)
+    if not prof:
+        for k, v in sheet_data.items():
+            if k.upper() == req_id or k.upper().replace("-", "") == req_id.replace("-", ""):
+                prof = v
+                break
+    if not prof:
+        raise HTTPException(status_code=404, detail=f"Profile {record_id} not found")
 
     mail_otp = None
     sms_otp = None
+    raw_sms = None
+    raw_mail = None
 
     # 1. Mail OTP (Outlook OAuth2)
     if otp_type in ["all", "mail"] and prof.get("oauth_token"):
@@ -544,45 +617,120 @@ def fetch_otp(record_id: str, otp_type: str = "all"):
                     timeout=8
                 )
                 for m in r2.json().get("value", []):
-                    body = m.get("Subject", "") + " " + m.get("BodyPreview", "")
-                    codes = re.findall(r"\b\d{6}\b", body)
-                    if codes:
-                        mail_otp = codes[0]
+                    subject = m.get("Subject", "") or ""
+                    preview = m.get("BodyPreview", "") or ""
+                    body = f"{subject} {preview}"
+                    c, raw = extract_clean_otp(body)
+                    if c:
+                        mail_otp = c
+                        raw_mail = preview or subject
                         break
         except Exception as e:
             print(f"[OTP Mail] Error for {record_id}: {e}")
 
-    # 2. SMS OTP (SMS8 API)
+    # 2. SMS OTP (SMS8 API & Multiformat Resolvers)
     if otp_type in ["all", "phone", "sms"] and prof.get("sms_api"):
         try:
             r = requests.get(prof["sms_api"], timeout=8)
             res = r.json()
             data_obj = res.get("data", {})
+
+            # Case A: data.code contains code or full sentence (e.g. [TikTok] Your verification code is 4764...)
             if isinstance(data_obj, dict):
-                code = data_obj.get("code")
-                if code and re.match(r"^\d{4,8}$", str(code).strip()):
-                    sms_otp = str(code).strip()
+                code_field = data_obj.get("code")
+                if code_field:
+                    c, raw = extract_clean_otp(code_field)
+                    if c:
+                        sms_otp = c
+                    if raw and not raw_sms:
+                        raw_sms = raw
+
+            # Case B: data.records or res.records list of messages
             if not sms_otp:
-                records = data_obj.get("records", []) if isinstance(data_obj, dict) else (res.get("records", []) or [])
-                for rec in records:
-                    txt = rec.get("sms", "") or rec.get("content", "") or str(rec)
-                    codes = re.findall(r"\b\d{6}\b", txt)
-                    if codes:
-                        sms_otp = codes[0]
-                        break
+                records = []
+                if isinstance(data_obj, dict) and "records" in data_obj and isinstance(data_obj["records"], list):
+                    records = data_obj["records"]
+                elif isinstance(res.get("records"), list):
+                    records = res["records"]
+                elif isinstance(data_obj, list):
+                    records = data_obj
+
+                for rec in reversed(records):
+                    txt = ""
+                    if isinstance(rec, dict):
+                        txt = rec.get("sms") or rec.get("content") or rec.get("message") or rec.get("text") or str(rec)
+                    else:
+                        txt = str(rec)
+                    if txt:
+                        c, raw = extract_clean_otp(txt)
+                        if not raw_sms:
+                            raw_sms = raw
+                        if c:
+                            sms_otp = c
+                            break
+
+            # Case C: Fallback to top-level msg or message fields
+            if not sms_otp:
+                for fallback_field in [res.get("msg"), res.get("message")]:
+                    if fallback_field and str(fallback_field).lower() not in ["ok", "success", "no verification code"]:
+                        c, raw = extract_clean_otp(fallback_field)
+                        if c:
+                            sms_otp = c
+                            if not raw_sms:
+                                raw_sms = raw
+                            break
         except Exception as e:
             print(f"[OTP SMS] Error for {record_id}: {e}")
 
     # Fallback to cached mail OTP if live read is empty
     if not mail_otp and prof.get("cached_mail_otp"):
-        mail_otp = prof["cached_mail_otp"]
+        c_cached, _ = extract_clean_otp(prof["cached_mail_otp"])
+        if c_cached:
+            mail_otp = c_cached
+
+    # Final guarantee: sanitize pure digits
+    if sms_otp:
+        sms_otp = re.sub(r"\D", "", str(sms_otp))
+    if mail_otp:
+        mail_otp = re.sub(r"\D", "", str(mail_otp))
 
     return {
         "code": 200,
         "record_id": record_id,
+        "phone": prof.get("phone", ""),
+        "email": prof.get("email", ""),
         "mail_otp": mail_otp,
         "sms_otp": sms_otp,
+        "raw_sms": raw_sms,
+        "raw_mail": raw_mail,
         "time": datetime.datetime.now().strftime("%H:%M:%S")
+    }
+
+@router.get("/tunnel_info")
+def get_tunnel_info():
+    """
+    Returns the live Cloudflare Tunnel URL if active.
+    """
+    candidates = [
+        Path(r"F:\Herd\fox-auto\additions\tts_bot\runtime\tunnel_url.txt"),
+        Path(r"G:\RTTS\19-08-2026\fox-auto\additions\tts_bot\runtime\tunnel_url.txt"),
+        Path(r"G:\RTTS\dotpsd\runtime\tunnel_url.txt"),
+    ]
+    tunnel_url = ""
+    for c in candidates:
+        if c.exists():
+            try:
+                content = c.read_text(encoding="utf-8").strip()
+                if content.startswith("http"):
+                    tunnel_url = content
+                    break
+            except Exception:
+                pass
+    return {
+        "code": 200,
+        "active": bool(tunnel_url),
+        "tunnel_url": tunnel_url,
+        "copilot_url": f"{tunnel_url}/copilot" if tunnel_url else ""
     }
 
 def get_output_docs_dir() -> Path:

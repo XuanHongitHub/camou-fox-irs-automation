@@ -22,10 +22,22 @@
 
   // Top-level frame verified. Maintain natural page viewport and screen dimensions.
 
-  const BACKEND_BASE = "http://127.0.0.1:8787/api/copilot";
+  let BACKEND_BASE = localStorage.getItem("fox_backend_url") || "http://127.0.0.1:8787/api/copilot";
   let currentProfileId = localStorage.getItem("fox_selected_profile") || "BAM-34";
   let profileData = null;
   let isMinimized = false;
+
+  function configureBackendUrl() {
+    const current = localStorage.getItem("fox_backend_url") || BACKEND_BASE;
+    const input = prompt("Nhập địa chỉ Backend Hub (Mặc định: http://127.0.0.1:8787/api/copilot hoặc link Cloudflare Tunnel https://...trycloudflare.com):", current);
+    if (input !== null && input.trim()) {
+      let clean = input.trim().replace(/\/$/, "");
+      if (!clean.endsWith("/api/copilot")) clean += "/api/copilot";
+      localStorage.setItem("fox_backend_url", clean);
+      BACKEND_BASE = clean;
+      initProfilesDropdown().then(() => loadProfileDetail(currentProfileId));
+    }
+  }
 
   // Safe backend proxy via Background Service Worker (Bypasses Mixed-Content & PNA)
   async function backendCall(pathOrUrl, options = {}) {
@@ -756,7 +768,11 @@
       }
     } catch (e) {
       console.error("[Copilot] Error loading profile detail:", e);
-      shadow.getElementById("txt-sub").textContent = "Lỗi kết nối Backend :8787 (Hãy chạy service.py)";
+      const sub = shadow.getElementById("txt-sub");
+      if (sub) {
+        sub.innerHTML = '<span style="color:#f87171; cursor:pointer; text-decoration:underline;" title="Click để cấu hình link Backend Tunnel">⚠️ Mất kết nối Hub (Click để cấu hình URL)</span>';
+        sub.onclick = configureBackendUrl;
+      }
     }
   }
 
