@@ -453,6 +453,21 @@ const ttsIpc = {
     if ((window.api?.tts as any)?.doc?.downloadDialog) return await (window.api.tts as any).doc.downloadDialog(params)
     if (window.electron?.ipcRenderer) return await window.electron.ipcRenderer.invoke('tts:doc:download-dialog', params)
     return { ok: false, error: 'IPC unavailable' }
+  },
+  tunnelStatus: async () => {
+    if ((window.api?.tts as any)?.tunnel?.status) return await (window.api.tts as any).tunnel.status()
+    if (window.electron?.ipcRenderer) return await window.electron.ipcRenderer.invoke('tts:tunnel:status')
+    return { ok: false, isRunning: false, url: '' }
+  },
+  tunnelStart: async () => {
+    if ((window.api?.tts as any)?.tunnel?.start) return await (window.api.tts as any).tunnel.start()
+    if (window.electron?.ipcRenderer) return await window.electron.ipcRenderer.invoke('tts:tunnel:start')
+    return { ok: false, error: 'IPC unavailable' }
+  },
+  tunnelStop: async () => {
+    if ((window.api?.tts as any)?.tunnel?.stop) return await (window.api.tts as any).tunnel.stop()
+    if (window.electron?.ipcRenderer) return await window.electron.ipcRenderer.invoke('tts:tunnel:stop')
+    return { ok: false, error: 'IPC unavailable' }
   }
 }
 
@@ -671,6 +686,60 @@ export function TtsBotView() {
   const [docNotice, setDocNotice] = useState<string | null>(null)
   const [extensionModalOpen, setExtensionModalOpen] = useState(false)
   const [copiedExtensionPath, setCopiedExtensionPath] = useState(false)
+
+  // Cloudflare Web Tunnel State
+  const [tunnelRunning, setTunnelRunning] = useState(false)
+  const [tunnelUrl, setTunnelUrl] = useState('')
+  const [isTogglingTunnel, setIsTogglingTunnel] = useState(false)
+
+  const checkTunnelStatus = useCallback(async () => {
+    try {
+      const res = await ttsIpc.tunnelStatus()
+      if (res?.ok) {
+        setTunnelRunning(Boolean(res.isRunning))
+        if (res.url) setTunnelUrl(res.url)
+      }
+    } catch {}
+  }, [])
+
+  useEffect(() => {
+    checkTunnelStatus()
+    const timer = setInterval(checkTunnelStatus, 5000)
+    return () => clearInterval(timer)
+  }, [checkTunnelStatus])
+
+  const handleToggleTunnel = async () => {
+    if (isTogglingTunnel) return
+    setIsTogglingTunnel(true)
+    try {
+      if (tunnelRunning) {
+        await ttsIpc.tunnelStop()
+        setTunnelRunning(false)
+        setTunnelUrl('')
+        setSetupFeedback('Đã dừng Cloudflare Web Tunnel')
+      } else {
+        setSetupFeedback('Đang khởi động Cloudflare Web Tunnel...')
+        const res = await ttsIpc.tunnelStart()
+        if (res?.ok) {
+          setTunnelRunning(true)
+          if (res.url) {
+            setTunnelUrl(res.url)
+            try { await navigator.clipboard.writeText(res.url) } catch {}
+            setSetupFeedback(`✅ Tunnel đã chạy! Link: ${res.url} (Đã copy vào Clipboard)`)
+          } else {
+            setSetupFeedback('✅ Tunnel đang khởi chạy. Đang dò tìm link công khai...')
+          }
+        } else {
+          setSetupFeedback(`Lỗi bật tunnel: ${res?.error || 'Thử lại'}`)
+        }
+      }
+    } catch (err: any) {
+      setSetupFeedback(`Lỗi: ${String(err?.message || err)}`)
+    } finally {
+      setIsTogglingTunnel(false)
+      setTimeout(checkTunnelStatus, 1500)
+    }
+  }
 
   // Advanced Multi-Case Proxy Switcher State
   const [proxyModalRecord, setProxyModalRecord] = useState<RecordItem | null>(null)
@@ -2908,7 +2977,7 @@ export function TtsBotView() {
   }
 
   return (
-    <div className="flex flex-col h-full bg-slate-950 text-slate-100 overflow-hidden select-none relative">
+    <div className="flex flex-col h-full bg-slate-950 text-slate-100 overflow-hidden relative">
       {/* 1. UNIFIED COMMAND HEADER (Single H-14 Bar - Clean & Minimalist) */}
       <header className="flex items-center justify-between px-5 h-14 bg-slate-900/95 border-b border-slate-800/80 backdrop-blur z-20 shrink-0 gap-4">
         {/* Left: App Brand & Sheet Tabs Segmented Selector */}
@@ -2946,7 +3015,7 @@ export function TtsBotView() {
               <span>Chạy Thật ({activeRuns.length})</span>
             </button>
 
-            {/* Protected Tabs */}
+            {/* Automation Tab */}
             <button
               onClick={() => {
                 setIsCustomTab(false)
@@ -2964,48 +3033,27 @@ export function TtsBotView() {
               <span>Automation</span>
             </button>
 
-            <button
-              onClick={() => {
-                setIsCustomTab(false)
-                setSelectedSheetTab('Phần 2')
-                fetchSheetRecords('Phần 2')
+            {/* Protected Tab Dropdown Selector (Compact, No Wrap) */}
+            <select
+              value={!['TTS Chạy Thật', 'Automation'].includes(selectedSheetTab) && !isCustomTab ? selectedSheetTab : ''}
+              onChange={(e) => {
+                const val = e.target.value
+                if (val === 'custom') {
+                  setIsCustomTab(true)
+                } else if (val) {
+                  setIsCustomTab(false)
+                  setSelectedSheetTab(val)
+                  fetchSheetRecords(val)
+                }
               }}
-              className={`flex items-center space-x-1 px-2.5 py-1 rounded-md text-xs font-medium transition-all ${
-                !isCustomTab && selectedSheetTab === 'Phần 2'
-                  ? 'bg-slate-800 text-white shadow-sm'
-                  : 'text-slate-400 hover:text-slate-200'
-              }`}
-              title="Kho Phôi Phần 2 (Read-Only)"
+              className="bg-transparent text-xs text-slate-300 font-medium px-2 py-0.5 rounded focus:outline-none cursor-pointer border-0"
+              title="Chọn kho phôi khác"
             >
-              <Lock className="w-3 h-3 text-amber-400" />
-              <span>Phần 2</span>
-            </button>
-
-            <button
-              onClick={() => {
-                setIsCustomTab(false)
-                setSelectedSheetTab('Phần 1')
-                fetchSheetRecords('Phần 1')
-              }}
-              className={`flex items-center space-x-1 px-2.5 py-1 rounded-md text-xs font-medium transition-all ${
-                !isCustomTab && selectedSheetTab === 'Phần 1'
-                  ? 'bg-slate-800 text-white shadow-sm'
-                  : 'text-slate-400 hover:text-slate-200'
-              }`}
-              title="Phần 1 (Read-Only)"
-            >
-              <Lock className="w-3 h-3 text-amber-400" />
-              <span>Phần 1</span>
-            </button>
-
-            <button
-              onClick={() => setIsCustomTab(true)}
-              className={`px-2 py-1 rounded-md text-xs transition-all ${
-                isCustomTab ? 'bg-slate-800 text-white' : 'text-slate-400 hover:text-slate-200'
-              }`}
-            >
-              Tùy biến...
-            </button>
+              <option value="" disabled className="bg-slate-900 text-slate-400">Kho khác...</option>
+              <option value="Phần 2" className="bg-slate-900 text-slate-200">🔒 Phần 2</option>
+              <option value="Phần 1" className="bg-slate-900 text-slate-200">🔒 Phần 1</option>
+              <option value="custom" className="bg-slate-900 text-cyan-300">✏️ Tùy biến tab...</option>
+            </select>
           </div>
 
           {isCustomTab && (
@@ -3031,7 +3079,7 @@ export function TtsBotView() {
         </div>
 
         {/* Center: Main App View Switcher (Segmented Control) */}
-        <div className="flex items-center bg-slate-950 p-1 rounded-xl border border-slate-800/80 text-xs shadow-inner">
+        <div className="flex items-center bg-slate-950 p-1 rounded-xl border border-slate-800/80 text-xs shadow-inner shrink-0">
           <button
             onClick={() => setActiveTab('records')}
             className={`flex items-center space-x-1.5 px-3 py-1 rounded-lg font-medium transition-all ${
@@ -3053,7 +3101,7 @@ export function TtsBotView() {
             }`}
           >
             <Camera className="w-3.5 h-3.5" />
-            <span>Studio 2 Mặt</span>
+            <span>Studio</span>
             {currentRecord && (
               <span className="text-[10px] px-1 bg-black/40 rounded border border-white/10 text-emerald-300">
                 {currentRecord.id}
@@ -3070,7 +3118,7 @@ export function TtsBotView() {
             }`}
           >
             <Globe className="w-3.5 h-3.5" />
-            <span>HideProxy ({hpPorts.length})</span>
+            <span>HideProxy</span>
           </button>
 
           <button
@@ -3082,12 +3130,12 @@ export function TtsBotView() {
             }`}
           >
             <Smartphone className="w-3.5 h-3.5" />
-            <span>AdsPower ({adspowerProfiles.length})</span>
+            <span>AdsPower</span>
           </button>
         </div>
 
         {/* Right: Service Status Indicators & Actions */}
-        <div className="flex items-center space-x-2.5 shrink-0 text-xs">
+        <div className="flex items-center space-x-2 shrink-0 text-xs">
           {/* Micro Status Badges */}
           <div
             className={`flex items-center space-x-1.5 px-2 py-1 rounded-md border text-[11px] font-mono ${
@@ -3113,6 +3161,57 @@ export function TtsBotView() {
             <span>Ads</span>
           </div>
 
+          {/* CLOUDFLARE WEB TUNNEL BUTTON (1-Click Host to Web) */}
+          <button
+            onClick={handleToggleTunnel}
+            disabled={isTogglingTunnel}
+            className={`flex items-center space-x-1.5 px-3 py-1 rounded-lg font-semibold text-xs border transition-all shadow-sm ${
+              tunnelRunning
+                ? 'bg-emerald-950/80 hover:bg-emerald-900 text-emerald-300 border-emerald-500/60 shadow-emerald-950/50'
+                : 'bg-indigo-950/80 hover:bg-indigo-900 text-indigo-300 border-indigo-700/60 shadow-indigo-950/50'
+            }`}
+            title={
+              tunnelRunning
+                ? `Tunnel đang bật: ${tunnelUrl || 'Đang kết nối...'} - Bấm để dừng hoặc copy link`
+                : 'Bật Cloudflare Web Tunnel để máy khác (Mac, điện thoại) truy cập dashboard web'
+            }
+          >
+            <Globe className={`w-3.5 h-3.5 ${isTogglingTunnel ? 'animate-spin' : tunnelRunning ? 'text-emerald-400 animate-pulse' : 'text-indigo-400'}`} />
+            <span>{isTogglingTunnel ? 'Đang kết nối...' : tunnelRunning ? '🌐 Web Tunnel: ON' : '🌐 Bật Web Tunnel'}</span>
+          </button>
+
+          {tunnelRunning && tunnelUrl && (
+            <button
+              onClick={async () => {
+                try {
+                  await navigator.clipboard.writeText(tunnelUrl)
+                  setSetupFeedback(`Đã copy link Tunnel: ${tunnelUrl}`)
+                } catch {}
+              }}
+              className="p-1.5 bg-slate-800 hover:bg-slate-700 text-emerald-300 border border-emerald-600/50 rounded-lg transition-all"
+              title={`Copy link Web: ${tunnelUrl}`}
+            >
+              <Copy className="w-3.5 h-3.5" />
+            </button>
+          )}
+
+          {/* Sync Button */}
+          <button
+            onClick={() => {
+              refreshStatus()
+              fetchSheetRecords()
+              refreshInboxFiles()
+              refreshHideProxyPorts()
+              refreshAdsPowerProfiles()
+              checkTunnelStatus()
+            }}
+            disabled={isCheckingStatus || isLoadingSheet}
+            className="p-1.5 bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700 rounded-lg transition-all disabled:opacity-50"
+            title="Đồng bộ lại toàn bộ dữ liệu và dịch vụ"
+          >
+            <RefreshCw className={`w-3.5 h-3.5 ${isCheckingStatus || isLoadingSheet ? 'animate-spin' : ''}`} />
+          </button>
+
           {/* Add Profile Button */}
           <button
             onClick={() => {
@@ -3125,42 +3224,14 @@ export function TtsBotView() {
             <span>Hồ sơ</span>
           </button>
 
-          {/* Sync Button */}
-          <button
-            onClick={() => {
-              refreshStatus()
-              fetchSheetRecords()
-              refreshInboxFiles()
-              refreshHideProxyPorts()
-              refreshAdsPowerProfiles()
-            }}
-            disabled={isCheckingStatus || isLoadingSheet}
-            className="p-1.5 bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700 rounded-lg transition-all disabled:opacity-50"
-            title="Đồng bộ lại toàn bộ dữ liệu và dịch vụ"
-          >
-            <RefreshCw className={`w-3.5 h-3.5 ${isCheckingStatus || isLoadingSheet ? 'animate-spin' : ''}`} />
-          </button>
-
           {/* Import Local Excel / CSV Button */}
           <button
             onClick={handleImportLocalFile}
             disabled={isLoadingSheet}
-            className="flex items-center space-x-1.5 px-2.5 py-1 bg-amber-950/70 hover:bg-amber-900/80 text-amber-300 border border-amber-600/50 hover:border-amber-500 font-semibold rounded-lg shadow-sm transition-all text-xs"
-            title="Nạp bảng tính từ máy tính (.xlsx, .xls, .csv) khi Sheet bị riêng tư hoặc offline"
+            className="p-1.5 bg-amber-950/70 hover:bg-amber-900/80 text-amber-300 border border-amber-600/50 hover:border-amber-500 rounded-lg shadow-sm transition-all text-xs"
+            title="Nạp bảng tính Excel/CSV từ máy"
           >
             <FolderOpen className="w-3.5 h-3.5 text-amber-400" />
-            <span>Nạp Excel/CSV</span>
-          </button>
-
-          {/* Full Flow Dry-Run / Preflight Diagnostic Button */}
-          <button
-            onClick={handleRunPreflight}
-            disabled={isRunningPreflight}
-            className="flex items-center space-x-1.5 px-2.5 py-1 bg-gradient-to-r from-cyan-950/80 to-blue-950/80 hover:from-cyan-900 hover:to-blue-900 text-cyan-300 border border-cyan-500/50 hover:border-cyan-400 font-semibold rounded-lg shadow-sm transition-all text-xs"
-            title="Kiểm thử Full Flow & Chuẩn đoán kết nối trên máy mới"
-          >
-            <Stethoscope className={`w-3.5 h-3.5 text-cyan-400 ${isRunningPreflight ? 'animate-spin' : ''}`} />
-            <span>Kiểm Thử Full Flow</span>
           </button>
         </div>
       </header>
@@ -3226,24 +3297,26 @@ export function TtsBotView() {
         {activeTab === 'records' && (
           <div className="flex-1 flex flex-col overflow-hidden">
             {/* Clean, Streamlined Toolbar */}
-            <div className="flex items-center justify-between px-5 py-2 bg-slate-900/50 border-b border-slate-800/80 gap-3 shrink-0">
-              <div className="flex items-center space-x-3 flex-1">
-                {/* Search Input */}
-                <div className="relative flex-1 max-w-xs">
-                  <Search className="absolute left-2.5 top-2 w-3.5 h-3.5 text-slate-400" />
+            <div className="flex items-center justify-between px-5 py-2 bg-slate-900/50 border-b border-slate-800/80 gap-3 shrink-0 flex-wrap lg:flex-nowrap">
+              <div className="flex items-center space-x-3 flex-1 min-w-[320px]">
+                {/* Search Input - Wide, High Contrast, Guaranteed Typing Visibility */}
+                <div className="relative flex-1 max-w-md">
+                  <Search className="absolute left-2.5 top-2 w-3.5 h-3.5 text-slate-400 pointer-events-none" />
                   <input
                     type="text"
                     value={searchTerm}
                     onChange={(e) => setSearchTerm(e.target.value)}
                     placeholder="Tìm theo Mã, Tên, EIN, SSN, SĐT..."
-                    className="w-full pl-8 pr-3 py-1 text-xs bg-slate-950 border border-slate-800 rounded-lg text-slate-200 placeholder-slate-500 focus:outline-none focus:border-emerald-500/70"
+                    className="w-full pl-8 pr-7 py-1 text-xs bg-slate-950 border border-slate-700/80 rounded-lg text-white font-medium placeholder-slate-500 focus:outline-none focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 select-text cursor-text"
+                    style={{ userSelect: 'auto', WebkitUserSelect: 'auto' }}
                   />
                   {searchTerm && (
                     <button
                       onClick={() => setSearchTerm('')}
-                      className="absolute right-2 top-1.5 text-slate-400 hover:text-slate-200"
+                      className="absolute right-2 top-1.5 text-slate-400 hover:text-white"
+                      title="Xóa tìm kiếm"
                     >
-                      <X className="w-3 h-3" />
+                      <X className="w-3.5 h-3.5" />
                     </button>
                   )}
                 </div>
@@ -3253,7 +3326,7 @@ export function TtsBotView() {
                   <select
                     value={filterState}
                     onChange={(e) => setFilterState(e.target.value)}
-                    className="px-2 py-1 text-xs bg-slate-950 border border-slate-800 rounded-lg text-slate-200 focus:outline-none focus:border-emerald-500"
+                    className="px-2 py-1 text-xs bg-slate-950 border border-slate-800 rounded-lg text-slate-200 focus:outline-none focus:border-emerald-500 cursor-pointer"
                   >
                     <option value="all">Tất cả bang (50)</option>
                     {US_STATES.map((st) => (
@@ -3279,7 +3352,7 @@ export function TtsBotView() {
               </div>
 
               {/* Pipeline Stage Tabs & Quick Action Tools */}
-              <div className="flex items-center space-x-2 shrink-0">
+              <div className="flex items-center space-x-2 shrink-0 overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
                 {/* 5-Stage Pipeline Filters */}
                 <div className="flex items-center space-x-1 bg-slate-950 p-0.5 rounded-lg border border-slate-800">
                   <button
@@ -3362,7 +3435,7 @@ export function TtsBotView() {
                   title="Quét trạng thái hòm thư & bắt mã OTP tự động cho tất cả hồ sơ"
                 >
                   <RefreshCw className={`w-3.5 h-3.5 text-indigo-400 ${isCheckingAllMails ? 'animate-spin' : ''}`} />
-                  <span>{isCheckingAllMails ? 'Đang quét mail...' : 'Quét Hòm Thư'}</span>
+                  <span>{isCheckingAllMails ? 'Đang quét...' : 'Quét Mail'}</span>
                 </button>
 
                 {/* Photo Pool Manager Button */}
@@ -3379,10 +3452,10 @@ export function TtsBotView() {
                 <button
                   onClick={() => setIsAutoConfigModalOpen(true)}
                   className="flex items-center space-x-1.5 px-2.5 py-1 text-xs bg-purple-950/80 hover:bg-purple-900 text-purple-300 border border-purple-700/60 rounded-lg transition-all font-semibold shadow-sm"
-                  title="Mở bảng cấu hình quy tắc tự động hóa: Đảo pool ảnh, Flow Individual/Sole P, Auto Next, Watchdog..."
+                  title="Mở bảng cấu hình quy tắc tự động hóa"
                 >
                   <Sliders className="w-3.5 h-3.5 text-purple-400" />
-                  <span>Cấu Hình Auto</span>
+                  <span>Cấu Hình</span>
                 </button>
 
                 {/* Copy Sheet Button */}
@@ -3402,55 +3475,8 @@ export function TtsBotView() {
                   title="Mở Modal Thiết Lập Môi Trường Hàng Loạt (Proxy & AdsPower)"
                 >
                   <Zap className="w-3.5 h-3.5 text-amber-400" />
-                  <span>Setup Hàng Loạt</span>
+                  <span>Bulk Setup</span>
                 </button>
-
-                {/* Global Settings Toolbar Dropdowns */}
-                <div className="flex items-center space-x-1.5 pl-2 border-l border-slate-800">
-                  {/* AdsPower Group Selector */}
-                  <div className="flex items-center space-x-1 bg-slate-900 border border-slate-700/80 rounded-lg px-2 py-0.5" title="Nhóm AdsPower khi tạo profile">
-                    <span className="text-[10px] text-slate-400 font-semibold uppercase">Nhóm:</span>
-                    <select
-                      value={globalGroupId}
-                      onChange={(e) => handleChangeGlobalGroup(e.target.value)}
-                      className="bg-transparent text-xs text-sky-300 font-medium focus:outline-none cursor-pointer max-w-[120px] truncate"
-                    >
-                      <option value="0" className="bg-slate-900 text-slate-200">0 - Ungrouped</option>
-                      {adspowerGroupsList.map((g) => (
-                        <option key={g.group_id} value={g.group_id} className="bg-slate-900 text-slate-200">
-                          {g.group_name} ({g.group_id})
-                        </option>
-                      ))}
-                    </select>
-                  </div>
-
-                  {/* Profile Device Type */}
-                  <div className="flex items-center space-x-1 bg-slate-900 border border-slate-700/80 rounded-lg px-2 py-0.5" title="Loại Profile AdsPower (iOS Phone / Desktop)">
-                    <span className="text-[10px] text-slate-400 font-semibold uppercase">Thiết bị:</span>
-                    <select
-                      value={globalProfileType}
-                      onChange={(e) => handleChangeGlobalProfileType(e.target.value as 'ios' | 'desktop')}
-                      className="bg-transparent text-xs text-emerald-400 font-medium focus:outline-none cursor-pointer"
-                    >
-                      <option value="ios" className="bg-slate-900 text-emerald-400">📱 iOS (iPhone 15 Mobile)</option>
-                      <option value="desktop" className="bg-slate-900 text-slate-200">💻 Desktop</option>
-                    </select>
-                  </div>
-
-                  {/* Proxy Default Mode */}
-                  <div className="flex items-center space-x-1 bg-slate-900 border border-slate-700/80 rounded-lg px-2 py-0.5" title="Chế độ proxy mặc định">
-                    <span className="text-[10px] text-slate-400 font-semibold uppercase">Proxy:</span>
-                    <select
-                      value={globalProxyMode}
-                      onChange={(e) => handleChangeGlobalProxyMode(e.target.value as any)}
-                      className="bg-transparent text-xs text-amber-300 font-medium focus:outline-none cursor-pointer"
-                    >
-                      <option value="hideproxy" className="bg-slate-900 text-amber-300">⚡ HideProxy (Bang)</option>
-                      <option value="no_proxy" className="bg-slate-900 text-slate-200">⚪ No Proxy</option>
-                      <option value="custom" className="bg-slate-900 text-cyan-300">📦 Kho Proxy</option>
-                    </select>
-                  </div>
-                </div>
               </div>
             </div>
 
@@ -3519,8 +3545,49 @@ export function TtsBotView() {
                 )}
               </div>
 
-              {/* Right: Counter & Quick Navigation */}
+              {/* Right: Environment Settings, Counter & Quick Navigation */}
               <div className="flex items-center space-x-3 text-slate-400 text-xs">
+                {/* Compact Environment Quick Config */}
+                <div className="hidden xl:flex items-center space-x-1.5 text-[11px] pr-2 border-r border-slate-800">
+                  {/* AdsPower Group */}
+                  <select
+                    value={globalGroupId}
+                    onChange={(e) => handleChangeGlobalGroup(e.target.value)}
+                    className="bg-slate-900 border border-slate-700/80 rounded px-1.5 py-0.5 text-[11px] text-sky-300 font-medium focus:outline-none cursor-pointer max-w-[110px] truncate"
+                    title="Nhóm AdsPower mặc định"
+                  >
+                    <option value="0" className="bg-slate-900 text-slate-200">0 - Ungrouped</option>
+                    {adspowerGroupsList.map((g) => (
+                      <option key={g.group_id} value={g.group_id} className="bg-slate-900 text-slate-200">
+                        {g.group_name} ({g.group_id})
+                      </option>
+                    ))}
+                  </select>
+
+                  {/* Device Type */}
+                  <select
+                    value={globalProfileType}
+                    onChange={(e) => handleChangeGlobalProfileType(e.target.value as 'ios' | 'desktop')}
+                    className="bg-slate-900 border border-slate-700/80 rounded px-1.5 py-0.5 text-[11px] text-emerald-400 font-medium focus:outline-none cursor-pointer"
+                    title="Thiết bị AdsPower"
+                  >
+                    <option value="ios" className="bg-slate-900 text-emerald-400">📱 iOS</option>
+                    <option value="desktop" className="bg-slate-900 text-slate-200">💻 Desktop</option>
+                  </select>
+
+                  {/* Proxy Mode */}
+                  <select
+                    value={globalProxyMode}
+                    onChange={(e) => handleChangeGlobalProxyMode(e.target.value as any)}
+                    className="bg-slate-900 border border-slate-700/80 rounded px-1.5 py-0.5 text-[11px] text-amber-300 font-medium focus:outline-none cursor-pointer"
+                    title="Proxy mặc định khi tạo"
+                  >
+                    <option value="hideproxy" className="bg-slate-900 text-amber-300">⚡ HideProxy</option>
+                    <option value="no_proxy" className="bg-slate-900 text-slate-200">⚪ No Proxy</option>
+                    <option value="custom" className="bg-slate-900 text-cyan-300">📦 Kho Proxy</option>
+                  </select>
+                </div>
+
                 <div className="flex items-center space-x-1.5 font-mono">
                   <span className="text-slate-200 font-bold">{displayRecords.length}</span>
                   <span className="text-slate-500">/</span>

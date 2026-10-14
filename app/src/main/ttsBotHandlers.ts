@@ -3737,4 +3737,71 @@ function generateValidDl(stateCode: string, lastName: string = ''): string {
       return { ok: false, error: String(err?.message || err) }
     }
   })
+
+  // --------------------------------------------------------------------------
+  // CLOUDFLARE WEB TUNNEL ENGINE (1-Click Start/Stop & Status)
+  // --------------------------------------------------------------------------
+  let tunnelProcess: any = null
+  const tunnelUrlFile = join(foxAutoRoot, 'additions', 'tts_bot', 'runtime', 'tunnel_url.txt')
+
+  ipcMain.handle('tts:tunnel:status', async () => {
+    try {
+      let isRunning = tunnelProcess !== null && !tunnelProcess.killed
+      let url = ''
+      if (existsSync(tunnelUrlFile)) {
+        url = readFileSync(tunnelUrlFile, 'utf-8').trim()
+      }
+      return { ok: true, isRunning, url: url ? `${url}/copilot` : '' }
+    } catch (err: any) {
+      return { ok: false, isRunning: false, url: '', error: String(err?.message || err) }
+    }
+  })
+
+  ipcMain.handle('tts:tunnel:start', async () => {
+    try {
+      const batPath = join(foxAutoRoot, 'start_tts_web_tunnel.bat')
+      if (existsSync(batPath)) {
+        spawn('cmd.exe', ['/c', 'start', '""', batPath], {
+          cwd: foxAutoRoot,
+          detached: true,
+          stdio: 'ignore'
+        }).unref()
+      } else {
+        const psScript = join(foxAutoRoot, 'run_tts_tunnel.ps1')
+        spawn('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', psScript], {
+          cwd: foxAutoRoot,
+          detached: true,
+          stdio: 'ignore'
+        }).unref()
+      }
+
+      // Poll up to 15s for tunnel_url.txt to appear
+      for (let i = 0; i < 30; i++) {
+        await new Promise((resolve) => setTimeout(resolve, 500))
+        if (existsSync(tunnelUrlFile)) {
+          const rawUrl = readFileSync(tunnelUrlFile, 'utf-8').trim()
+          if (rawUrl && rawUrl.includes('trycloudflare.com')) {
+            const finalUrl = `${rawUrl}/copilot`
+            return { ok: true, url: finalUrl, isRunning: true }
+          }
+        }
+      }
+      return { ok: true, isRunning: true, url: '' }
+    } catch (err: any) {
+      return { ok: false, error: String(err?.message || err) }
+    }
+  })
+
+  ipcMain.handle('tts:tunnel:stop', async () => {
+    try {
+      spawn('taskkill', ['/F', '/IM', 'cloudflared.exe', '/T'], { stdio: 'ignore' })
+      if (existsSync(tunnelUrlFile)) {
+        try { unlinkSync(tunnelUrlFile) } catch {}
+      }
+      return { ok: true, isRunning: false }
+    } catch (err: any) {
+      return { ok: false, error: String(err?.message || err) }
+    }
+  })
 }
+

@@ -195,6 +195,11 @@ const api = {
       poolGet: () => ipcRenderer.invoke('tts:proxy:pool:get'),
       poolSave: (payload: { pool: string[] }) => ipcRenderer.invoke('tts:proxy:pool:save', payload),
       poolPopNext: (payload: { recordId: string }) => ipcRenderer.invoke('tts:proxy:pool:pop-next', payload)
+    },
+    tunnel: {
+      status: () => ipcRenderer.invoke('tts:tunnel:status'),
+      start: () => ipcRenderer.invoke('tts:tunnel:start'),
+      stop: () => ipcRenderer.invoke('tts:tunnel:stop')
     }
   }
 }
