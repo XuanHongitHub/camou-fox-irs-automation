@@ -1,6 +1,6 @@
 {
   "name": "bug-auto",
-  "version": "1.4.4",
+  "version": "1.4.5",
   "description": "An Electron application with React and TypeScript for automation",
   "main": "./out/main/index.js",
   "author": "example.com",

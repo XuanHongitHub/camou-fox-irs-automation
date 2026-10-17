@@ -1578,18 +1578,22 @@ function generateValidDl(stateCode: string, lastName: string = ''): string {
       params: { country?: string; state?: string; city?: string; isp?: string; port?: number }
     ) => {
       try {
-        const country = params.country || 'US'
-        const state = params.state || ''
+        const country = (params.country || 'us').toLowerCase()
+        const stateRaw = params.state || ''
+        const stateObj = US_STATES_LIST.find(
+          (s) => s.code.toLowerCase() === stateRaw.toLowerCase() || s.name.toLowerCase() === stateRaw.toLowerCase()
+        )
+        const state = stateObj ? stateObj.name : stateRaw
         const city = params.city || ''
-        const port = params.port || 50000
+        const port = params.port || 50001
 
         const query = new URLSearchParams({
           quantity: '1',
           startPort: String(port),
           country,
-          state,
-          city
+          state
         })
+        if (city) query.set('city', city)
 
         const res = await fetch(`${HIDEPROXY_BASE}/api/proxy/buy?${query.toString()}`)
         const data = await res.json()
@@ -1619,86 +1623,87 @@ function generateValidDl(stateCode: string, lastName: string = ''): string {
       }
 
       const started = Date.now()
-      const socket = net.createConnection({ host, port })
       let resolved = false
-      let stage = 'CONNECT'
-
+      const socket = net.createConnection({ host, port })
       socket.setTimeout(6000)
 
-      socket.on('connect', () => {
-        let authHeader = ''
-        if (user && password) {
-          authHeader = 'Proxy-Authorization: Basic ' + Buffer.from(`${user}:${password}`).toString('base64') + '\r\n'
+      const finish = (result: any) => {
+        if (!resolved) {
+          resolved = true
+          try {
+            socket.destroy()
+          } catch {}
+          resolve(result)
         }
+      }
+
+      let authHeader = ''
+      if (user && password) {
+        authHeader = 'Proxy-Authorization: Basic ' + Buffer.from(`${user}:${password}`).toString('base64') + '\r\n'
+      }
+
+      socket.on('connect', () => {
         socket.write(
-          'CONNECT ip-api.com:80 HTTP/1.1\r\n' +
-          'Host: ip-api.com:80\r\n' +
+          'GET http://ip-api.com/json HTTP/1.1\r\n' +
+          'Host: ip-api.com\r\n' +
           authHeader +
-          'Connection: keep-alive\r\n\r\n'
+          'Connection: close\r\n\r\n'
         )
       })
 
       let buffer = ''
       socket.on('data', (chunk) => {
         buffer += chunk.toString('utf8')
-        if (stage === 'CONNECT') {
-          if (buffer.includes('200 Connection established') || buffer.includes('HTTP/1.1 200') || buffer.includes('HTTP/1.0 200')) {
-            stage = 'GET'
-            buffer = ''
-            socket.write('GET /json HTTP/1.1\r\nHost: ip-api.com\r\nConnection: close\r\n\r\n')
-          } else if (buffer.includes('407')) {
-            if (!resolved) {
-              resolved = true
-              socket.destroy()
-              resolve({ ok: false, error: 'Lỗi xác thực: Sai User hoặc Password (HTTP 407)', latencyMs: Date.now() - started })
-            }
-          } else if (buffer.includes('HTTP/')) {
-            if (!resolved) {
-              resolved = true
-              socket.destroy()
-              resolve({ ok: true, latencyMs: Date.now() - started, ip: host, country: 'Online', msg: 'Proxy hoạt động' })
-            }
-          }
-        } else if (stage === 'GET') {
-          if (buffer.includes('{') && buffer.includes('}')) {
-            const jsonMatch = buffer.match(/\{[\s\S]*\}/)
-            if (jsonMatch && !resolved) {
-              resolved = true
-              try {
-                const data = JSON.parse(jsonMatch[0])
-                const latency = Date.now() - started
-                socket.destroy()
-                resolve({
-                  ok: true,
-                  latencyMs: latency,
-                  ip: data.query || host,
-                  country: data.country || 'Unknown',
-                  region: data.regionName || '',
-                  city: data.city || '',
-                  isp: data.isp || ''
-                })
-              } catch {
-                socket.destroy()
-                resolve({ ok: true, latencyMs: Date.now() - started, ip: host, country: 'Online' })
-              }
-            }
-          }
+
+        if (
+          buffer.includes('407 Proxy Authentication Required') ||
+          buffer.includes('HTTP/1.1 407') ||
+          buffer.includes('HTTP/1.0 407')
+        ) {
+          return finish({
+            ok: false,
+            error: 'Lỗi xác thực: Sai User hoặc Password (HTTP 407)',
+            latencyMs: Date.now() - started
+          })
+        }
+
+        const startIdx = buffer.indexOf('{')
+        const endIdx = buffer.lastIndexOf('}')
+        if (startIdx !== -1 && endIdx > startIdx) {
+          try {
+            const data = JSON.parse(buffer.slice(startIdx, endIdx + 1))
+            return finish({
+              ok: true,
+              latencyMs: Date.now() - started,
+              ip: data.query || host,
+              country: data.country || 'US',
+              region: data.regionName || '',
+              city: data.city || '',
+              isp: data.isp || ''
+            })
+          } catch {}
+        }
+
+        if (
+          buffer.includes('HTTP/1.') &&
+          (buffer.includes('403 Forbidden') ||
+            buffer.includes('502 Bad Gateway') ||
+            buffer.includes('504 Gateway Timeout'))
+        ) {
+          return finish({
+            ok: false,
+            error: `Proxy báo lỗi: ${buffer.split('\r\n')[0]}`,
+            latencyMs: Date.now() - started
+          })
         }
       })
 
       socket.on('timeout', () => {
-        if (!resolved) {
-          resolved = true
-          socket.destroy()
-          resolve({ ok: false, error: 'Hết thời gian kết nối (Timeout > 6s)' })
-        }
+        finish({ ok: false, error: 'Hết thời gian kết nối (Timeout > 6s)' })
       })
 
       socket.on('error', (err: any) => {
-        if (!resolved) {
-          resolved = true
-          resolve({ ok: false, error: `Lỗi kết nối: ${err.message}` })
-        }
+        finish({ ok: false, error: `Lỗi kết nối: ${err.message}` })
       })
     })
   })
@@ -2076,7 +2081,7 @@ function generateValidDl(stateCode: string, lastName: string = ''): string {
   })
 
   // Internal Smart Setup Function
-  async function executeSmartSetup(record: any, autoBuyProxy = false) {
+  async function executeSmartSetup(record: any, autoBuyProxy = true) {
     if (!record || !record.id) {
       return { ok: false, error: 'Thiếu thông tin hồ sơ' }
     }
@@ -2170,7 +2175,9 @@ function generateValidDl(stateCode: string, lastName: string = ''): string {
     // --- Step 1: HideProxy Forwarding to the allocated unique assignedPort ---
     try {
       const matchExisting = activePorts.find((p) => p.port === assignedPort && p.online)
-      if (matchExisting) {
+      const existingStateMatches = matchExisting && normalizeStateCode(matchExisting.state || '') === stateNorm
+
+      if (matchExisting && existingStateMatches) {
         assignedProxyMeta = matchExisting
       } else {
         const histRes = await fetch(`${HIDEPROXY_BASE}/api/history/list?limit=50&page=1`)
@@ -2180,7 +2187,7 @@ function generateValidDl(stateCode: string, lastName: string = ''): string {
         const matchedHist = histItems.find((h) => {
           const hState = normalizeStateCode(h.state || '')
           return hState === stateNorm
-        }) || histItems[0]
+        })
 
         if (matchedHist) {
           await fetch(
@@ -2196,29 +2203,46 @@ function generateValidDl(stateCode: string, lastName: string = ''): string {
             online: true
           }
         } else if (autoBuyProxy) {
-          const buyRes = await fetch(`${HIDEPROXY_BASE}/api/proxy/buy`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              quantity: 1,
-              country: 'us',
-              state: stateNorm,
-              port: assignedPort
-            })
-          })
+          const stateObj = US_STATES_LIST.find(
+            (s) => s.code.toLowerCase() === stateNorm.toLowerCase() || s.name.toLowerCase() === stateNorm.toLowerCase()
+          )
+          const stateQueryName = stateObj ? stateObj.name : stateNorm
+
+          const buyUrl = new URL(`${HIDEPROXY_BASE}/api/proxy/buy`)
+          buyUrl.searchParams.set('country', 'us')
+          buyUrl.searchParams.set('state', stateQueryName)
+          buyUrl.searchParams.set('quantity', '1')
+          buyUrl.searchParams.set('startPort', String(assignedPort))
+
+          const buyRes = await fetch(buyUrl.toString())
             .then((r) => r.json())
             .catch(() => null)
 
-          if (buyRes && buyRes.code === 200) {
+          if (buyRes && (buyRes.code === 200 || !buyRes.error)) {
             await new Promise((resolve) => setTimeout(resolve, 2000))
-            assignedProxyMeta = {
+            const portInfoRes = await fetch(`${HIDEPROXY_BASE}/api/port/info?port=${assignedPort}`)
+              .then((r) => r.json())
+              .catch(() => null)
+            const pData = (portInfoRes && portInfoRes.data && portInfoRes.data[0]) || null
+
+            assignedProxyMeta = pData || {
+              port: assignedPort,
+              public_ip: 'Auto Buy Proxy',
+              state: stateQueryName,
+              city: '',
+              isp: 'HideProxy Residential',
+              online: true
+            }
+          } else {
+            console.error('HideProxy auto-buy response:', buyRes)
+            assignedProxyMeta = matchExisting || {
               port: assignedPort,
               state: stateNorm,
-              online: true
+              online: false
             }
           }
         } else {
-          assignedProxyMeta = {
+          assignedProxyMeta = matchExisting || {
             port: assignedPort,
             state: stateNorm,
             online: false
@@ -2417,7 +2441,7 @@ function generateValidDl(stateCode: string, lastName: string = ''): string {
     'tts:smart:setup',
     async (_event, params: { record: any; autoBuyProxy?: boolean }) => {
       try {
-        return await executeSmartSetup(params.record, params.autoBuyProxy)
+        return await executeSmartSetup(params.record, params.autoBuyProxy ?? true)
       } catch (err: any) {
         return { ok: false, error: String(err?.message || err) }
       }
@@ -2428,7 +2452,7 @@ function generateValidDl(stateCode: string, lastName: string = ''): string {
     'tts:smart:batch-setup',
     async (_event, params: { records: any[]; autoBuyProxy?: boolean }) => {
       try {
-        const { records, autoBuyProxy } = params
+        const { records, autoBuyProxy = true } = params
         if (!Array.isArray(records) || records.length === 0) {
           return { ok: true, total: 0, records: [] }
         }

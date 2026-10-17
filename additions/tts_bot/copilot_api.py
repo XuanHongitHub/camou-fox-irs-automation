@@ -888,6 +888,23 @@ def setup_profile_endpoint(payload: Dict[str, Any] = Body(...)):
             assigned_port = (max(occupied) + 1) if occupied else 50001
         except Exception:
             assigned_port = 50001
+
+    # Ensure proxy port has active IP (forward from history or auto-buy)
+    try:
+        port_check = requests.get(f"{HIDEPROXY_BASE}/api/port/info?port={assigned_port}", timeout=2).json()
+        pdata = (port_check.get("data") or [{}])[0]
+        if not pdata.get("online"):
+            st = prof.get("state") or "CA"
+            hist_res = requests.get(f"{HIDEPROXY_BASE}/api/history/list?limit=50&page=1", timeout=2).json()
+            hist_items = hist_res.get("data", [])
+            matched = next((h for h in hist_items if (h.get("state") or "").lower() == st.lower()), None)
+            if matched:
+                requests.get(f"{HIDEPROXY_BASE}/api/history/last-12-hours/forward?id={matched['id']}&port={assigned_port}", timeout=3)
+            else:
+                requests.get(f"{HIDEPROXY_BASE}/api/proxy/buy?country=us&state={st}&quantity=1&startPort={assigned_port}", timeout=5)
+    except Exception as e:
+        print(f"[HideProxy] setup forward/buy: {e}")
+
     adspower_id = None
     
     try:

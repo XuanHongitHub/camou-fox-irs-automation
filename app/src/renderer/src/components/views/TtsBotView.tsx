@@ -571,6 +571,7 @@ export function TtsBotView() {
     records: RecordItem[]
     selectedPort?: number
     allocatedPorts?: Record<string, number>
+    autoBuyProxy?: boolean
     isExecuting?: boolean
     progress?: {
       current: number
@@ -582,7 +583,8 @@ export function TtsBotView() {
     isOpen: false,
     mode: 'single',
     records: [],
-    allocatedPorts: {}
+    allocatedPorts: {},
+    autoBuyProxy: true
   })
 
   // Full Flow Dry-Run / Preflight Diagnostics State
@@ -1873,6 +1875,7 @@ export function TtsBotView() {
       records: [record],
       selectedPort: port,
       allocatedPorts: { [record.id]: port },
+      autoBuyProxy: true,
       isExecuting: false,
       progress: undefined
     })
@@ -2164,6 +2167,7 @@ export function TtsBotView() {
       mode: 'bulk',
       records: targetRecords,
       allocatedPorts,
+      autoBuyProxy: true,
       isExecuting: false,
       progress: undefined
     })
@@ -2191,7 +2195,7 @@ export function TtsBotView() {
       }
       const res = await ttsIpc.smartSetup({
         record: recWithPort,
-        autoBuyProxy: false
+        autoBuyProxy: setupModalConfig.autoBuyProxy ?? true
       })
       if (res && res.ok && res.record) {
         setRecords((prev) => prev.map((r) => (r.id === res.record.id ? res.record : r)))
@@ -2287,7 +2291,7 @@ export function TtsBotView() {
               ...rec,
               assignedPort: assignedPortForRec
             },
-            autoBuyProxy: false
+            autoBuyProxy: setupModalConfig.autoBuyProxy ?? true
           })
           if (res && res.ok && res.record) {
             updatedList.push(res.record)
@@ -6733,8 +6737,61 @@ export function TtsBotView() {
                                   className="w-20 px-2 py-1 bg-slate-900 border border-slate-700 focus:border-amber-400 rounded text-amber-300 font-mono font-bold text-xs text-center"
                                   title="Gõ số port thủ công"
                                 />
+                                <button
+                                  type="button"
+                                  onClick={async (e) => {
+                                    e.stopPropagation()
+                                    setIsTestingProxy(true)
+                                    setTestProxyResult(null)
+                                    try {
+                                      const res = await ttsIpc.proxyTest({ host: '127.0.0.1', port: activePort })
+                                      setTestProxyResult(res)
+                                    } catch (err: any) {
+                                      setTestProxyResult({ ok: false, error: String(err?.message || err) })
+                                    } finally {
+                                      setIsTestingProxy(false)
+                                    }
+                                  }}
+                                  disabled={isTestingProxy || !activePort}
+                                  className="px-2 py-1 bg-slate-800 hover:bg-slate-700 text-sky-300 hover:text-white rounded border border-slate-700 text-xs font-semibold flex items-center space-x-1 shrink-0 transition-colors"
+                                  title="Kiểm tra trực tiếp kết nối và IP của cổng này"
+                                >
+                                  <RefreshCw className={`w-3 h-3 ${isTestingProxy ? 'animate-spin' : ''}`} />
+                                  <span>{isTestingProxy ? 'Đang test...' : '⚡ Test Port'}</span>
+                                </button>
                               </div>
                             </div>
+
+                            {/* Direct Port Test Result Banner */}
+                            {testProxyResult && (
+                              <div
+                                className={`p-2.5 rounded-lg border text-xs flex items-center justify-between ${
+                                  testProxyResult.ok
+                                    ? 'bg-emerald-950/60 border-emerald-500/40 text-emerald-200'
+                                    : 'bg-rose-950/60 border-rose-500/40 text-rose-200'
+                                }`}
+                              >
+                                <div className="flex items-center space-x-2">
+                                  {testProxyResult.ok ? (
+                                    <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
+                                  ) : (
+                                    <AlertCircle className="w-4 h-4 text-rose-400 shrink-0" />
+                                  )}
+                                  <span className="font-mono">
+                                    {testProxyResult.ok
+                                      ? `✓ Online: ${testProxyResult.ip} (${testProxyResult.city || ''}, ${testProxyResult.region || testProxyResult.country || 'US'}) • ${testProxyResult.latencyMs}ms`
+                                      : `✕ ${testProxyResult.error}`}
+                                  </span>
+                                </div>
+                                <button
+                                  type="button"
+                                  onClick={() => setTestProxyResult(null)}
+                                  className="text-slate-400 hover:text-white text-xs px-1"
+                                >
+                                  ✕
+                                </button>
+                              </div>
+                            )}
 
                             <div className="flex justify-between items-center">
                               <span className="text-slate-400">Giao Thức:</span>
@@ -6788,10 +6845,32 @@ export function TtsBotView() {
                               <div className="text-[11px] opacity-90 mt-0.5">
                                 {isGeoMatch
                                   ? 'Proxy và hồ sơ đồng nhất vị trí địa lý, an toàn tuyệt đối khi đăng ký.'
-                                  : 'Khuyến nghị chọn cổng có bang tương ứng hoặc mua proxy mới để đảm bảo tỷ lệ duyệt.'}
+                                  : 'Khuyến nghị chọn cổng có bang tương ứng hoặc hệ thống sẽ tự động mua proxy chuẩn bang.'}
                               </div>
                             </div>
                           </div>
+
+                          {/* Auto Buy Proxy Checkbox */}
+                          <label className="flex items-start space-x-2.5 cursor-pointer bg-slate-900/90 hover:bg-slate-900 border border-slate-700/80 rounded-xl p-3 transition-colors">
+                            <input
+                              type="checkbox"
+                              checked={setupModalConfig.autoBuyProxy ?? true}
+                              onChange={(e) =>
+                                setSetupModalConfig((prev) => ({ ...prev, autoBuyProxy: e.target.checked }))
+                              }
+                              disabled={setupModalConfig.isExecuting}
+                              className="w-4 h-4 text-emerald-500 rounded border-slate-700 bg-slate-800 focus:ring-emerald-500 mt-0.5 shrink-0"
+                            />
+                            <div className="text-xs">
+                              <div className="font-semibold text-emerald-400">
+                                🛒 Tự động mua proxy HideProxy (-1 Qty) nếu chưa có IP online
+                              </div>
+                              <div className="text-[11px] text-slate-400 mt-0.5">
+                                Nếu cổng chưa online hoặc bang chưa khớp, hệ thống tự động gọi HideProxy API mua proxy bang{' '}
+                                <strong className="text-white">{curRec.state}</strong> và gán vào cổng {activePort}.
+                              </div>
+                            </div>
+                          </label>
                         </div>
                       </div>
 
@@ -6915,9 +6994,21 @@ export function TtsBotView() {
 
                   {/* Bulk Port Management Toolbar */}
                   <div className="flex flex-wrap items-center justify-between gap-2 p-3 bg-slate-900/90 border border-slate-800 rounded-xl text-xs">
-                    <div className="flex items-center space-x-2 text-slate-300">
-                      <Globe className="w-4 h-4 text-cyan-400 shrink-0" />
-                      <span>Bạn có thể nhập sửa trực tiếp cổng Port cho từng hồ sơ bên dưới:</span>
+                    <div className="flex items-center space-x-3">
+                      <label className="flex items-center space-x-2 cursor-pointer bg-slate-950/80 hover:bg-slate-950 border border-slate-700/80 rounded-lg px-2.5 py-1.5 transition-colors">
+                        <input
+                          type="checkbox"
+                          checked={setupModalConfig.autoBuyProxy ?? true}
+                          onChange={(e) =>
+                            setSetupModalConfig((prev) => ({ ...prev, autoBuyProxy: e.target.checked }))
+                          }
+                          disabled={setupModalConfig.isExecuting}
+                          className="w-3.5 h-3.5 text-emerald-500 rounded border-slate-700 bg-slate-800 focus:ring-emerald-500"
+                        />
+                        <span className="text-xs font-semibold text-emerald-400">
+                          🛒 Tự động mua proxy HideProxy nếu chưa có IP online (-1 Qty)
+                        </span>
+                      </label>
                     </div>
                     <div className="flex items-center space-x-2">
                       <button
