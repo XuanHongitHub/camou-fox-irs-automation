@@ -28,6 +28,8 @@ extraResources:
     to: "start_tts_web_tunnel.bat"
   - from: "../run_tts_tunnel.ps1"
     to: "run_tts_tunnel.ps1"
+  - from: "../private/google-drive"
+    to: "private/google-drive"
 
 
 win:

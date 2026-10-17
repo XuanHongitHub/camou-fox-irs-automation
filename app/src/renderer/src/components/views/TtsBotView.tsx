@@ -1392,16 +1392,16 @@ export function TtsBotView() {
       }
       const res = await ttsIpc.resolveDriveLink({ name: raw, isFolder, openDirectly: true })
       if (res && res.ok && res.url) {
-        setDocNotice(`✓ Đã mở link Drive: ${raw}`)
+        setDocNotice(`✓ Đã mở: ${raw}`)
       } else {
-        const searchUrl = `https://drive.google.com/drive/search?q=${encodeURIComponent(raw)}`
-        window.open(searchUrl, '_blank')
-        setDocNotice(`✓ Đã mở tìm kiếm Drive: ${raw}`)
+        const rootUrl = 'https://drive.google.com/drive/folders/1T2dKn2ZKq77xsPBV-fI_Qo-DUyyZi5-d'
+        window.open(rootUrl, '_blank')
+        setDocNotice(`✓ Đã mở thư mục Drive tổng: ${raw}`)
       }
     } catch (err: any) {
-      const fallbackUrl = `https://drive.google.com/drive/search?q=${encodeURIComponent(raw)}`
-      window.open(fallbackUrl, '_blank')
-      setDocNotice(`✓ Đã mở Drive: ${raw}`)
+      const rootUrl = 'https://drive.google.com/drive/folders/1T2dKn2ZKq77xsPBV-fI_Qo-DUyyZi5-d'
+      window.open(rootUrl, '_blank')
+      setDocNotice(`✓ Đã mở thư mục Drive tổng: ${raw}`)
     } finally {
       setOpeningDriveKey(null)
     }

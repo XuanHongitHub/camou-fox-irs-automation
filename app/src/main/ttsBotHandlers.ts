@@ -3757,6 +3757,8 @@ function generateValidDl(stateCode: string, lastName: string = ''): string {
       const rawName = String(params?.name || '').trim()
       if (!rawName) return { ok: false, error: 'Tên tệp hoặc folder trống' }
 
+      const DEFAULT_DRIVE_ROOT_FOLDER = '1T2dKn2ZKq77xsPBV-fI_Qo-DUyyZi5-d'
+
       // 1. Direct HTTP/HTTPS link
       if (rawName.startsWith('http://') || rawName.startsWith('https://')) {
         if (params.openDirectly !== false) {
@@ -3765,46 +3767,57 @@ function generateValidDl(stateCode: string, lastName: string = ''): string {
         return { ok: true, url: rawName }
       }
 
-      // 2. Fetch Drive Access Token via OAuth
+      // If requested folder is dummy string "PDF" or empty, directly open main root drive folder
+      const isFolder = !!params.isFolder
+      if (isFolder && (rawName.toUpperCase() === 'PDF' || !rawName)) {
+        const rootUrl = `https://drive.google.com/drive/folders/${DEFAULT_DRIVE_ROOT_FOLDER}`
+        if (params.openDirectly !== false) {
+          try { await shell.openExternal(rootUrl) } catch {}
+        }
+        return { ok: true, url: rootUrl }
+      }
+
+      // 2. Fetch Drive Access Token via OAuth from bundled resources
+      let clientId = ''
+      let clientSecret = ''
+      let refreshToken = ''
+
       const oauthCandidates = [
         join(foxAutoRoot, 'private', 'google-drive'),
+        join(process.resourcesPath, 'private', 'google-drive'),
+        join(app.getPath('userData'), 'google-drive'),
+        join(__dirname, '../../../private/google-drive'),
         'G:\\RTTS\\19-08-2026\\fox-auto\\private\\google-drive',
         'F:\\Herd\\fox-auto\\private\\google-drive',
         join(foxAutoRoot, 'app', 'dist', 'IRS_Bot_Full_Package', 'data', 'bug-auto', 'google-drive')
       ]
-      let clientFile = ''
-      let userFile = ''
       for (const p of oauthCandidates) {
         const c = join(p, 'oauth-client.json')
         const u = join(p, 'oauth-user.json')
         if (existsSync(c) && existsSync(u)) {
-          clientFile = c
-          userFile = u
+          try {
+            const cd = JSON.parse(readFileSync(c, 'utf-8'))
+            const ud = JSON.parse(readFileSync(u, 'utf-8'))
+            if (cd.installed?.client_id || cd.web?.client_id) {
+              clientId = cd.installed?.client_id || cd.web?.client_id
+            }
+            if (cd.installed?.client_secret || cd.web?.client_secret) {
+              clientSecret = cd.installed?.client_secret || cd.web?.client_secret
+            }
+            if (ud.refresh_token) {
+              refreshToken = ud.refresh_token
+            }
+          } catch {}
           break
         }
       }
 
-      if (!clientFile || !userFile) {
-        // Fallback: Open Google Drive search link directly
-        const searchUrl = `https://drive.google.com/drive/search?q=${encodeURIComponent(rawName)}`
-        if (params.openDirectly !== false) {
-          try { await shell.openExternal(searchUrl) } catch {}
-        }
-        return { ok: true, url: searchUrl, isSearch: true }
-      }
-
-      const clientData = JSON.parse(readFileSync(clientFile, 'utf-8'))
-      const userData = JSON.parse(readFileSync(userFile, 'utf-8'))
-      const clientId = clientData.installed?.client_id || clientData.web?.client_id
-      const clientSecret = clientData.installed?.client_secret || clientData.web?.client_secret
-      const refreshToken = userData.refresh_token
-
       if (!clientId || !clientSecret || !refreshToken) {
-        const searchUrl = `https://drive.google.com/drive/search?q=${encodeURIComponent(rawName)}`
+        const rootUrl = `https://drive.google.com/drive/folders/${DEFAULT_DRIVE_ROOT_FOLDER}`
         if (params.openDirectly !== false) {
-          try { await shell.openExternal(searchUrl) } catch {}
+          try { await shell.openExternal(rootUrl) } catch {}
         }
-        return { ok: true, url: searchUrl, isSearch: true }
+        return { ok: true, url: rootUrl, fallback: true }
       }
 
       const tokenRes = await fetch('https://oauth2.googleapis.com/token', {
@@ -3819,27 +3832,40 @@ function generateValidDl(stateCode: string, lastName: string = ''): string {
       })
       const tokenData = await tokenRes.json()
       if (!tokenData.access_token) {
-        const searchUrl = `https://drive.google.com/drive/search?q=${encodeURIComponent(rawName)}`
+        const fallbackUrl = `https://drive.google.com/drive/folders/${DEFAULT_DRIVE_ROOT_FOLDER}`
         if (params.openDirectly !== false) {
-          try { await shell.openExternal(searchUrl) } catch {}
+          try { await shell.openExternal(fallbackUrl) } catch {}
         }
-        return { ok: true, url: searchUrl, isSearch: true }
+        return { ok: true, url: fallbackUrl, fallback: true }
       }
 
-      // Query Drive API
-      const isFolder = !!params.isFolder
+      // Query Drive API with exact name first
       const cond = isFolder
         ? "mimeType = 'application/vnd.google-apps.folder'"
         : "mimeType != 'application/vnd.google-apps.folder'"
       const escaped = rawName.replace(/'/g, "\\'")
-      const query = `name = '${escaped}' and ${cond} and trashed = false`
+      let query = `name = '${escaped}' and ${cond} and trashed = false`
 
-      const driveRes = await fetch(
-        `https://www.googleapis.com/drive/v3/files?q=${encodeURIComponent(query)}&supportsAllDrives=true&includeItemsFromAllDrives=true&pageSize=1`,
+      let driveRes = await fetch(
+        `https://www.googleapis.com/drive/v3/files?q=${encodeURIComponent(query)}&supportsAllDrives=true&includeItemsFromAllDrives=true&pageSize=5`,
         { headers: { Authorization: `Bearer ${tokenData.access_token}` } }
       )
-      const driveData = await driveRes.json()
-      const files = driveData.files || []
+      let driveData = await driveRes.json()
+      let files = driveData.files || []
+
+      // Second tier: if exact match failed, search by name contains without extension
+      if (files.length === 0) {
+        const baseName = rawName.replace(/\.pdf$|\.png$/i, '').trim().replace(/'/g, "\\'")
+        if (baseName && baseName !== rawName) {
+          query = `name contains '${baseName}' and ${cond} and trashed = false`
+          driveRes = await fetch(
+            `https://www.googleapis.com/drive/v3/files?q=${encodeURIComponent(query)}&supportsAllDrives=true&includeItemsFromAllDrives=true&pageSize=5`,
+            { headers: { Authorization: `Bearer ${tokenData.access_token}` } }
+          )
+          driveData = await driveRes.json()
+          files = driveData.files || []
+        }
+      }
 
       let finalUrl = ''
       if (files.length > 0) {
@@ -3848,8 +3874,8 @@ function generateValidDl(stateCode: string, lastName: string = ''): string {
           ? `https://drive.google.com/drive/folders/${fid}`
           : `https://drive.google.com/file/d/${fid}/view`
       } else {
-        // Broad search if exact match not found
-        finalUrl = `https://drive.google.com/drive/search?q=${encodeURIComponent(rawName)}`
+        // Direct link to the parent folder instead of a search page
+        finalUrl = `https://drive.google.com/drive/folders/${DEFAULT_DRIVE_ROOT_FOLDER}`
       }
 
       if (params.openDirectly !== false && finalUrl) {
@@ -3857,7 +3883,7 @@ function generateValidDl(stateCode: string, lastName: string = ''): string {
       }
       return { ok: true, url: finalUrl }
     } catch (err: any) {
-      const fallbackUrl = `https://drive.google.com/drive/search?q=${encodeURIComponent(params?.name || '')}`
+      const fallbackUrl = `https://drive.google.com/drive/folders/1T2dKn2ZKq77xsPBV-fI_Qo-DUyyZi5-d`
       try { await shell.openExternal(fallbackUrl) } catch {}
       return { ok: true, url: fallbackUrl, fallback: true }
     }
