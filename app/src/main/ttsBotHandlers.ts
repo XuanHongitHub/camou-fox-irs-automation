@@ -127,12 +127,15 @@ function executeImapSession(
       } else if (state === 'AUTH' && (buffer.includes('A01 NO') || buffer.includes('A01 BAD'))) {
         clearTimeout(timeout)
         socket.end()
+        const isNotConnected = buffer.includes('User is authenticated but not connected')
         resolve({
           ok: false,
           email,
           count: 0,
           status: 'error',
-          label: 'Lỗi xác thực (Auth failed)',
+          label: isNotConnected
+            ? '⚠️ Microsoft chặn IMAP (Tài khoản cần mở web gỡ checkpoint / bật IMAP)'
+            : 'Lỗi xác thực (Auth failed)',
           error: buffer.trim(),
           checkedAt: Date.now()
         })
@@ -338,7 +341,16 @@ export async function checkMailInbox(email: string, pass?: string, twoFactor?: s
       if (tokenData.access_token) {
         const accTok = tokenData.access_token
         const authString = Buffer.from(`user=${cleanEmail}\x01auth=Bearer ${accTok}\x01\x01`).toString('base64')
-        return await executeImapSession(imapHost, cleanEmail, `A01 AUTHENTICATE XOAUTH2 ${authString}\r\n`)
+        const firstTry = await executeImapSession(imapHost, cleanEmail, `A01 AUTHENTICATE XOAUTH2 ${authString}\r\n`)
+        if (firstTry.ok) return firstTry
+
+        // Fallback between outlook.office365.com and imap-mail.outlook.com for consumer accounts
+        if (cleanEmail.toLowerCase().includes('outlook') || cleanEmail.toLowerCase().includes('hotmail') || cleanEmail.toLowerCase().includes('live')) {
+          const altHost = imapHost === 'outlook.office365.com' ? 'imap-mail.outlook.com' : 'outlook.office365.com'
+          const secondTry = await executeImapSession(altHost, cleanEmail, `A01 AUTHENTICATE XOAUTH2 ${authString}\r\n`)
+          if (secondTry.ok) return secondTry
+        }
+        return firstTry
       } else {
         if (plainPass) {
           return await executeImapSession(imapHost, cleanEmail, `A01 LOGIN "${cleanEmail}" "${plainPass}"\r\n`)
@@ -972,7 +984,7 @@ function generateValidDl(stateCode: string, lastName: string = ''): string {
     const records: any[] = []
     for (let i = 1; i < rows.length; i++) {
       const r = rows[i]
-      const profileId = String((colName >= 0 ? r[colName] : r[0]) || `ROW-${i}`).trim()
+      const profileId = String((colName >= 0 ? r[colName] : r[0]) || '').trim()
       if (!profileId) continue
 
       // Parse composite mail if format: email|pass|2fa
@@ -985,7 +997,7 @@ function generateValidDl(stateCode: string, lastName: string = ''): string {
         const parts = rawMail.split('|')
         mailEmail = parts[0]?.trim() || ''
         if (parts[1]) mailPass = parts[1].trim()
-        if (parts[2]) mail2FA = parts[2].trim()
+        if (parts.length > 2) mail2FA = parts.slice(2).join('|').trim()
       }
 
       // Parse TikTok pass
