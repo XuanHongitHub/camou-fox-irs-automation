@@ -36,15 +36,31 @@ if not defined PY_CMD (
 if not defined PY_CMD set "PY_CMD=python"
 
 echo [INFO] Python command: %PY_CMD%
+
+:: Kiem tra thu vien truoc khi chay
+%PY_CMD% -c "import fastapi, uvicorn, requests, PIL" 2>nul
+if errorlevel 1 (
+    echo [AUTO-SETUP] Dang tu dong cai dat cac thu vien con thieu (fastapi, uvicorn, requests, pillow)...
+    %PY_CMD% -m pip install --quiet --disable-pip-version-check fastapi uvicorn requests pillow python-multipart
+)
+
 %PY_CMD% service.py
 if errorlevel 1 (
     echo.
     echo ========================================================
-    echo [ERROR] Không thể chạy service.py bằng lệnh: %PY_CMD%
-    echo Nếu lỗi 'Python was not found' từ Microsoft Store:
-    echo   1. Mở PowerShell chạy: winget install Python.Python.3.11
-    echo   2. Hoặc vào Settings > Apps > Advanced app settings
-    echo      > App execution aliases -> Tắt 'python.exe'
+    echo [AUTO-REPAIR] Phat hien loi khoi dong. Dang tu dong cai dat Python 3.11...
     echo ========================================================
+    powershell -NoProfile -ExecutionPolicy Bypass -Command "& { Write-Host 'Dang cai dat Python 3.11 tu dong qua winget...'; winget install Python.Python.3.11 --silent --accept-package-agreements --accept-source-agreements --override '/quiet InstallAllUsers=0 PrependPath=1 Include_test=0' }"
+    
+    if exist "%LOCALAPPDATA%\Programs\Python\Python311\python.exe" (
+        set "PY_CMD=%LOCALAPPDATA%\Programs\Python\Python311\python.exe"
+        echo [INFO] Da cai dat thanh cong tai: %PY_CMD%
+        echo [INFO] Dang cai dat tiep thu vien...
+        %PY_CMD% -m pip install --quiet --disable-pip-version-check fastapi uvicorn requests pillow python-multipart
+        echo [INFO] Dang khoi dong lai service.py...
+        %PY_CMD% service.py
+    ) else (
+        echo [ERROR] Khong the tu dong cai dat Python. Vui long kiem tra ket noi internet hoac chay thu cong: winget install Python.Python.3.11
+    )
 )
 pause

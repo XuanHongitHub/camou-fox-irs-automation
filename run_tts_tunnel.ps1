@@ -95,24 +95,72 @@ if ($isBackendRunning) {
     }
 
     if (-not $pythonCmd) {
-        Write-Host "  [ERROR] KHONG TIM THAY PYTHON TREN MAY TINH!" -ForegroundColor Red
-        Write-Host "  Chi tiet: Windows dang bi vuong shortcut ao 'Microsoft Store' (WindowsApps\python.exe)." -ForegroundColor Yellow
-        Write-Host ""
-        Write-Host "  =================== HUONG DAN KHAC PHUC NHANH ===================" -ForegroundColor Cyan
-        Write-Host "  CACH 1 (Khuyen nghi - 1 phut):" -ForegroundColor White
-        Write-Host "    Mo Terminal/PowerShell chay lenh:" -ForegroundColor White
-        Write-Host "      winget install Python.Python.3.11" -ForegroundColor Green
-        Write-Host ""
-        Write-Host "  CACH 2 (Neu may da cai Python ma van bao loi):" -ForegroundColor White
-        Write-Host "    1. Vao Windows Settings > Apps > Advanced app settings > App execution aliases" -ForegroundColor White
-        Write-Host "    2. GAT TAT (OFF) 2 muc: 'python.exe' va 'python3.exe'." -ForegroundColor White
-        Write-Host "    3. Chay lai script nay." -ForegroundColor White
-        Write-Host "  ================================================================" -ForegroundColor Cyan
-        Write-Host ""
-        exit 1
+        Write-Host "  [AUTO-INSTALL] May tinh chua co Python. Dang tu dong cai dat Python 3.11 (Zero-Friction)..." -ForegroundColor Yellow
+        
+        $installedSuccessfully = $false
+
+        # Cach 1: Su dung winget (Co san tren Windows 10/11)
+        try {
+            $hasWinget = Get-Command "winget" -ErrorAction SilentlyContinue
+            if ($hasWinget) {
+                Write-Host "  [INSTALL] Dang goi winget de cai dat Python 3.11 tu dong..." -ForegroundColor Cyan
+                & winget install Python.Python.3.11 --silent --accept-package-agreements --accept-source-agreements --override "/quiet InstallAllUsers=0 PrependPath=1 Include_test=0" | Out-Null
+                
+                $candidate = "$env:LOCALAPPDATA\Programs\Python\Python311\python.exe"
+                if (Test-Path $candidate) {
+                    $pythonCmd = $candidate
+                    $installedSuccessfully = $true
+                }
+            }
+        } catch {}
+
+        # Cach 2: Download truc tiep installer chinh thuc tu python.org ve bin/
+        if (-not $installedSuccessfully) {
+            Write-Host "  [INSTALL] Dang tai truc tiep bo cai Python 3.11 tu python.org..." -ForegroundColor Cyan
+            $pyInstallerUrl = "https://www.python.org/ftp/python/3.11.9/python-3.11.9-amd64.exe"
+            $installerPath = Join-Path $BinDir "python-3.11.9-amd64.exe"
+            try {
+                [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+                Invoke-WebRequest -Uri $pyInstallerUrl -OutFile $installerPath -UseBasicParsing
+                Write-Host "  [INSTALL] Dang chay cai dat ngam (Silent Install)..." -ForegroundColor Cyan
+                $instProc = Start-Process -FilePath $installerPath -ArgumentList "/quiet InstallAllUsers=0 PrependPath=1 Include_test=0" -Wait -PassThru
+                
+                $candidate = "$env:LOCALAPPDATA\Programs\Python\Python311\python.exe"
+                if (Test-Path $candidate) {
+                    $pythonCmd = $candidate
+                    $installedSuccessfully = $true
+                }
+            } catch {
+                Write-Host "  [WARN] Khong the tai bo cai python.org: $_" -ForegroundColor Yellow
+            }
+        }
+
+        if (-not $pythonCmd) {
+            $localPy = Get-ChildItem -Path "$env:LOCALAPPDATA\Programs\Python" -Filter "python.exe" -Recurse -Depth 2 -ErrorAction SilentlyContinue
+            if ($localPy) { $pythonCmd = $localPy[0].FullName }
+        }
+
+        if (-not $pythonCmd) {
+            Write-Host "  [ERROR] Khong the tu dong cai dat Python. Vui long kiem tra quyen hoac ket noi Internet." -ForegroundColor Red
+            exit 1
+        }
+        Write-Host "  [SUCCESS] Da cai dat Python thanh cong tai: $pythonCmd!" -ForegroundColor Green
     }
 
     Write-Host "  [OK] Su dung Python tai: $pythonCmd" -ForegroundColor Cyan
+
+    # Kiem tra va tu dong cai dat cac thu vien pip can thiet cho service.py
+    Write-Host "  [DEPS] Kiem tra cac thu vien can thiet cho service.py..." -ForegroundColor Gray
+    try {
+        & $pythonCmd -c "import fastapi, uvicorn, requests, PIL" 2>$null
+        if ($LASTEXITCODE -ne 0) {
+            Write-Host "  [AUTO-INSTALL] Dang tu dong cai dat thu vien (fastapi, uvicorn, requests, pillow)..." -ForegroundColor Yellow
+            & $pythonCmd -m pip install --quiet --disable-pip-version-check fastapi uvicorn requests pillow python-multipart
+            Write-Host "  [OK] Thu vien da duoc cai dat day du!" -ForegroundColor Green
+        } else {
+            Write-Host "  [OK] Cac thu vien phuc vu service.py da san sang!" -ForegroundColor Green
+        }
+    } catch {}
     $serviceScript = Join-Path $TtsBotDir "service.py"
     if (-not (Test-Path $serviceScript)) {
         Write-Host "  [ERROR] Khong tim thay service.py tai $serviceScript" -ForegroundColor Red
