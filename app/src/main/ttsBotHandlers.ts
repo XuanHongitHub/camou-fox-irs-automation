@@ -1957,51 +1957,7 @@ function generateValidDl(stateCode: string, lastName: string = ''): string {
     return null
   }
 
-  // Guaranteed Copilot Injection via Chrome DevTools Protocol (CDP) WebSocket
-  async function injectCopilotViaCdp(debugPort: number) {
-    try {
-      const contentJsPath = join(foxAutoRoot, 'additions', 'tts_bot', 'extension', 'content.js')
-      if (!existsSync(contentJsPath)) return
-      const contentJsCode = readFileSync(contentJsPath, 'utf-8')
-
-      const injectIntoTargets = async () => {
-        try {
-          const targets = await fetch(`http://127.0.0.1:${debugPort}/json/list`).then(r => r.json()).catch(() => [])
-          if (!Array.isArray(targets)) return
-          for (const target of targets) {
-            if (target.type === 'page' && target.webSocketDebuggerUrl) {
-              try {
-                // @ts-ignore Node 22 native WebSocket
-                const ws = new globalThis.WebSocket(target.webSocketDebuggerUrl)
-                ws.onopen = () => {
-                  ws.send(JSON.stringify({ id: 1, method: 'Page.enable' }))
-                  ws.send(JSON.stringify({
-                    id: 2,
-                    method: 'Page.addScriptToEvaluateOnNewDocument',
-                    params: { source: contentJsCode }
-                  }))
-                  ws.send(JSON.stringify({
-                    id: 3,
-                    method: 'Runtime.evaluate',
-                    params: { expression: contentJsCode, returnByValue: false }
-                  }))
-                  setTimeout(() => {
-                    try { ws.close() } catch {}
-                  }, 1200)
-                }
-                ws.onerror = () => {}
-              } catch {}
-            }
-          }
-        } catch {}
-      }
-
-      setTimeout(injectIntoTargets, 800)
-      setTimeout(injectIntoTargets, 2500)
-      setTimeout(injectIntoTargets, 5000)
-    } catch {}
-  }
-
+  // Extension injection has been completely disabled per user preference (clean browser profile)
   async function startAdsPowerBrowser(targetId: string, recordId?: string) {
     try {
       const baseUrl = getAdsBaseUrl()
@@ -2019,9 +1975,6 @@ function generateValidDl(stateCode: string, lastName: string = ''): string {
           .then((r) => r.json())
           .catch(() => null)
         if (activeRes && activeRes.code === 0 && activeRes.data && activeRes.data.status === 'Active') {
-          if (activeRes.data.debug_port) {
-            injectCopilotViaCdp(activeRes.data.debug_port)
-          }
           return { ok: true, data: activeRes.data, adspowerId: effectiveUserId, isAlreadyActive: true }
         }
       } catch {}
@@ -2036,11 +1989,9 @@ function generateValidDl(stateCode: string, lastName: string = ''): string {
       const data = await res.json()
 
       if (data && data.code === 0) {
-        // Auto-navigate to TikTok Seller Register tab via CDP if not already open & inject copilot script
+        // Auto-navigate to TikTok Seller Register tab via CDP if not already open
         if (data.data?.debug_port) {
           const debugPort = data.data.debug_port
-          injectCopilotViaCdp(debugPort)
-
           setTimeout(async () => {
             try {
               const targetsRes = await fetch(`http://127.0.0.1:${debugPort}/json/list`).then((r) => r.json()).catch(() => [])

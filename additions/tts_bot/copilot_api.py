@@ -903,8 +903,6 @@ def setup_profile_endpoint(payload: Dict[str, Any] = Body(...)):
                 "flash": "block"
             },
             "launch_args": [
-                f"--load-extension={EXTENSION_DIR}",
-                f"--disable-extensions-except={EXTENSION_DIR}",
                 "--start-maximized",
                 register_url
             ]

@@ -2068,7 +2068,7 @@ export function TtsBotView() {
 
   const handlePipelineLaunch = async (record: RecordItem) => {
     setPipelineLaunchingId(record.id)
-    setSetupFeedback(`⚡ Đang khởi động 1-Click: Cấu hình Proxy -> AdsPower -> Mở Browser + Extension cho ${record.id}...`)
+    setSetupFeedback(`⚡ Đang khởi động 1-Click: Cấu hình Proxy -> AdsPower -> Mở Browser sạch cho ${record.id}...`)
     try {
       const res = await ttsIpc.pipelineLaunchProfile(record)
       if (res && res.ok) {
@@ -4227,7 +4227,7 @@ export function TtsBotView() {
                                     onClick={() => handlePipelineLaunch(r)}
                                     disabled={pipelineLaunchingId === r.id || launchingProfileId === r.id}
                                     className="px-2.5 py-1 text-xs bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-white font-bold rounded-lg transition-all shadow-md flex items-center space-x-1.5 cursor-pointer disabled:opacity-50"
-                                    title="Khởi động 1-Click: Gán Port HideProxy -> Cập nhật AdsPower -> Mở Browser + Injected Extension"
+                                    title="Khởi động 1-Click: Gán Port HideProxy -> Cập nhật AdsPower -> Mở Browser sạch"
                                   >
                                     <Play className={`w-3 h-3 fill-white ${pipelineLaunchingId === r.id ? 'animate-spin' : ''}`} />
                                     <span>{pipelineLaunchingId === r.id ? 'Đang mở...' : '1-Click Chạy'}</span>
