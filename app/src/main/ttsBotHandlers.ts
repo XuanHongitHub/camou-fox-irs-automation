@@ -826,7 +826,9 @@ function generateValidDl(stateCode: string, lastName: string = ''): string {
     const colRegDate = findColExact('ngày reg', 'reg date', 'hạn bảo hành')
     const colIssueDate = findColExact('ngày cấp', 'issue date')
     const colSeller = findColExact('người phụ trách', 'nguồn / vendor', 'seller', 'vendor')
-    const colMail = findColExact('email đăng nhập tts', 'mail', 'email')
+    const colMail = findColExact('email đăng nhập tts', 'mail', 'email') !== -1
+      ? findColExact('email đăng nhập tts', 'mail', 'email')
+      : findCol('email', 'mail')
     const colTiktokPass = findColExact('mật khẩu tts', 'pass titkok shop', 'pass tiktok shop', 'pass titkok', 'pass tiktok', 'mật khẩu') !== -1
       ? findColExact('mật khẩu tts', 'pass titkok shop', 'pass tiktok shop', 'pass titkok', 'pass tiktok', 'mật khẩu')
       : findCol('titkok', 'tiktok', 'pass', 'mật khẩu')
@@ -861,6 +863,7 @@ function generateValidDl(stateCode: string, lastName: string = ''): string {
     const colPdf = findColExact('pdf', 'irs pdf', 'cp 575', 'cp575', '147c')
     const colFolderUrl = findColExact('folder_url', 'folder url', 'drive')
     const colBankStatement = findColExact('bank_statement', 'bank statement', 'utility', 'bill')
+    const colBankStatementPng = findColExact('bank_statement_png', 'bank statement png', 'statement png', 'bill png', 'png')
     const colDl = findColExact('số bằng lái (dl#)', 'dl#', 'dl', 'driver license', "driver's license", 'dl_num', 'dl no', 'bằng lái', 'driver', 'license', 'id number') !== -1
       ? findColExact('số bằng lái (dl#)', 'dl#', 'dl', 'driver license', "driver's license", 'dl_num', 'dl no', 'bằng lái', 'driver', 'license', 'id number')
       : findCol('dl', 'driver', 'bằng lái', 'license')
@@ -975,6 +978,7 @@ function generateValidDl(stateCode: string, lastName: string = ''): string {
       const rawRegDate = (colRegDate >= 0 ? r[colRegDate] : '') || ''
       const pdfDoc = (colPdf >= 0 ? r[colPdf] : '') || ''
       const bankStatement = (colBankStatement >= 0 ? r[colBankStatement] : '') || ''
+      const bankStatementPng = (colBankStatementPng >= 0 ? r[colBankStatementPng] : '') || ''
       const folderUrl = (colFolderUrl >= 0 ? r[colFolderUrl] : '') || ''
       const dlExp = (colDlExp >= 0 ? r[colDlExp] : '') || ''
       const shopName = (colShopName >= 0 ? r[colShopName] : '') || ''
@@ -1093,6 +1097,7 @@ function generateValidDl(stateCode: string, lastName: string = ''): string {
         pdfDoc,
         folderUrl,
         bankStatement,
+        bankStatementPng,
         businessType: 'Sole Proprietorship',
         businessName: nameLlc,
         shopName,
@@ -1288,11 +1293,43 @@ function generateValidDl(stateCode: string, lastName: string = ''): string {
       const rawText = await res.text()
       let code: string | null = null
 
-      // Strictly 6 digits; strictly disallow year numbers (2024..2027) or status integers (0, 1)
-      const checkCandidate = (val: any): string | null => {
-        if (val === undefined || val === null) return null
-        const s = String(val).trim()
-        if (/^\d{6}$/.test(s) && !/^202[4-7]$/.test(s)) return s
+      // Extractor helper: Supports 4 to 8 digits, handles text sentences and strict filtering
+      const extractOtpNumber = (input: any): string | null => {
+        if (input === undefined || input === null) return null
+        const s = String(input).trim()
+        if (!s) return null
+
+        // If it's already a clean 4-8 digit number (and not a year like 2024..2029)
+        if (/^\d{4,8}$/.test(s)) {
+          if (!/^202[0-9]$/.test(s)) return s
+          return null
+        }
+
+        // Try explicit phrase matches (e.g. "[TikTok] Your verification code is 4764", "code: 123456")
+        const phraseMatch = s.match(/(?:verification\s*code\s*(?:is|:)?|code\s*(?:is|:)?|mã\s*(?:xác\s*minh\s*)?(?:là|:)?)\s*(\d{4,8})\b/i)
+        if (phraseMatch && !/^202[0-9]$/.test(phraseMatch[1])) {
+          return phraseMatch[1]
+        }
+
+        const tiktokMatch = s.match(/(?:tiktok)[^\d]*(\d{4,8})\b/i)
+        if (tiktokMatch && !/^202[0-9]$/.test(tiktokMatch[1])) {
+          return tiktokMatch[1]
+        }
+
+        // Look for 6-digit codes first
+        const all6 = s.match(/\b\d{6}\b/g)
+        if (all6) {
+          const found = all6.find((c) => !/^202[0-9]$/.test(c))
+          if (found) return found
+        }
+
+        // Look for 4-digit codes next
+        const all4 = s.match(/\b\d{4}\b/g)
+        if (all4) {
+          const found = all4.find((c) => !/^202[0-9]$/.test(c) && c !== '0000')
+          if (found) return found
+        }
+
         return null
       }
 
@@ -1302,60 +1339,36 @@ function generateValidDl(stateCode: string, lastName: string = ''): string {
       } catch {}
 
       if (parsedJson) {
-        // 1. Direct candidate fields in JSON
+        // 1. Direct candidate fields in JSON (could be a number or sentence)
         const candidates = [
           parsedJson.data?.code,
           parsedJson.data?.sms_code,
           parsedJson.data?.otp,
           parsedJson.data?.verification_code,
+          parsedJson.data?.sms,
+          parsedJson.data?.text,
+          parsedJson.data?.message,
           parsedJson.otp,
+          parsedJson.code,
           parsedJson.sms_code,
-          parsedJson.verification_code
+          parsedJson.verification_code,
+          parsedJson.sms,
+          parsedJson.text,
+          parsedJson.message,
+          parsedJson.msg
         ]
         for (const cand of candidates) {
-          const valid = checkCandidate(cand)
+          const valid = extractOtpNumber(cand)
           if (valid) {
             code = valid
             break
           }
         }
+      }
 
-        // 2. Scan text body in JSON payload
-        if (!code) {
-          const smsBody = String(
-            parsedJson.data?.sms ||
-            parsedJson.data?.text ||
-            parsedJson.data?.message ||
-            parsedJson.sms ||
-            parsedJson.text ||
-            parsedJson.message ||
-            ''
-          )
-          if (smsBody) {
-            const matchTikTok = smsBody.match(/(?:tiktok|verification|code|mã)[^\d]*(\d{6})/i)
-            if (matchTikTok && checkCandidate(matchTikTok[1])) {
-              code = matchTikTok[1]
-            } else {
-              const all6 = smsBody.match(/\b\d{6}\b/g)
-              if (all6) {
-                const valid = all6.find(checkCandidate)
-                if (valid) code = valid
-              }
-            }
-          }
-        }
-      } else {
-        // Plain text response
-        const explicitMatch = rawText.match(/(?:code|mã|verification|tiktok)[^\d]*(\d{6})/i)
-        if (explicitMatch && checkCandidate(explicitMatch[1])) {
-          code = explicitMatch[1]
-        } else {
-          const all6 = rawText.match(/\b\d{6}\b/g)
-          if (all6) {
-            const valid = all6.find(checkCandidate)
-            if (valid) code = valid
-          }
-        }
+      // 2. Fallback to scanning raw text response if not found in JSON fields
+      if (!code) {
+        code = extractOtpNumber(rawText)
       }
 
       if (code) {
@@ -2247,6 +2260,7 @@ function generateValidDl(stateCode: string, lastName: string = ''): string {
           method: 'POST',
           headers: adsHeaders,
           body: JSON.stringify({
+            user_id: adspowerId,
             profile_id: adspowerId,
             group_id: targetGroupId !== '0' ? targetGroupId : undefined,
             user_proxy_config: proxyConfig,
@@ -3690,6 +3704,118 @@ function generateValidDl(stateCode: string, lastName: string = ''): string {
       return { ok: true, path: target }
     } catch (err: any) {
       return { ok: false, error: String(err?.message || err) }
+    }
+  })
+
+  // Google Drive Resolver & Opener (1-Click mở link trực tiếp cho FOLDER_URL, BANK_STATEMENT, BANK_STATEMENT_PNG, PDF)
+  ipcMain.handle('tts:doc:resolve-drive-link', async (_event, params: { name: string; isFolder?: boolean; openDirectly?: boolean }) => {
+    try {
+      const rawName = String(params?.name || '').trim()
+      if (!rawName) return { ok: false, error: 'Tên tệp hoặc folder trống' }
+
+      // 1. Direct HTTP/HTTPS link
+      if (rawName.startsWith('http://') || rawName.startsWith('https://')) {
+        if (params.openDirectly !== false) {
+          try { await shell.openExternal(rawName) } catch {}
+        }
+        return { ok: true, url: rawName }
+      }
+
+      // 2. Fetch Drive Access Token via OAuth
+      const oauthCandidates = [
+        join(foxAutoRoot, 'private', 'google-drive'),
+        'G:\\RTTS\\19-08-2026\\fox-auto\\private\\google-drive',
+        'F:\\Herd\\fox-auto\\private\\google-drive',
+        join(foxAutoRoot, 'app', 'dist', 'IRS_Bot_Full_Package', 'data', 'bug-auto', 'google-drive')
+      ]
+      let clientFile = ''
+      let userFile = ''
+      for (const p of oauthCandidates) {
+        const c = join(p, 'oauth-client.json')
+        const u = join(p, 'oauth-user.json')
+        if (existsSync(c) && existsSync(u)) {
+          clientFile = c
+          userFile = u
+          break
+        }
+      }
+
+      if (!clientFile || !userFile) {
+        // Fallback: Open Google Drive search link directly
+        const searchUrl = `https://drive.google.com/drive/search?q=${encodeURIComponent(rawName)}`
+        if (params.openDirectly !== false) {
+          try { await shell.openExternal(searchUrl) } catch {}
+        }
+        return { ok: true, url: searchUrl, isSearch: true }
+      }
+
+      const clientData = JSON.parse(readFileSync(clientFile, 'utf-8'))
+      const userData = JSON.parse(readFileSync(userFile, 'utf-8'))
+      const clientId = clientData.installed?.client_id || clientData.web?.client_id
+      const clientSecret = clientData.installed?.client_secret || clientData.web?.client_secret
+      const refreshToken = userData.refresh_token
+
+      if (!clientId || !clientSecret || !refreshToken) {
+        const searchUrl = `https://drive.google.com/drive/search?q=${encodeURIComponent(rawName)}`
+        if (params.openDirectly !== false) {
+          try { await shell.openExternal(searchUrl) } catch {}
+        }
+        return { ok: true, url: searchUrl, isSearch: true }
+      }
+
+      const tokenRes = await fetch('https://oauth2.googleapis.com/token', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: new URLSearchParams({
+          client_id: clientId,
+          client_secret: clientSecret,
+          refresh_token: refreshToken,
+          grant_type: 'refresh_token'
+        })
+      })
+      const tokenData = await tokenRes.json()
+      if (!tokenData.access_token) {
+        const searchUrl = `https://drive.google.com/drive/search?q=${encodeURIComponent(rawName)}`
+        if (params.openDirectly !== false) {
+          try { await shell.openExternal(searchUrl) } catch {}
+        }
+        return { ok: true, url: searchUrl, isSearch: true }
+      }
+
+      // Query Drive API
+      const isFolder = !!params.isFolder
+      const cond = isFolder
+        ? "mimeType = 'application/vnd.google-apps.folder'"
+        : "mimeType != 'application/vnd.google-apps.folder'"
+      const escaped = rawName.replace(/'/g, "\\'")
+      const query = `name = '${escaped}' and ${cond} and trashed = false`
+
+      const driveRes = await fetch(
+        `https://www.googleapis.com/drive/v3/files?q=${encodeURIComponent(query)}&supportsAllDrives=true&includeItemsFromAllDrives=true&pageSize=1`,
+        { headers: { Authorization: `Bearer ${tokenData.access_token}` } }
+      )
+      const driveData = await driveRes.json()
+      const files = driveData.files || []
+
+      let finalUrl = ''
+      if (files.length > 0) {
+        const fid = files[0].id
+        finalUrl = isFolder
+          ? `https://drive.google.com/drive/folders/${fid}`
+          : `https://drive.google.com/file/d/${fid}/view`
+      } else {
+        // Broad search if exact match not found
+        finalUrl = `https://drive.google.com/drive/search?q=${encodeURIComponent(rawName)}`
+      }
+
+      if (params.openDirectly !== false && finalUrl) {
+        try { await shell.openExternal(finalUrl) } catch {}
+      }
+      return { ok: true, url: finalUrl }
+    } catch (err: any) {
+      const fallbackUrl = `https://drive.google.com/drive/search?q=${encodeURIComponent(params?.name || '')}`
+      try { await shell.openExternal(fallbackUrl) } catch {}
+      return { ok: true, url: fallbackUrl, fallback: true }
     }
   })
 

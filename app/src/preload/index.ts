@@ -181,7 +181,9 @@ const api = {
       downloadDialog: (params: { filePath: string; defaultName?: string }) =>
         ipcRenderer.invoke('tts:doc:download-dialog', params),
       openFile: (filePath: string) => ipcRenderer.invoke('tts:doc:open-file', filePath),
-      openFolder: (folderPath?: string) => ipcRenderer.invoke('tts:doc:open-folder', folderPath)
+      openFolder: (folderPath?: string) => ipcRenderer.invoke('tts:doc:open-folder', folderPath),
+      resolveDriveLink: (params: { name: string; isFolder?: boolean; openDirectly?: boolean }) =>
+        ipcRenderer.invoke('tts:doc:resolve-drive-link', params)
     },
     extension: {
       getInfo: () => ipcRenderer.invoke('tts:extension:get-info'),

@@ -49,21 +49,34 @@ if ($isBackendRunning) {
     if (-not (Test-Path $serviceScript)) {
         Write-Host "  [ERROR] Khong tim thay service.py tai $serviceScript" -ForegroundColor Red
     } else {
-        Start-Process -FilePath $pythonCmd -ArgumentList "service.py" -WorkingDirectory $TtsBotDir -WindowStyle Minimized
-        Write-Host "  [WAIT] Dang cho Backend khoi tao (3-5 giay)..." -ForegroundColor Gray
+        $serviceLog = Join-Path $RuntimeDir "service.log"
+        $serviceErr = Join-Path $RuntimeDir "service_err.log"
+        $proc = Start-Process -FilePath $pythonCmd -ArgumentList "service.py" -WorkingDirectory $TtsBotDir -WindowStyle Minimized -RedirectStandardOutput $serviceLog -RedirectStandardError $serviceErr -PassThru
+        Write-Host "  [WAIT] Dang cho Backend khoi tao tren port 8787..." -ForegroundColor Gray
         
-        $retries = 15
+        $retries = 10
         while ($retries -gt 0) {
-            Start-Sleep -Seconds 1
+            Start-Sleep -Milliseconds 600
             try {
-                $check = Invoke-RestMethod -Uri "http://127.0.0.1:8787/api/status" -TimeoutSec 2 -ErrorAction SilentlyContinue
-                if ($check) {
+                $checkPort = Get-NetTCPConnection -LocalPort 8787 -State Listen -ErrorAction SilentlyContinue
+                if ($checkPort) {
                     Write-Host "  [OK] Backend (:8787) da khoi dong thanh cong!" -ForegroundColor Green
                     $isBackendRunning = $true
                     break
                 }
             } catch {}
+            if ($proc.HasExited) {
+                Write-Host "  [ERROR] Tien trinh service.py da dung dot ngot voi ma thoat $($proc.ExitCode)!" -ForegroundColor Red
+                if (Test-Path $serviceErr) {
+                    $errText = Get-Content $serviceErr -Tail 10 -ErrorAction SilentlyContinue
+                    if ($errText) { Write-Host "  Chi tiet loi: $errText" -ForegroundColor Red }
+                }
+                break
+            }
             $retries--
+        }
+        if (-not $isBackendRunning -and -not $proc.HasExited) {
+            Write-Host "  [WARN] Backend chua phan hoi port 8787 sau 6 giay. Van tiep tuc khoi chay tunnel..." -ForegroundColor Yellow
         }
     }
 }

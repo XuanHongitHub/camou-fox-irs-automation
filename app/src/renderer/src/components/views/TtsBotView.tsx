@@ -99,6 +99,7 @@ export interface RecordItem {
   pdfDoc?: string
   folderUrl?: string
   bankStatement?: string
+  bankStatementPng?: string
   businessType: string
   businessName: string
   shopName?: string
@@ -382,6 +383,11 @@ const ttsIpc = {
   docOpenFolder: async (folderPath?: string) => {
     if ((window.api?.tts as any)?.doc?.openFolder) return await (window.api.tts as any).doc.openFolder(folderPath)
     if (window.electron?.ipcRenderer) return await window.electron.ipcRenderer.invoke('tts:doc:open-folder', folderPath)
+    return { ok: false, error: 'IPC unavailable' }
+  },
+  resolveDriveLink: async (params: { name: string; isFolder?: boolean; openDirectly?: boolean }) => {
+    if ((window.api?.tts as any)?.doc?.resolveDriveLink) return await (window.api.tts as any).doc.resolveDriveLink(params)
+    if (window.electron?.ipcRenderer) return await window.electron.ipcRenderer.invoke('tts:doc:resolve-drive-link', params)
     return { ok: false, error: 'IPC unavailable' }
   },
   extensionGetInfo: async () => {
@@ -682,7 +688,7 @@ export function TtsBotView() {
   const [livePhoneOtp, setLivePhoneOtp] = useState<string | null>(null)
   const [isFetchingPhoneOtp, setIsFetchingPhoneOtp] = useState(false)
   const [phoneOtpError, setPhoneOtpError] = useState<string | null>(null)
-  const [generatingDocType, setGeneratingDocType] = useState<'cp575' | 'verizon' | null>(null)
+  const [openingDriveKey, setOpeningDriveKey] = useState<string | null>(null)
   const [docNotice, setDocNotice] = useState<string | null>(null)
   const [extensionModalOpen, setExtensionModalOpen] = useState(false)
   const [copiedExtensionPath, setCopiedExtensionPath] = useState(false)
@@ -1133,13 +1139,63 @@ export function TtsBotView() {
         port: proxyHideproxyPort
       })
       if (res && res.ok) {
+        const proxyString = `http://127.0.0.1:${proxyHideproxyPort}`
+        const proxyConfig = {
+          proxy_soft: 'other',
+          proxy_type: 'http',
+          proxy_host: '127.0.0.1',
+          proxy_port: String(proxyHideproxyPort)
+        }
         setProxyManualForm((prev) => ({
           ...prev,
           type: 'http',
           host: '127.0.0.1',
           port: String(proxyHideproxyPort)
         }))
-        setProxyUpdateNotice({ ok: true, msg: `✓ Đã mua và gán IP HideProxy thành công tại Port ${proxyHideproxyPort} (${proxyHideproxyState})!` })
+
+        // Auto-apply immediately to AdsPower and local state!
+        const updateRes = await ttsIpc.proxyUpdateProfile({
+          recordId: proxyModalRecord.id,
+          adspowerId: proxyModalRecord.adspowerId,
+          proxyString,
+          proxyConfig,
+          restartIfActive: proxyRestartIfActive
+        })
+
+        // Update records in React state
+        setRecords((prev) =>
+          prev.map((r) =>
+            r.id === proxyModalRecord.id
+              ? { ...r, proxy: proxyString, assignedPort: proxyHideproxyPort }
+              : r
+          )
+        )
+        setActiveRuns((prev) =>
+          prev.map((r) =>
+            r.id === proxyModalRecord.id
+              ? { ...r, proxy: proxyString, assignedPort: proxyHideproxyPort }
+              : r
+          )
+        )
+        setProxyModalRecord((prev) =>
+          prev ? { ...prev, proxy: proxyString, assignedPort: proxyHideproxyPort } : null
+        )
+        if (formModalRecord && formModalRecord.id === proxyModalRecord.id) {
+          setFormModalRecord((prev) =>
+            prev ? { ...prev, proxy: proxyString, assignedPort: proxyHideproxyPort } : null
+          )
+        }
+
+        const adsStatus = updateRes?.adsUpdated
+          ? '(Đã sync AdsPower)'
+          : updateRes?.adsError
+          ? `(AdsPower: ${updateRes.adsError})`
+          : '(Đã lưu hồ sơ)'
+        setProxyUpdateNotice({
+          ok: true,
+          msg: `✓ Đã mua và tự động gán IP HideProxy Port ${proxyHideproxyPort} (${proxyHideproxyState})! ${adsStatus}`
+        })
+        setSetupFeedback(`✓ Đã mua & gán IP Port ${proxyHideproxyPort} cho [${proxyModalRecord.id}]`)
       } else {
         setProxyUpdateNotice({ ok: false, msg: res?.error || 'Không thể mua IP từ HideProxy' })
       }
@@ -1278,49 +1334,79 @@ export function TtsBotView() {
     }
   }
 
-  const handleGenerateCp575 = async (record: RecordItem) => {
-    setGeneratingDocType('cp575')
+  // Multi-Profile Fast Navigation Handler (Prev / Next)
+  const handleNavFormRecord = (direction: 'prev' | 'next') => {
+    if (!formModalRecord || records.length === 0) return
+    const currentIndex = records.findIndex((r) => r.id === formModalRecord.id)
+    if (currentIndex === -1) return
+    const nextIndex =
+      direction === 'prev'
+        ? (currentIndex - 1 + records.length) % records.length
+        : (currentIndex + 1) % records.length
+    const nextRecord = records[nextIndex]
+    setFormModalRecord(nextRecord)
+    setSelectedRecordId(nextRecord.id)
+    setLiveMailOtp(null)
+    setLivePhoneOtp(null)
+    setMailOtpError(null)
+    setPhoneOtpError(null)
     setDocNotice(null)
-    try {
-      const res = await ttsIpc.generateCp575(record)
-      if (res && res.ok) {
-        if (res.isExisting) {
-          setDocNotice(`✓ Đã mở tệp IRS CP575 có sẵn: ${res.fileName}`)
-        } else if (res.isDrive) {
-          setDocNotice(`✓ Đã mở tệp IRS CP575 từ Google Drive: ${res.fileName}`)
-        } else {
-          setDocNotice(`✓ Đã tạo IRS CP575 Notice thành công: ${res.fileName}`)
-        }
-      } else {
-        setDocNotice(`❌ Lỗi mở/tạo CP575: ${res?.error || 'Thất bại'}`)
-      }
-    } catch (err: any) {
-      setDocNotice(`❌ Lỗi: ${err?.message || err}`)
-    } finally {
-      setGeneratingDocType(null)
-    }
+    setRawPhoneSmsText('')
   }
 
-  const handleGenerateVerizon = async (record: RecordItem) => {
-    setGeneratingDocType('verizon')
-    setDocNotice(null)
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (!formModalRecord) return
+      const tag = (e.target as HTMLElement)?.tagName?.toLowerCase()
+      if (tag === 'input' || tag === 'textarea') return
+
+      if (e.key === 'ArrowLeft' && (e.altKey || e.ctrlKey)) {
+        e.preventDefault()
+        handleNavFormRecord('prev')
+      } else if (e.key === 'ArrowRight' && (e.altKey || e.ctrlKey)) {
+        e.preventDefault()
+        handleNavFormRecord('next')
+      } else if (e.key === 'Escape') {
+        setFormModalRecord(null)
+      }
+    }
+    window.addEventListener('keydown', handleKeyDown)
+    return () => window.removeEventListener('keydown', handleKeyDown)
+  }, [formModalRecord, records])
+
+  const handleOpenDriveDoc = async (
+    nameOrUrl?: string,
+    docLabel = 'Tài liệu',
+    isFolder = false
+  ) => {
+    const raw = String(nameOrUrl || '').trim()
+    if (!raw) {
+      setDocNotice(`❌ Chưa có thông tin ${docLabel} cho hồ sơ này trên bảng Sheet.`)
+      return
+    }
+    const key = `${docLabel}:${raw}`
+    setOpeningDriveKey(key)
+    setDocNotice(`🔍 Đang mở link Drive cho ${docLabel}...`)
     try {
-      const res = await ttsIpc.generateVerizon(record)
-      if (res && res.ok) {
-        if (res.isExisting) {
-          setDocNotice(`✓ Đã mở tệp Verizon Statement có sẵn: ${res.fileName}`)
-        } else if (res.isDrive) {
-          setDocNotice(`✓ Đã mở tệp Verizon Statement từ Google Drive: ${res.fileName}`)
-        } else {
-          setDocNotice(`✓ Đã tạo Verizon Statement thành công: ${res.fileName}`)
-        }
+      if (raw.startsWith('http://') || raw.startsWith('https://')) {
+        window.open(raw, '_blank')
+        setDocNotice(`✓ Đã mở link Drive: ${raw.slice(0, 50)}...`)
+        return
+      }
+      const res = await ttsIpc.resolveDriveLink({ name: raw, isFolder, openDirectly: true })
+      if (res && res.ok && res.url) {
+        setDocNotice(`✓ Đã mở link Drive: ${raw}`)
       } else {
-        setDocNotice(`❌ Lỗi mở/tạo Verizon: ${res?.error || 'Thất bại'}`)
+        const searchUrl = `https://drive.google.com/drive/search?q=${encodeURIComponent(raw)}`
+        window.open(searchUrl, '_blank')
+        setDocNotice(`✓ Đã mở tìm kiếm Drive: ${raw}`)
       }
     } catch (err: any) {
-      setDocNotice(`❌ Lỗi: ${err?.message || err}`)
+      const fallbackUrl = `https://drive.google.com/drive/search?q=${encodeURIComponent(raw)}`
+      window.open(fallbackUrl, '_blank')
+      setDocNotice(`✓ Đã mở Drive: ${raw}`)
     } finally {
-      setGeneratingDocType(null)
+      setOpeningDriveKey(null)
     }
   }
 
@@ -1470,37 +1556,6 @@ export function TtsBotView() {
     setIsEditingDl(false)
   }
 
-  const handleDownloadDoc = async (record: RecordItem, docType: 'cp575' | 'verizon') => {
-    setGeneratingDocType(docType)
-    setDocNotice(null)
-    try {
-      const genRes = docType === 'cp575' ? await ttsIpc.generateCp575(record) : await ttsIpc.generateVerizon(record)
-      if (genRes && genRes.ok) {
-        if (genRes.filePath) {
-          const dlRes = await ttsIpc.docDownloadDialog({
-            filePath: genRes.filePath,
-            defaultName: genRes.fileName
-          })
-          if (dlRes && dlRes.ok) {
-            setDocNotice(`✓ Đã lưu file thành công: ${dlRes.savedPath}`)
-          } else if (dlRes && dlRes.cancelled) {
-            // Cancelled by user
-          } else {
-            setDocNotice(`❌ Lỗi lưu file: ${dlRes?.error || 'Thất bại'}`)
-          }
-        } else if (genRes.isDrive) {
-          setDocNotice(`✓ Đã mở link tải từ Google Drive: ${genRes.fileName}`)
-        }
-      } else {
-        setDocNotice(`❌ Lỗi tìm/tạo PDF: ${genRes?.error || 'Thất bại'}`)
-      }
-    } catch (err: any) {
-      setDocNotice(`❌ Lỗi: ${err?.message || err}`)
-    } finally {
-      setGeneratingDocType(null)
-    }
-  }
-
   // 1. Check API Status
   const refreshStatus = useCallback(async () => {
     setIsCheckingStatus(true)
@@ -1633,23 +1688,45 @@ export function TtsBotView() {
   }, [assignments, activeRuns, profileSetups, consumedRecords, harvestedUploads, mailStatuses, autoConfig, poolFolderPath, selectedSheetTab, startRowInput, endRowInput, pageSizeLimit])
 
   // Direct Port Update Handler for Quick Manual Edits
-  const handleDirectPortUpdate = (recordId: string, newPort: number) => {
+  const handleDirectPortUpdate = async (recordId: string, newPort: number) => {
+    const proxyString = `http://127.0.0.1:${newPort}`
     setRecords((prev) =>
-      prev.map((r) => (r.id === recordId ? { ...r, assignedPort: newPort } : r))
+      prev.map((r) => (r.id === recordId ? { ...r, assignedPort: newPort, proxy: proxyString } : r))
     )
     setActiveRuns((prev) =>
-      prev.map((r) => (r.id === recordId ? { ...r, assignedPort: newPort } : r))
+      prev.map((r) => (r.id === recordId ? { ...r, assignedPort: newPort, proxy: proxyString } : r))
     )
+    if (formModalRecord && formModalRecord.id === recordId) {
+      setFormModalRecord((prev) => (prev ? { ...prev, assignedPort: newPort, proxy: proxyString } : null))
+    }
     const updatedSetups = {
       ...profileSetups,
       [recordId]: {
         ...(profileSetups[recordId] || {}),
         assignedPort: newPort,
+        assignedProxy: proxyString,
         updatedAt: Date.now()
       }
     }
     setProfileSetups(updatedSetups)
     persistState(undefined, undefined, undefined, undefined, undefined, undefined, updatedSetups)
+
+    // Sync to AdsPower automatically
+    try {
+      const rec = records.find((r) => r.id === recordId)
+      await ttsIpc.proxyUpdateProfile({
+        recordId,
+        adspowerId: rec?.adspowerId,
+        proxyString,
+        proxyConfig: {
+          proxy_soft: 'other',
+          proxy_type: 'http',
+          proxy_host: '127.0.0.1',
+          proxy_port: String(newPort)
+        }
+      })
+      setSetupFeedback(`✓ Đã cập nhật Port ${newPort} cho [${recordId}] & AdsPower!`)
+    } catch {}
   }
 
   // Handle Auto-Rotate Variant (Chống trùng form, đảo mặt đúng side, tránh file reject)
@@ -3706,7 +3783,18 @@ export function TtsBotView() {
                       return (
                         <tr
                           key={r.id}
-                          onClick={() => setSelectedRecordId(r.id)}
+                          onClick={() => {
+                            setSelectedRecordId(r.id)
+                            if (formModalRecord) {
+                              setFormModalRecord(r)
+                              setLiveMailOtp(null)
+                              setLivePhoneOtp(null)
+                              setMailOtpError(null)
+                              setPhoneOtpError(null)
+                              setDocNotice(null)
+                              setRawPhoneSmsText('')
+                            }
+                          }}
                           className={`transition-colors cursor-pointer ${
                             isConsumed
                               ? 'bg-black/90 text-slate-500 border-l-2 border-slate-700'
@@ -4187,26 +4275,47 @@ export function TtsBotView() {
                                 <span>Điền Form</span>
                               </button>
 
-                              {/* Quick CP575 button */}
+                              {/* 3 Nút Mở Link Drive: FOLDER_URL, BANK_STATEMENT (PDF), BANK_STATEMENT_PNG */}
+                              {/* 1. Mở Folder Drive */}
                               <button
-                                onClick={() => handleGenerateCp575(r)}
-                                disabled={generatingDocType === 'cp575'}
-                                className="px-1.5 py-1 text-[11px] bg-slate-800 hover:bg-slate-700 text-sky-300 border border-slate-700 rounded-lg transition-all shadow-sm flex items-center space-x-1 cursor-pointer"
-                                title="Tải / Tạo IRS Form CP575 Notice PDF"
+                                onClick={(e) => {
+                                  e.stopPropagation()
+                                  handleOpenDriveDoc(r.folderUrl, 'Folder Drive', true)
+                                }}
+                                disabled={openingDriveKey === `Folder Drive:${r.folderUrl}`}
+                                className="px-1.5 py-1 text-[11px] bg-amber-950/40 hover:bg-amber-900/60 text-amber-300 border border-amber-800/60 rounded-lg transition-all shadow-sm flex items-center space-x-1 cursor-pointer disabled:opacity-50"
+                                title={`Mở Thư Mục Google Drive (${r.folderUrl || 'Chưa có'})`}
                               >
-                                <FileText className={`w-3 h-3 ${generatingDocType === 'cp575' ? 'animate-spin' : ''}`} />
-                                <span>CP575</span>
+                                <FolderOpen className={`w-3 h-3 ${openingDriveKey === `Folder Drive:${r.folderUrl}` ? 'animate-spin' : ''}`} />
+                                <span>Folder</span>
                               </button>
 
-                              {/* Quick Verizon button */}
+                              {/* 2. Mở Bill PDF */}
                               <button
-                                onClick={() => handleGenerateVerizon(r)}
-                                disabled={generatingDocType === 'verizon'}
-                                className="px-1.5 py-1 text-[11px] bg-slate-800 hover:bg-slate-700 text-emerald-300 border border-slate-700 rounded-lg transition-all shadow-sm flex items-center space-x-1 cursor-pointer"
-                                title="Tải / Tạo Hóa Đơn Tiện Ích Verizon Statement PDF"
+                                onClick={(e) => {
+                                  e.stopPropagation()
+                                  handleOpenDriveDoc(r.bankStatement || r.pdfDoc, 'Bank Statement PDF')
+                                }}
+                                disabled={openingDriveKey === `Bank Statement PDF:${r.bankStatement || r.pdfDoc}`}
+                                className="px-1.5 py-1 text-[11px] bg-sky-950/40 hover:bg-sky-900/60 text-sky-300 border border-sky-800/60 rounded-lg transition-all shadow-sm flex items-center space-x-1 cursor-pointer disabled:opacity-50"
+                                title={`Mở Link Drive Hóa Đơn PDF (${r.bankStatement || r.pdfDoc || 'Chưa có'})`}
                               >
-                                <Building className={`w-3 h-3 ${generatingDocType === 'verizon' ? 'animate-spin' : ''}`} />
-                                <span>Verizon</span>
+                                <FileText className={`w-3 h-3 ${openingDriveKey === `Bank Statement PDF:${r.bankStatement || r.pdfDoc}` ? 'animate-spin' : ''}`} />
+                                <span>PDF</span>
+                              </button>
+
+                              {/* 3. Mở Bill PNG */}
+                              <button
+                                onClick={(e) => {
+                                  e.stopPropagation()
+                                  handleOpenDriveDoc(r.bankStatementPng, 'Bank Statement PNG')
+                                }}
+                                disabled={openingDriveKey === `Bank Statement PNG:${r.bankStatementPng}`}
+                                className="px-1.5 py-1 text-[11px] bg-emerald-950/40 hover:bg-emerald-900/60 text-emerald-300 border border-emerald-800/60 rounded-lg transition-all shadow-sm flex items-center space-x-1 cursor-pointer disabled:opacity-50"
+                                title={`Mở Link Drive Ảnh Hóa Đơn PNG (${r.bankStatementPng || 'Chưa có'})`}
+                              >
+                                <ExternalLink className={`w-3 h-3 ${openingDriveKey === `Bank Statement PNG:${r.bankStatementPng}` ? 'animate-spin' : ''}`} />
+                                <span>PNG</span>
                               </button>
 
                               {/* Quick Proxy button */}
@@ -4949,44 +5058,44 @@ export function TtsBotView() {
                 </div>
               </div>
 
-              {/* Card 3: Tài liệu Pháp lý & Tạo PDF Chuẩn */}
+              {/* Card 3: Tài liệu Google Drive (Folder, PDF & PNG) */}
               <div className="bg-slate-950 p-4 rounded-xl border border-slate-800">
                 <div className="flex items-center justify-between mb-2.5">
                   <h4 className="text-slate-400 uppercase font-semibold text-[10px] tracking-wider flex items-center space-x-1.5">
                     <FileText className="w-3.5 h-3.5 text-sky-400" />
-                    <span>3. Tài liệu Pháp lý & PDF (IRS CP575, Verizon)</span>
+                    <span>3. Tài liệu Google Drive (Folder, PDF & PNG)</span>
                   </h4>
                   <button
                     onClick={() => ttsIpc.docOpenFolder()}
-                    className="text-[10px] text-cyan-400 hover:text-cyan-300 flex items-center space-x-1 cursor-pointer"
+                    className="text-[10px] text-slate-500 hover:text-slate-300 flex items-center space-x-1 cursor-pointer"
                   >
                     <FolderOpen className="w-3 h-3" />
-                    <span>Mở Thư Mục PDF</span>
+                    <span>Mở Folder Local</span>
                   </button>
                 </div>
                 <div className="space-y-2.5">
-                  {/* IRS CP 575 Notice */}
-                  <div className="p-2.5 bg-slate-900 border border-slate-800 rounded-lg space-y-2">
+                  {/* Folder Drive */}
+                  <div className="p-2.5 bg-slate-900 border border-slate-800 rounded-lg space-y-1.5">
                     <div className="flex items-center justify-between">
-                      <span className="text-slate-300 font-medium">Thư xác nhận thuế IRS (Form CP 575G):</span>
-                      <span className="text-emerald-400 text-[10px] font-mono font-semibold">
-                        EIN: {currentRecord.ein || 'Chưa có'}
+                      <span className="text-slate-300 font-medium text-xs">Thư mục Google Drive:</span>
+                      <span className="text-amber-400 text-[10px] font-mono font-semibold truncate max-w-[150px]">
+                        {currentRecord.folderUrl || 'Chưa có'}
                       </span>
                     </div>
                     <div className="flex items-center space-x-2">
                       <button
-                        onClick={() => handleGenerateCp575(currentRecord)}
-                        disabled={generatingDocType === 'cp575'}
-                        className="flex-1 py-1.5 px-3 bg-sky-600 hover:bg-sky-500 text-white rounded-lg text-xs font-semibold shadow flex items-center justify-center space-x-1.5 transition-all cursor-pointer"
+                        onClick={() => handleOpenDriveDoc(currentRecord.folderUrl, 'Folder Drive', true)}
+                        disabled={openingDriveKey === `Folder Drive:${currentRecord.folderUrl}`}
+                        className="flex-1 py-1.5 px-3 bg-amber-600/30 hover:bg-amber-600 text-amber-300 hover:text-white border border-amber-500/40 rounded-lg text-xs font-semibold shadow flex items-center justify-center space-x-1.5 transition-all cursor-pointer disabled:opacity-50"
                       >
-                        <FileText className={`w-3.5 h-3.5 ${generatingDocType === 'cp575' ? 'animate-spin' : ''}`} />
-                        <span>{generatingDocType === 'cp575' ? 'Đang tạo PDF...' : '📄 Tạo & Mở IRS CP 575 PDF'}</span>
+                        <FolderOpen className={`w-3.5 h-3.5 ${openingDriveKey === `Folder Drive:${currentRecord.folderUrl}` ? 'animate-spin' : ''}`} />
+                        <span>Mở Thư Mục Drive</span>
                       </button>
-                      {currentRecord.pdfDoc && (
+                      {currentRecord.folderUrl && (
                         <button
-                          onClick={() => navigator.clipboard.writeText(currentRecord.pdfDoc || '')}
+                          onClick={() => navigator.clipboard.writeText(currentRecord.folderUrl || '')}
                           className="p-1.5 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-lg"
-                          title="Copy tên file"
+                          title="Copy folder name / URL"
                         >
                           <Copy className="w-3.5 h-3.5" />
                         </button>
@@ -4994,28 +5103,28 @@ export function TtsBotView() {
                     </div>
                   </div>
 
-                  {/* Verizon Statement */}
-                  <div className="p-2.5 bg-slate-900 border border-slate-800 rounded-lg space-y-2">
+                  {/* Bank Statement PDF */}
+                  <div className="p-2.5 bg-slate-900 border border-slate-800 rounded-lg space-y-1.5">
                     <div className="flex items-center justify-between">
-                      <span className="text-slate-300 font-medium">Hóa đơn tiện ích / Proof of Address (Verizon):</span>
-                      <span className="text-emerald-400 text-[10px] font-mono font-semibold">
-                        Bang {currentRecord.state}
+                      <span className="text-slate-300 font-medium text-xs">Bank Statement PDF:</span>
+                      <span className="text-sky-400 text-[10px] font-mono font-semibold truncate max-w-[150px]">
+                        {currentRecord.bankStatement || currentRecord.pdfDoc || 'Chưa có'}
                       </span>
                     </div>
                     <div className="flex items-center space-x-2">
                       <button
-                        onClick={() => handleGenerateVerizon(currentRecord)}
-                        disabled={generatingDocType === 'verizon'}
-                        className="flex-1 py-1.5 px-3 bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg text-xs font-semibold shadow flex items-center justify-center space-x-1.5 transition-all cursor-pointer"
+                        onClick={() => handleOpenDriveDoc(currentRecord.bankStatement || currentRecord.pdfDoc, 'Bank Statement PDF')}
+                        disabled={openingDriveKey === `Bank Statement PDF:${currentRecord.bankStatement || currentRecord.pdfDoc}`}
+                        className="flex-1 py-1.5 px-3 bg-sky-600/30 hover:bg-sky-600 text-sky-300 hover:text-white border border-sky-500/40 rounded-lg text-xs font-semibold shadow flex items-center justify-center space-x-1.5 transition-all cursor-pointer disabled:opacity-50"
                       >
-                        <Building className={`w-3.5 h-3.5 ${generatingDocType === 'verizon' ? 'animate-spin' : ''}`} />
-                        <span>{generatingDocType === 'verizon' ? 'Đang tạo Bill...' : '📄 Tạo & Mở Verizon Statement PDF'}</span>
+                        <FileText className={`w-3.5 h-3.5 ${openingDriveKey === `Bank Statement PDF:${currentRecord.bankStatement || currentRecord.pdfDoc}` ? 'animate-spin' : ''}`} />
+                        <span>Mở Bank Statement PDF</span>
                       </button>
-                      {currentRecord.bankStatement && (
+                      {(currentRecord.bankStatement || currentRecord.pdfDoc) && (
                         <button
-                          onClick={() => navigator.clipboard.writeText(currentRecord.bankStatement || '')}
+                          onClick={() => navigator.clipboard.writeText(currentRecord.bankStatement || currentRecord.pdfDoc || '')}
                           className="p-1.5 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-lg"
-                          title="Copy tên file"
+                          title="Copy tên file PDF"
                         >
                           <Copy className="w-3.5 h-3.5" />
                         </button>
@@ -5023,13 +5132,34 @@ export function TtsBotView() {
                     </div>
                   </div>
 
-                  {/* Folder URL */}
-                  {currentRecord.folderUrl && (
-                    <div className="flex items-center justify-between text-[11px] text-slate-400">
-                      <span>Folder Google Drive:</span>
-                      <span className="font-mono text-slate-300">{currentRecord.folderUrl}</span>
+                  {/* Bank Statement PNG */}
+                  <div className="p-2.5 bg-slate-900 border border-slate-800 rounded-lg space-y-1.5">
+                    <div className="flex items-center justify-between">
+                      <span className="text-slate-300 font-medium text-xs">Bank Statement PNG:</span>
+                      <span className="text-emerald-400 text-[10px] font-mono font-semibold truncate max-w-[150px]">
+                        {currentRecord.bankStatementPng || 'Chưa có'}
+                      </span>
                     </div>
-                  )}
+                    <div className="flex items-center space-x-2">
+                      <button
+                        onClick={() => handleOpenDriveDoc(currentRecord.bankStatementPng, 'Bank Statement PNG')}
+                        disabled={openingDriveKey === `Bank Statement PNG:${currentRecord.bankStatementPng}`}
+                        className="flex-1 py-1.5 px-3 bg-emerald-600/30 hover:bg-emerald-600 text-emerald-300 hover:text-white border border-emerald-500/40 rounded-lg text-xs font-semibold shadow flex items-center justify-center space-x-1.5 transition-all cursor-pointer disabled:opacity-50"
+                      >
+                        <ExternalLink className={`w-3.5 h-3.5 ${openingDriveKey === `Bank Statement PNG:${currentRecord.bankStatementPng}` ? 'animate-spin' : ''}`} />
+                        <span>Mở Bank Statement PNG</span>
+                      </button>
+                      {currentRecord.bankStatementPng && (
+                        <button
+                          onClick={() => navigator.clipboard.writeText(currentRecord.bankStatementPng || '')}
+                          className="p-1.5 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-lg"
+                          title="Copy tên file PNG"
+                        >
+                          <Copy className="w-3.5 h-3.5" />
+                        </button>
+                      )}
+                    </div>
+                  </div>
                 </div>
               </div>
 
@@ -7366,24 +7496,35 @@ export function TtsBotView() {
                   </button>
                 )}
 
+                {/* 3 Nút Mở Link Drive: FOLDER_URL, BANK_STATEMENT (PDF), BANK_STATEMENT_PNG */}
                 <button
-                  onClick={() => handleGenerateCp575(formModalRecord)}
-                  disabled={generatingDocType === 'cp575'}
-                  className="px-3 py-1.5 bg-sky-600/30 hover:bg-sky-600 text-sky-300 hover:text-white border border-sky-500/40 rounded-lg text-xs font-semibold transition-all flex items-center space-x-1.5 cursor-pointer shadow-sm"
-                  title="Tải / Tạo IRS CP575 Notice PDF"
+                  onClick={() => handleOpenDriveDoc(formModalRecord.folderUrl, 'Folder Drive', true)}
+                  disabled={openingDriveKey === `Folder Drive:${formModalRecord.folderUrl}`}
+                  className="px-3 py-1.5 bg-amber-600/30 hover:bg-amber-600 text-amber-300 hover:text-white border border-amber-500/40 rounded-lg text-xs font-semibold transition-all flex items-center space-x-1.5 cursor-pointer shadow-sm disabled:opacity-50"
+                  title={`Mở Thư Mục Google Drive (${formModalRecord.folderUrl || 'Chưa có'})`}
                 >
-                  <FileText className={`w-3.5 h-3.5 ${generatingDocType === 'cp575' ? 'animate-spin' : ''}`} />
-                  <span>Tải EIN PDF (CP575)</span>
+                  <FolderOpen className={`w-3.5 h-3.5 ${openingDriveKey === `Folder Drive:${formModalRecord.folderUrl}` ? 'animate-spin' : ''}`} />
+                  <span>Folder Drive</span>
                 </button>
 
                 <button
-                  onClick={() => handleGenerateVerizon(formModalRecord)}
-                  disabled={generatingDocType === 'verizon'}
-                  className="px-3 py-1.5 bg-emerald-600/30 hover:bg-emerald-600 text-emerald-300 hover:text-white border border-emerald-500/40 rounded-lg text-xs font-semibold transition-all flex items-center space-x-1.5 cursor-pointer shadow-sm"
-                  title="Tải / Tạo Hóa Đơn Verizon Statement PDF"
+                  onClick={() => handleOpenDriveDoc(formModalRecord.bankStatement || formModalRecord.pdfDoc, 'Bank Statement PDF')}
+                  disabled={openingDriveKey === `Bank Statement PDF:${formModalRecord.bankStatement || formModalRecord.pdfDoc}`}
+                  className="px-3 py-1.5 bg-sky-600/30 hover:bg-sky-600 text-sky-300 hover:text-white border border-sky-500/40 rounded-lg text-xs font-semibold transition-all flex items-center space-x-1.5 cursor-pointer shadow-sm disabled:opacity-50"
+                  title={`Mở Link Drive Hóa Đơn PDF (${formModalRecord.bankStatement || formModalRecord.pdfDoc || 'Chưa có'})`}
                 >
-                  <Building className={`w-3.5 h-3.5 ${generatingDocType === 'verizon' ? 'animate-spin' : ''}`} />
-                  <span>Tải Verizon PDF</span>
+                  <FileText className={`w-3.5 h-3.5 ${openingDriveKey === `Bank Statement PDF:${formModalRecord.bankStatement || formModalRecord.pdfDoc}` ? 'animate-spin' : ''}`} />
+                  <span>Bill PDF</span>
+                </button>
+
+                <button
+                  onClick={() => handleOpenDriveDoc(formModalRecord.bankStatementPng, 'Bank Statement PNG')}
+                  disabled={openingDriveKey === `Bank Statement PNG:${formModalRecord.bankStatementPng}`}
+                  className="px-3 py-1.5 bg-emerald-600/30 hover:bg-emerald-600 text-emerald-300 hover:text-white border border-emerald-500/40 rounded-lg text-xs font-semibold transition-all flex items-center space-x-1.5 cursor-pointer shadow-sm disabled:opacity-50"
+                  title={`Mở Link Drive Ảnh Hóa Đơn PNG (${formModalRecord.bankStatementPng || 'Chưa có'})`}
+                >
+                  <ExternalLink className={`w-3.5 h-3.5 ${openingDriveKey === `Bank Statement PNG:${formModalRecord.bankStatementPng}` ? 'animate-spin' : ''}`} />
+                  <span>Bill PNG</span>
                 </button>
 
                 <button
@@ -8202,121 +8343,106 @@ export function TtsBotView() {
                 </div>
               </div>
 
-              {/* ─── CARD 5: GIẤY TỜ PHÁP LÝ & TẠO PDF (IRS CP575, VERIZON) ─── */}
+              {/* ─── CARD 5: GIẤY TỜ PHÁP LÝ & TÀI LIỆU GOOGLE DRIVE (FOLDER_URL, BANK_STATEMENT, BANK_STATEMENT_PNG) ─── */}
               <div className="bg-slate-950 p-4 rounded-xl border border-slate-800 space-y-3">
                 <div className="flex items-center justify-between pb-2 border-b border-slate-850">
                   <h4 className="text-xs uppercase font-bold text-sky-400 flex items-center space-x-1.5 tracking-wider">
                     <FileText className="w-4 h-4 text-sky-400" />
-                    <span>5. Giấy Tờ Xác Minh & Proof of Address (1-Click Tải & Mở File)</span>
+                    <span>5. Tài Liệu Google Drive (1-Click Mở Folder, PDF & PNG)</span>
                   </h4>
                   <div className="flex items-center space-x-3">
-                    {formModalRecord.folderUrl && (
-                      <button
-                        onClick={() => {
-                          const fUrl = String(formModalRecord.folderUrl || '').trim()
-                          const url = fUrl.startsWith('http')
-                            ? fUrl
-                            : `https://drive.google.com/drive/search?q=${encodeURIComponent(fUrl)}`
-                          window.open(url, '_blank')
-                        }}
-                        className="text-xs text-amber-400 hover:text-amber-300 flex items-center space-x-1 cursor-pointer bg-amber-950/40 border border-amber-800/60 px-2.5 py-1 rounded-lg"
-                        title="Mở Thư Mục Google Drive của hồ sơ này"
-                      >
-                        <FolderOpen className="w-3.5 h-3.5" />
-                        <span>Mở Drive ({String(formModalRecord.folderUrl).slice(0, 16)})</span>
-                      </button>
-                    )}
                     <button
                       onClick={() => ttsIpc.docOpenFolder()}
-                      className="text-xs text-sky-400 hover:text-sky-300 flex items-center space-x-1 cursor-pointer"
+                      className="text-xs text-slate-400 hover:text-slate-300 flex items-center space-x-1 cursor-pointer"
+                      title="Mở Folder Local Lưu Trữ"
                     >
                       <FolderOpen className="w-3.5 h-3.5" />
-                      <span>Mở Folder Lưu Trữ PDF</span>
+                      <span>Thư mục Local</span>
                     </button>
                   </div>
                 </div>
 
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                  {/* IRS Notice CP 575 Box */}
-                  <div className="p-3 bg-slate-900 border border-slate-800 rounded-xl space-y-2">
-                    <div className="flex items-center justify-between">
-                      <span className="text-xs font-bold text-white flex items-center space-x-1.5">
-                        <FileText className="w-4 h-4 text-sky-400" />
-                        <span>Thư Xác Nhận Thuế IRS (Form CP 575G)</span>
-                      </span>
-                      <span className="text-[10px] px-1.5 py-0.5 bg-sky-950 text-sky-300 border border-sky-800 rounded font-mono font-semibold">
-                        EIN: {formModalRecord.ein}
-                      </span>
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                  {/* 1. Google Drive Folder */}
+                  <div className="p-3 bg-slate-900 border border-slate-800 rounded-xl space-y-2 flex flex-col justify-between">
+                    <div>
+                      <div className="flex items-center justify-between">
+                        <span className="text-xs font-bold text-amber-300 flex items-center space-x-1.5">
+                          <FolderOpen className="w-4 h-4 text-amber-400" />
+                          <span>Thư Mục Google Drive</span>
+                        </span>
+                        <span className="text-[10px] px-1.5 py-0.5 bg-amber-950/80 text-amber-300 border border-amber-800 rounded font-mono font-semibold">
+                          FOLDER_URL
+                        </span>
+                      </div>
+                      <p className="text-[11px] text-slate-400 leading-relaxed mt-1.5 break-all font-mono">
+                        {formModalRecord.folderUrl || 'Chưa có thông tin FOLDER_URL'}
+                      </p>
                     </div>
-                    <p className="text-[11px] text-slate-400 leading-relaxed">
-                      Văn bản chính thức cấp mã số thuế doanh nghiệp từ Sở Thuế Vụ Hoa Kỳ (IRS). Định dạng vector sắc nét, đạt chuẩn xét duyệt danh tính TikTok Shop.
-                    </p>
-                    <div className="flex items-center space-x-2 pt-1">
+                    <div className="pt-2">
                       <button
-                        onClick={() => handleGenerateCp575(formModalRecord)}
-                        disabled={generatingDocType === 'cp575'}
-                        className="flex-1 py-2 px-3 bg-sky-600 hover:bg-sky-500 text-white rounded-lg text-xs font-bold shadow flex items-center justify-center space-x-1.5 cursor-pointer disabled:opacity-50 transition-all"
+                        onClick={() => handleOpenDriveDoc(formModalRecord.folderUrl, 'Folder Drive', true)}
+                        disabled={openingDriveKey === `Folder Drive:${formModalRecord.folderUrl}`}
+                        className="w-full py-2 px-3 bg-amber-600/30 hover:bg-amber-600 text-amber-300 hover:text-white border border-amber-500/40 rounded-lg text-xs font-bold shadow flex items-center justify-center space-x-1.5 cursor-pointer disabled:opacity-50 transition-all"
                       >
-                        <FileText className={`w-4 h-4 ${generatingDocType === 'cp575' ? 'animate-spin' : ''}`} />
-                        <span>{generatingDocType === 'cp575' ? 'Đang tạo PDF...' : '📄 Tạo & Mở IRS CP 575 PDF'}</span>
-                      </button>
-                      <button
-                        onClick={() => handleDownloadDoc(formModalRecord, 'cp575')}
-                        disabled={generatingDocType === 'cp575'}
-                        className="px-2.5 py-2 bg-slate-800 hover:bg-slate-700 text-sky-300 border border-sky-800/60 rounded-lg text-xs font-semibold flex items-center space-x-1 cursor-pointer disabled:opacity-50 transition-all"
-                        title="Tải file PDF về thư mục tùy chọn trên máy tính"
-                      >
-                        <Download className="w-3.5 h-3.5" />
-                        <span>Tải về...</span>
-                      </button>
-                      <button
-                        onClick={() => ttsIpc.docOpenFolder('outputs/ein_notices')}
-                        className="p-2 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-lg cursor-pointer"
-                        title="Mở Folder Thư Mục IRS"
-                      >
-                        <FolderOpen className="w-4 h-4" />
+                        <FolderOpen className={`w-4 h-4 ${openingDriveKey === `Folder Drive:${formModalRecord.folderUrl}` ? 'animate-spin' : ''}`} />
+                        <span>Mở Thư Mục Drive</span>
                       </button>
                     </div>
                   </div>
 
-                  {/* Verizon Utility Bill Box */}
-                  <div className="p-3 bg-slate-900 border border-slate-800 rounded-xl space-y-2">
-                    <div className="flex items-center justify-between">
-                      <span className="text-xs font-bold text-white flex items-center space-x-1.5">
-                        <Building className="w-4 h-4 text-emerald-400" />
-                        <span>Hóa Đơn Tiện Ích Viễn Thông (Verizon Statement)</span>
-                      </span>
-                      <span className="text-[10px] px-1.5 py-0.5 bg-emerald-950 text-emerald-300 border border-emerald-800 rounded font-mono font-semibold">
-                        Bang {formModalRecord.state}
-                      </span>
+                  {/* 2. Bank Statement PDF */}
+                  <div className="p-3 bg-slate-900 border border-slate-800 rounded-xl space-y-2 flex flex-col justify-between">
+                    <div>
+                      <div className="flex items-center justify-between">
+                        <span className="text-xs font-bold text-sky-300 flex items-center space-x-1.5">
+                          <FileText className="w-4 h-4 text-sky-400" />
+                          <span>Bank Statement (PDF)</span>
+                        </span>
+                        <span className="text-[10px] px-1.5 py-0.5 bg-sky-950/80 text-sky-300 border border-sky-800 rounded font-mono font-semibold">
+                          PDF
+                        </span>
+                      </div>
+                      <p className="text-[11px] text-slate-400 leading-relaxed mt-1.5 break-all font-mono">
+                        {formModalRecord.bankStatement || formModalRecord.pdfDoc || 'Chưa có file PDF'}
+                      </p>
                     </div>
-                    <p className="text-[11px] text-slate-400 leading-relaxed">
-                      Hóa đơn cước dịch vụ viễn thông Verizon (Proof of Address) xác thực địa chỉ cư trú trùng khớp 100% với hồ sơ cá nhân và mã bưu điện bang.
-                    </p>
-                    <div className="flex items-center space-x-2 pt-1">
+                    <div className="pt-2">
                       <button
-                        onClick={() => handleGenerateVerizon(formModalRecord)}
-                        disabled={generatingDocType === 'verizon'}
-                        className="flex-1 py-2 px-3 bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg text-xs font-bold shadow flex items-center justify-center space-x-1.5 cursor-pointer disabled:opacity-50 transition-all"
+                        onClick={() => handleOpenDriveDoc(formModalRecord.bankStatement || formModalRecord.pdfDoc, 'Bank Statement PDF')}
+                        disabled={openingDriveKey === `Bank Statement PDF:${formModalRecord.bankStatement || formModalRecord.pdfDoc}`}
+                        className="w-full py-2 px-3 bg-sky-600/30 hover:bg-sky-600 text-sky-300 hover:text-white border border-sky-500/40 rounded-lg text-xs font-bold shadow flex items-center justify-center space-x-1.5 cursor-pointer disabled:opacity-50 transition-all"
                       >
-                        <Building className={`w-4 h-4 ${generatingDocType === 'verizon' ? 'animate-spin' : ''}`} />
-                        <span>{generatingDocType === 'verizon' ? 'Đang tạo Bill...' : '📄 Tạo & Mở Verizon Bill PDF'}</span>
+                        <FileText className={`w-4 h-4 ${openingDriveKey === `Bank Statement PDF:${formModalRecord.bankStatement || formModalRecord.pdfDoc}` ? 'animate-spin' : ''}`} />
+                        <span>Mở Link PDF</span>
                       </button>
+                    </div>
+                  </div>
+
+                  {/* 3. Bank Statement PNG */}
+                  <div className="p-3 bg-slate-900 border border-slate-800 rounded-xl space-y-2 flex flex-col justify-between">
+                    <div>
+                      <div className="flex items-center justify-between">
+                        <span className="text-xs font-bold text-emerald-300 flex items-center space-x-1.5">
+                          <ExternalLink className="w-4 h-4 text-emerald-400" />
+                          <span>Bank Statement (PNG)</span>
+                        </span>
+                        <span className="text-[10px] px-1.5 py-0.5 bg-emerald-950/80 text-emerald-300 border border-emerald-800 rounded font-mono font-semibold">
+                          PNG
+                        </span>
+                      </div>
+                      <p className="text-[11px] text-slate-400 leading-relaxed mt-1.5 break-all font-mono">
+                        {formModalRecord.bankStatementPng || 'Chưa có file PNG'}
+                      </p>
+                    </div>
+                    <div className="pt-2">
                       <button
-                        onClick={() => handleDownloadDoc(formModalRecord, 'verizon')}
-                        disabled={generatingDocType === 'verizon'}
-                        className="px-2.5 py-2 bg-slate-800 hover:bg-slate-700 text-emerald-300 border border-emerald-800/60 rounded-lg text-xs font-semibold flex items-center space-x-1 cursor-pointer disabled:opacity-50 transition-all"
-                        title="Tải file PDF về thư mục tùy chọn trên máy tính"
+                        onClick={() => handleOpenDriveDoc(formModalRecord.bankStatementPng, 'Bank Statement PNG')}
+                        disabled={openingDriveKey === `Bank Statement PNG:${formModalRecord.bankStatementPng}`}
+                        className="w-full py-2 px-3 bg-emerald-600/30 hover:bg-emerald-600 text-emerald-300 hover:text-white border border-emerald-500/40 rounded-lg text-xs font-bold shadow flex items-center justify-center space-x-1.5 cursor-pointer disabled:opacity-50 transition-all"
                       >
-                        <Download className="w-3.5 h-3.5" />
-                        <span>Tải về...</span>
-                      </button>
-                      <button
-                        onClick={() => ttsIpc.docOpenFolder('outputs/statements')}
-                        className="p-2 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-lg cursor-pointer"
-                        title="Mở Folder Statements"
-                      >
-                        <FolderOpen className="w-4 h-4" />
+                        <ExternalLink className={`w-4 h-4 ${openingDriveKey === `Bank Statement PNG:${formModalRecord.bankStatementPng}` ? 'animate-spin' : ''}`} />
+                        <span>Mở Link PNG</span>
                       </button>
                     </div>
                   </div>

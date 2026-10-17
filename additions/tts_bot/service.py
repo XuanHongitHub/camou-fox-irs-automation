@@ -108,6 +108,10 @@ def get_sheet_token():
 # ==============================================================================
 # STATUS & HEALTH
 # ==============================================================================
+@app.get("/api/ping")
+def ping():
+    return {"ok": True, "pong": True, "time": time.time()}
+
 @app.get("/api/status")
 def get_service_status():
     adspower_online = False
