@@ -170,11 +170,49 @@ function cliBinaryPath() {
   return is.dev ? join(__dirname, '../../../irs_bot/cli.py') : join(process.resourcesPath, 'irs_bot_server.exe')
 }
 
-function pythonDevLaunch(baseArgs: string[]) {
-  if (process.platform === 'win32') {
-    return { cmd: 'python', args: baseArgs }
+let discoveredPythonPath: string | null = null
+
+function getPythonExecutable(): string {
+  if (discoveredPythonPath) return discoveredPythonPath
+  if (process.platform !== 'win32') {
+    discoveredPythonPath = 'python3'
+    return discoveredPythonPath
   }
-  return { cmd: 'python3', args: baseArgs }
+
+  const root = foxAutoRootPath()
+  const candidates: string[] = [
+    join(root, '.venv', 'Scripts', 'python.exe'),
+    join(root, 'venv', 'Scripts', 'python.exe'),
+    join(root, 'additions', 'tts_bot', '.venv', 'Scripts', 'python.exe'),
+    join(root, 'additions', 'tts_bot', 'venv', 'Scripts', 'python.exe')
+  ]
+
+  const localApp = process.env.LOCALAPPDATA
+  if (localApp) {
+    for (const v of ['313', '312', '311', '310', '39']) {
+      candidates.push(join(localApp, 'Programs', 'Python', `Python${v}`, 'python.exe'))
+    }
+  }
+
+  for (const v of ['313', '312', '311', '310', '39']) {
+    candidates.push(`C:\\Python${v}\\python.exe`)
+    candidates.push(`C:\\Program Files\\Python${v}\\python.exe`)
+    candidates.push(`C:\\Program Files (x86)\\Python${v}\\python.exe`)
+  }
+
+  for (const p of candidates) {
+    if (existsSync(p)) {
+      discoveredPythonPath = p
+      return discoveredPythonPath
+    }
+  }
+
+  discoveredPythonPath = 'python'
+  return discoveredPythonPath
+}
+
+function pythonDevLaunch(baseArgs: string[]) {
+  return { cmd: getPythonExecutable(), args: baseArgs }
 }
 
 function spawnAndCollect(cmd: string, args: string[], cwd: string, env?: NodeJS.ProcessEnv) {

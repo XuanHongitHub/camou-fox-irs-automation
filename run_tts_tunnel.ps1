@@ -30,21 +30,89 @@ try {
 if ($isBackendRunning) {
     Write-Host "  [OK] Backend (:8787) dang chay san sang!" -ForegroundColor Green
 } else {
-    Write-Host "  [INFO] Backend chua chay. Dang tu dong khoi dong service.py tren port 8787..." -ForegroundColor Yellow
+    Write-Host "  [INFO] Backend chua chay. Dang tu dong tim Python va khoi dong service.py tren port 8787..." -ForegroundColor Yellow
     
-    $pythonCmd = "python"
-    try {
-        $null = Get-Command python -ErrorAction Stop
-    } catch {
-        if (Test-Path "C:\Python312\python.exe") { $pythonCmd = "C:\Python312\python.exe" }
-        elseif (Test-Path "C:\Python311\python.exe") { $pythonCmd = "C:\Python311\python.exe" }
-        elseif (Test-Path "C:\Python310\python.exe") { $pythonCmd = "C:\Python310\python.exe" }
-        else {
-            $pyCandidates = Get-ChildItem -Path "$env:LOCALAPPDATA\Programs\Python" -Filter "python.exe" -Recurse -Depth 2 -ErrorAction SilentlyContinue
-            if ($pyCandidates) { $pythonCmd = $pyCandidates[0].FullName }
+    $pythonCmd = $null
+
+    # 1. Check local virtual environments first
+    $venvCandidates = @(
+        (Join-Path $ScriptDir ".venv\Scripts\python.exe"),
+        (Join-Path $ScriptDir "venv\Scripts\python.exe"),
+        (Join-Path $TtsBotDir ".venv\Scripts\python.exe"),
+        (Join-Path $TtsBotDir "venv\Scripts\python.exe")
+    )
+    foreach ($v in $venvCandidates) {
+        if (Test-Path $v) { $pythonCmd = $v; break }
+    }
+
+    # 2. Check py launcher (Windows Python Launcher)
+    if (-not $pythonCmd) {
+        try {
+            $pyLauncher = Get-Command "py" -ErrorAction SilentlyContinue
+            if ($pyLauncher -and (Test-Path $pyLauncher.Source)) {
+                $pyOut = & py -3 -c "import sys; print(sys.executable)" 2>$null
+                if ($pyOut -and (Test-Path $pyOut.Trim())) {
+                    $pythonCmd = $pyOut.Trim()
+                }
+            }
+        } catch {}
+    }
+
+    # 3. Check python in PATH, but strictly EXCLUDE the fake Microsoft Store WindowsApps stub
+    if (-not $pythonCmd) {
+        $allPy = Get-Command "python" -All -ErrorAction SilentlyContinue
+        foreach ($p in $allPy) {
+            if ($p.Source -and ($p.Source -notlike "*WindowsApps*") -and (Test-Path $p.Source)) {
+                $pythonCmd = $p.Source
+                break
+            }
         }
     }
-    
+
+    # 4. Search common installation paths
+    if (-not $pythonCmd) {
+        $commonDirs = @(
+            "C:\Python313\python.exe",
+            "C:\Python312\python.exe",
+            "C:\Python311\python.exe",
+            "C:\Python310\python.exe",
+            "C:\Program Files\Python313\python.exe",
+            "C:\Program Files\Python312\python.exe",
+            "C:\Program Files\Python311\python.exe",
+            "C:\Program Files\Python310\python.exe"
+        )
+        foreach ($c in $commonDirs) {
+            if (Test-Path $c) { $pythonCmd = $c; break }
+        }
+    }
+
+    # 5. Search LocalAppData Programs Python (Default python.exe install location on Windows)
+    if (-not $pythonCmd) {
+        $localPy = Get-ChildItem -Path "$env:LOCALAPPDATA\Programs\Python" -Filter "python.exe" -Recurse -Depth 2 -ErrorAction SilentlyContinue
+        if ($localPy) {
+            $pythonCmd = $localPy[0].FullName
+        }
+    }
+
+    if (-not $pythonCmd) {
+        Write-Host "  [ERROR] KHONG TIM THAY PYTHON TREN MAY TINH!" -ForegroundColor Red
+        Write-Host "  Chi tiet: Windows dang bi vuong shortcut ao 'Microsoft Store' (WindowsApps\python.exe)." -ForegroundColor Yellow
+        Write-Host ""
+        Write-Host "  =================== HUONG DAN KHAC PHUC NHANH ===================" -ForegroundColor Cyan
+        Write-Host "  CACH 1 (Khuyen nghi - 1 phut):" -ForegroundColor White
+        Write-Host "    Mo Terminal/PowerShell chay lenh:" -ForegroundColor White
+        Write-Host "      winget install Python.Python.3.11" -ForegroundColor Green
+        Write-Host ""
+        Write-Host "  CACH 2 (Neu may da cai Python ma van bao loi):" -ForegroundColor White
+        Write-Host "    1. Vao Windows Settings > Apps > Advanced app settings > App execution aliases" -ForegroundColor White
+        Write-Host "    2. GAT TAT (OFF) 2 muc: 'python.exe' va 'python3.exe'." -ForegroundColor White
+        Write-Host "    3. Chay lai script nay." -ForegroundColor White
+        Write-Host "  ================================================================" -ForegroundColor Cyan
+        Write-Host ""
+        exit 1
+    }
+
+    Write-Host "  [OK] Su dung Python tai: $pythonCmd" -ForegroundColor Cyan
     $serviceScript = Join-Path $TtsBotDir "service.py"
     if (-not (Test-Path $serviceScript)) {
         Write-Host "  [ERROR] Khong tim thay service.py tai $serviceScript" -ForegroundColor Red
