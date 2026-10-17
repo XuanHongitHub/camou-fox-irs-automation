@@ -45,7 +45,6 @@ import {
   Eye,
   EyeOff,
   Phone,
-  Download,
   ClipboardCheck,
   ClipboardCopy,
   Package,
@@ -690,8 +689,6 @@ export function TtsBotView() {
   const [phoneOtpError, setPhoneOtpError] = useState<string | null>(null)
   const [openingDriveKey, setOpeningDriveKey] = useState<string | null>(null)
   const [docNotice, setDocNotice] = useState<string | null>(null)
-  const [extensionModalOpen, setExtensionModalOpen] = useState(false)
-  const [copiedExtensionPath, setCopiedExtensionPath] = useState(false)
 
   // Cloudflare Web Tunnel State
   const [tunnelRunning, setTunnelRunning] = useState(false)
@@ -6533,8 +6530,8 @@ export function TtsBotView() {
                   </div>
                   <p className="text-xs text-slate-400 mt-0.5">
                     {setupModalConfig.mode === 'single'
-                      ? `Cấu hình Profile AdsPower Desktop Full-Screen, Nạp Extension Copilot MV3, Tab Đăng Ký TTS & Gán Proxy chuẩn Bang ${setupModalConfig.records[0]?.state}`
-                      : `Tự động phân bổ Port HideProxy theo bang, khởi tạo Profile AdsPower Desktop Full-Screen kèm Extension và Tab Đăng Ký cho ${setupModalConfig.records.length} hồ sơ đã chọn`}
+                      ? `Cấu hình Profile AdsPower Desktop Full-Screen, Tab Đăng Ký TTS & Gán Proxy chuẩn Bang ${setupModalConfig.records[0]?.state}`
+                      : `Tự động phân bổ Port HideProxy theo bang, khởi tạo Profile AdsPower Desktop Full-Screen và Tab Đăng Ký cho ${setupModalConfig.records.length} hồ sơ đã chọn`}
                   </p>
                 </div>
               </div>
@@ -6612,10 +6609,10 @@ export function TtsBotView() {
                               <span className="text-slate-300 font-mono">en-US, en (Auto Geo-IP)</span>
                             </div>
                             <div className="flex justify-between items-center">
-                              <span className="text-slate-400">Tiện Ích Copilot (MV3):</span>
+                              <span className="text-slate-400">Môi Trường Browser:</span>
                               <span className="text-emerald-400 font-semibold flex items-center space-x-1">
                                 <CheckCircle2 className="w-3.5 h-3.5 inline mr-1 text-emerald-400" />
-                                <span>Tự động nạp (--load-extension)</span>
+                                <span>Clean Profile (Native Browser)</span>
                               </span>
                             </div>
                             <div className="flex justify-between items-center">
@@ -6869,7 +6866,7 @@ export function TtsBotView() {
                       <span className="font-semibold text-cyan-300">Chuẩn Hóa Profile Hàng Loạt:</span>
                       <span className="text-slate-300">
                         Màn hình Full (--start-maximized) | Tab đăng ký:{' '}
-                        <span className="font-mono text-cyan-300">seller-us.tiktok.com/account/register</span> | Auto-Inject Extension Copilot MV3
+                        <span className="font-mono text-cyan-300">seller-us.tiktok.com/account/register</span> | Clean Native Profile
                       </span>
                     </div>
                     <span className="px-2 py-0.5 rounded bg-emerald-950 text-emerald-300 border border-emerald-700/60 text-[10px] font-mono">
@@ -7631,85 +7628,8 @@ export function TtsBotView() {
                   </button>
                 </div>
 
-                <div className="flex items-center space-x-2">
-                  <button
-                    onClick={() => setExtensionModalOpen((prev) => !prev)}
-                    className="px-3 py-1.5 bg-indigo-950/60 hover:bg-indigo-900/80 text-indigo-300 border border-indigo-800/60 rounded-lg text-xs font-semibold flex items-center space-x-1.5 transition-all cursor-pointer"
-                  >
-                    <Package className="w-3.5 h-3.5 text-indigo-400" />
-                    <span>🧩 Hướng Dẫn & Nạp Extension AdsPower</span>
-                  </button>
-                </div>
+                <div></div>
               </div>
-
-              {/* Extension Guidance Box (Expandable) */}
-              {extensionModalOpen && (
-                <div className="p-4 bg-indigo-950/20 border border-indigo-800/60 rounded-xl space-y-3 animate-in fade-in duration-150">
-                  <div className="flex items-center justify-between">
-                    <div className="flex items-center space-x-2">
-                      <Package className="w-4 h-4 text-indigo-400" />
-                      <span className="text-xs font-bold text-indigo-200">
-                        Cơ Chế Nạp Extension AdsPower & Trình Duyệt Chrome
-                      </span>
-                    </div>
-                    <span className="text-[11px] text-slate-400">Tiện ích Copilot MV3</span>
-                  </div>
-                  <p className="text-xs text-slate-300 leading-relaxed">
-                    AdsPower chạy nhân bảo mật cao có thể hạn chế cờ dòng lệnh <code>--load-extension</code> cho tiện ích chưa xác minh. Để tiện ích hoạt động 100% vĩnh viễn trên mọi Profile, bạn có thể:
-                  </p>
-                  <ol className="text-xs text-slate-300 space-y-1 list-decimal list-inside pl-1">
-                    <li>
-                      <strong>Cách 1 (Khuyên dùng trong AdsPower):</strong> Vào mục <em>Quản lý tiện ích (Extensions)</em> trong AdsPower &gt; Bấm <em>Tải lên tiện ích (.zip)</em> &gt; Chọn file <code>tts_copilot_extension.zip</code>.
-                    </li>
-                    <li>
-                      <strong>Cách 2:</strong> Mở thư mục Unpacked và kéo-thả trực tiếp vào tab <code>chrome://extensions</code> khi mở browser.
-                    </li>
-                  </ol>
-                  <div className="flex flex-wrap items-center gap-2 pt-1">
-                    <button
-                      onClick={async () => {
-                        await ttsIpc.extensionOpenZip()
-                      }}
-                      className="px-3 py-1.5 bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg text-xs font-semibold flex items-center space-x-1.5 cursor-pointer shadow"
-                    >
-                      <Download className="w-3.5 h-3.5" />
-                      <span>📦 Mở File ZIP Extension (Để Tải Lên AdsPower)</span>
-                    </button>
-                    <button
-                      onClick={async () => {
-                        await ttsIpc.extensionOpenFolder()
-                      }}
-                      className="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-lg text-xs font-semibold flex items-center space-x-1.5 cursor-pointer"
-                    >
-                      <FolderOpen className="w-3.5 h-3.5" />
-                      <span>📂 Mở Thư Mục Unpacked</span>
-                    </button>
-                    <button
-                      onClick={async () => {
-                        const info = await ttsIpc.extensionGetInfo()
-                        if (info && info.extensionPath) {
-                          navigator.clipboard.writeText(info.extensionPath)
-                          setCopiedExtensionPath(true)
-                          setTimeout(() => setCopiedExtensionPath(false), 2000)
-                        }
-                      }}
-                      className="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-lg text-xs flex items-center space-x-1.5 cursor-pointer"
-                    >
-                      {copiedExtensionPath ? (
-                        <>
-                          <Check className="w-3.5 h-3.5 text-emerald-400" />
-                          <span>Đã copy Path!</span>
-                        </>
-                      ) : (
-                        <>
-                          <Copy className="w-3.5 h-3.5" />
-                          <span>📋 Copy Đường Dẫn Thư Mục</span>
-                        </>
-                      )}
-                    </button>
-                  </div>
-                </div>
-              )}
 
               {/* Main Content: 5 Cards Grid */}
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">

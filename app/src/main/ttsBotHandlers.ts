@@ -1760,8 +1760,6 @@ function generateValidDl(stateCode: string, lastName: string = ''): string {
   ipcMain.handle('tts:adspower:create', async (_event, payload: any) => {
     try {
       const baseUrl = getAdsBaseUrl()
-      const rawExtensionPath = join(foxAutoRoot, 'additions', 'tts_bot', 'extension')
-      const extensionPath = rawExtensionPath.replace(/\\/g, '/')
       const registerUrl = 'https://seller-us.tiktok.com/account/register'
 
       let globalSettings: any = {}
@@ -1796,8 +1794,6 @@ function generateValidDl(stateCode: string, lastName: string = ''): string {
         user_proxy_config: payload.proxyConfig || { proxy_soft: 'no_proxy' },
         fingerprint_config: fingerprintConfig,
         launch_args: [
-          `--load-extension=${extensionPath}`,
-          `--disable-extensions-except=${extensionPath}`,
           '--start-maximized'
         ]
       }
@@ -1923,12 +1919,8 @@ function generateValidDl(stateCode: string, lastName: string = ''): string {
         }
       } catch {}
 
-      const rawExtensionPath = join(foxAutoRoot, 'additions', 'tts_bot', 'extension')
-      const extensionPath = rawExtensionPath.replace(/\\/g, '/')
       const registerUrl = 'https://seller-us.tiktok.com/account/register'
       const launchArgs = JSON.stringify([
-        `--load-extension=${extensionPath}`,
-        `--disable-extensions-except=${extensionPath}`,
         '--start-maximized'
       ])
 
@@ -2222,8 +2214,6 @@ function generateValidDl(stateCode: string, lastName: string = ''): string {
         return name === recId || name.startsWith(`${recId} `) || name.startsWith(`${recId}-`)
       })
 
-      const rawExtensionPath = join(foxAutoRoot, 'additions', 'tts_bot', 'extension')
-      const extensionPath = rawExtensionPath.replace(/\\/g, '/')
       const proxyConfig = assignedPort
         ? {
             proxy_soft: 'other',
@@ -2267,8 +2257,6 @@ function generateValidDl(stateCode: string, lastName: string = ''): string {
             tabs: [registerUrl],
             fingerprint_config: fingerprintConfig,
             launch_args: [
-              `--load-extension=${extensionPath}`,
-              `--disable-extensions-except=${extensionPath}`,
               '--start-maximized',
               registerUrl
             ]
@@ -2285,8 +2273,6 @@ function generateValidDl(stateCode: string, lastName: string = ''): string {
             user_proxy_config: proxyConfig,
             fingerprint_config: fingerprintConfig,
             launch_args: [
-              `--load-extension=${extensionPath}`,
-              `--disable-extensions-except=${extensionPath}`,
               '--start-maximized',
               registerUrl
             ]
