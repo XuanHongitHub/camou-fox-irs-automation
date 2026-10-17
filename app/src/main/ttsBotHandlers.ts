@@ -809,70 +809,165 @@ function generateValidDl(stateCode: string, lastName: string = ''): string {
   function convertRowsToRecords(rows: string[][], stateData: any): any[] {
     if (!rows || rows.length < 2) return []
 
-    const headers = rows[0].map((h) => String(h || '').toLowerCase().trim())
-    const findColExact = (...exacts: string[]) => {
-      return headers.findIndex((h) => exacts.some((e) => h === e))
-    }
-    const findCol = (...keywords: string[]) => {
-      const exactIdx = findColExact(...keywords)
-      if (exactIdx >= 0) return exactIdx
-      return headers.findIndex((h) => keywords.some((k) => h.includes(k)))
-    }
+    const rawHeaders = rows[0].map((h) => String(h || '').trim())
+    const headers = rawHeaders.map((h) => h.toLowerCase())
 
-    const colName = findColExact('mã profile (id)', 'profile name', 'profile', 'mã', 'id') !== -1
-      ? findColExact('mã profile (id)', 'profile name', 'profile', 'mã', 'id')
-      : findCol('profile')
-    const colStatus = findColExact('trạng thái acc', 'status', 'trạng thái')
-    const colRegDate = findColExact('ngày reg', 'reg date', 'hạn bảo hành')
-    const colIssueDate = findColExact('ngày cấp', 'issue date')
-    const colSeller = findColExact('người phụ trách', 'nguồn / vendor', 'seller', 'vendor')
-    const colMail = findColExact('email đăng nhập tts', 'mail', 'email') !== -1
-      ? findColExact('email đăng nhập tts', 'mail', 'email')
-      : findCol('email', 'mail')
-    const colTiktokPass = findColExact('mật khẩu tts', 'pass titkok shop', 'pass tiktok shop', 'pass titkok', 'pass tiktok', 'mật khẩu') !== -1
-      ? findColExact('mật khẩu tts', 'pass titkok shop', 'pass tiktok shop', 'pass titkok', 'pass tiktok', 'mật khẩu')
-      : findCol('titkok', 'tiktok', 'pass', 'mật khẩu')
-    const col2FA = findColExact('mã 2fa tts (secret key)', '2fa', 'two_factor', 'mã 2fa')
-    const colProxy = findColExact('proxy / ip:port:user:pass', 'proxy', 'ip')
-    
-    // Phone & SMS API columns
-    const colPhoneOnly = findColExact('sđt đăng ký gốc', 'sđt', 'phone number', 'phone')
-    const colPhoneApiUrl = findColExact('link api sms lấy otp gốc', 'link api sms', 'api sms')
-    const colPhoneCodeLegacy = findColExact('get code phone', 'phone code', 'code phone') !== -1
-      ? findColExact('get code phone', 'phone code', 'code phone')
-      : findCol('get code', 'phone')
+    // 1. Specific compound / LLC columns first to avoid substring false-positives
+    const colNameLlc = headers.findIndex((h) =>
+      h.includes('name llc') || h.includes('tên llc') || h.includes('tên doanh nghiệp')
+    )
+    const colAddressLlc = headers.findIndex((h) =>
+      h.includes('address llc') || h.includes('địa chỉ llc') || h.includes('địa chỉ doanh nghiệp')
+    )
+    const colCityLlc = headers.findIndex((h) =>
+      h.includes('citi llc') || h.includes('city llc')
+    )
+    const colStateLlc = headers.findIndex((h) =>
+      h.includes('bang llc') || h.includes('state llc')
+    )
+    const colZipLlc = headers.findIndex((h) =>
+      h.includes('zip llc') || h.includes('zipcode llc')
+    )
 
-    const colFullName = findColExact('họ tên đầy đủ (full name)', 'ein name', 'tên', 'full name', 'fullname') !== -1
-      ? findColExact('họ tên đầy đủ (full name)', 'ein name', 'tên', 'full name', 'fullname')
-      : findCol('ein name', 'full name', 'họ tên')
-    const colLastName = findColExact('họ (last name)', 'họ', 'last name', 'lastname')
-    const colFirstName = findColExact('tên đệm & tên (first name)', 'first name', 'firstname')
-    const colSsn = findColExact('ssn / itin', 'ssn', 'itin')
-    const colAddress = findColExact('địa chỉ (street)', 'address', 'địa chỉ', 'street')
-    const colCity = findColExact('thành phố (city)', 'citi', 'city', 'thành phố')
-    const colState = findColExact('bang (state)', 'bang', 'state')
-    const colZip = findColExact('mã bưu điện (zipcode)', 'zip', 'postal', 'zipcode')
-    const colDob = findColExact('ngày sinh (dob)', 'dob', 'ngày sinh', 'birth')
-    const colGender = findColExact('giới tính', 'gender')
-    const colEin = findColExact('mã thuế doanh nghiệp (ein)', 'ein', 'mã thuế')
-    const colNameLlc = findColExact('tên doanh nghiệp (llc/corp)', 'name llc', 'llc name', 'tên llc', 'tên doanh nghiệp')
-    const colAddressLlc = findColExact('địa chỉ doanh nghiệp', 'address llc', 'địa chỉ llc')
-    const colCityLlc = findColExact('citi llc', 'city llc')
-    const colStateLlc = findColExact('bang llc', 'state llc')
-    const colZipLlc = findColExact('zip llc')
-    const colPdf = findColExact('pdf', 'irs pdf', 'cp 575', 'cp575', '147c')
-    const colFolderUrl = findColExact('folder_url', 'folder url', 'drive')
-    const colBankStatement = findColExact('bank_statement', 'bank statement', 'utility', 'bill')
-    const colBankStatementPng = findColExact('bank_statement_png', 'bank statement png', 'statement png', 'bill png', 'png')
-    const colDl = findColExact('số bằng lái (dl#)', 'dl#', 'dl', 'driver license', "driver's license", 'dl_num', 'dl no', 'bằng lái', 'driver', 'license', 'id number') !== -1
-      ? findColExact('số bằng lái (dl#)', 'dl#', 'dl', 'driver license', "driver's license", 'dl_num', 'dl no', 'bằng lái', 'driver', 'license', 'id number')
-      : findCol('dl', 'driver', 'bằng lái', 'license')
-    const colDlExp = findColExact('ngày hết hạn dl (exp)', 'exp', 'hết hạn', 'dl exp')
-    const colShopName = findColExact('shop name / tên shop', 'shop name', 'tên shop')
-    const colNotes = findColExact('ghi chú chi tiết', 'ghi chú', 'notes', 'note')
-    const colNewMail = findColExact('mail mới (new mail)', 'mail mới', 'new mail')
-    const colNewPhone = findColExact('sđt mới (new phone)', 'sđt mới', 'new phone')
-    const colNew2FA = findColExact('2fa mới (new 2fa)', '2fa mới', 'new 2fa')
+    // 2. Drive & Document columns
+    const colBankStatementPng = headers.findIndex((h) =>
+      h.startsWith('bank_statement_png') ||
+      h.startsWith('bank statement png') ||
+      h.includes('statement png') ||
+      h.includes('bill png')
+    )
+    const colBankStatement = headers.findIndex((h) =>
+      (h.startsWith('bank_statement') ||
+        h.startsWith('bank statement') ||
+        h === 'bill' ||
+        h === 'utility' ||
+        h.includes('bank statement') ||
+        h.includes('bank_statement')) &&
+      !h.includes('png')
+    )
+    const colFolderUrl = headers.findIndex((h) =>
+      h.startsWith('folder_url') ||
+      h.startsWith('folder url') ||
+      h.includes('folder_url') ||
+      h === 'drive'
+    )
+    const colPdf = headers.findIndex((h) =>
+      (h.startsWith('pdf') ||
+        h.includes('irs pdf') ||
+        h.includes('cp 575') ||
+        h.includes('cp575') ||
+        h.includes('147c')) &&
+      !h.includes('png') &&
+      !h.includes('bank')
+    )
+
+    // 3. Identification & Personal info (ensure non-LLC)
+    const colFullName = headers.findIndex((h) =>
+      h.includes('ein name') ||
+      h.includes('full name') ||
+      h.includes('fullname') ||
+      h.includes('họ tên') ||
+      h === 'name' ||
+      (h.startsWith('name ') && !h.includes('llc')) ||
+      (h.startsWith('tên') && !h.includes('llc') && !h.includes('shop') && !h.includes('doanh nghiệp'))
+    )
+    const colLastName = headers.findIndex((h) =>
+      h.includes('họ (last name)') || h === 'họ' || h.startsWith('last name') || h.includes('lastname')
+    )
+    const colFirstName = headers.findIndex((h) =>
+      h.includes('first name') || h.includes('firstname')
+    )
+    const colSsn = headers.findIndex((h) =>
+      h.startsWith('ssn') || h.includes('itin') || h.includes('an sinh')
+    )
+    const colAddress = headers.findIndex((h) =>
+      ((h.startsWith('address') || h.includes('địa chỉ') || h.startsWith('street')) && !h.includes('llc') && !h.includes('doanh nghiệp'))
+    )
+    const colCity = headers.findIndex((h) =>
+      ((h.startsWith('citi') || h.startsWith('city') || h.includes('thành phố')) && !h.includes('llc'))
+    )
+    const colState = headers.findIndex((h) =>
+      ((h.startsWith('bang') || h.startsWith('state')) && !h.includes('llc'))
+    )
+    const colZip = headers.findIndex((h) =>
+      ((h.startsWith('zip') || h.includes('postal') || h.includes('mã bưu điện')) && !h.includes('llc'))
+    )
+    const colDob = headers.findIndex((h) =>
+      h.startsWith('dob') || h.startsWith('bod') || h.includes('ngày sinh') || h.includes('birth')
+    )
+    const colGender = headers.findIndex((h) =>
+      h.startsWith('gender') || h.includes('giới tính')
+    )
+    const colEin = headers.findIndex((h) =>
+      (h.startsWith('ein') && !h.includes('name')) ||
+      h.includes('mã thuế') ||
+      h === 'tax id' ||
+      h === 'ein'
+    )
+
+    // 4. Account, Auth & Metadata
+    const colName = headers.findIndex((h) =>
+      h.includes('profile') || h.includes('mã profile') || h === 'id' || h === 'mã'
+    )
+    const colStatus = headers.findIndex((h) =>
+      h.startsWith('status') || h.includes('trạng thái')
+    )
+    const colRegDate = headers.findIndex((h) =>
+      h.includes('ngày reg') || h.includes('reg date') || h.includes('hạn bảo hành')
+    )
+    const colIssueDate = headers.findIndex((h) =>
+      h.includes('ngày cấp') || h.includes('issue date')
+    )
+    const colSeller = headers.findIndex((h) =>
+      h.includes('người phụ trách') || h.includes('nguồn / vendor') || h.includes('seller') || h.includes('vendor')
+    )
+    const colMail = headers.findIndex((h) =>
+      h.startsWith('mail') || h.startsWith('email') || h.includes('email đăng nhập')
+    )
+    const colTiktokPass = headers.findIndex((h) =>
+      h.includes('pass') || h.includes('mật khẩu')
+    )
+    const col2FA = headers.findIndex((h) =>
+      h === '2fa' || h.startsWith('2fa ') || h.includes('secret key') || h.includes('two_factor')
+    )
+    const colProxy = headers.findIndex((h) =>
+      h.startsWith('proxy') || h === 'ip'
+    )
+    const colPhoneOnly = headers.findIndex((h) =>
+      h.includes('sđt đăng ký gốc') || h === 'sđt' || h === 'phone' || h === 'phone number'
+    )
+    const colPhoneApiUrl = headers.findIndex((h) =>
+      h.includes('link api sms') || h.includes('api sms')
+    )
+    const colPhoneCodeLegacy = headers.findIndex((h) =>
+      h.includes('get code phone') || h.includes('phone code') || h.includes('code phone') || h.includes('get code')
+    )
+    const colDl = headers.findIndex((h) =>
+      h.includes('số bằng lái') ||
+      h.startsWith('dl#') ||
+      h === 'dl' ||
+      h.startsWith('dl ') ||
+      h.includes('driver license') ||
+      h.includes('bằng lái')
+    )
+    const colDlExp = headers.findIndex((h) =>
+      h.includes('ngày hết hạn') || h.startsWith('exp') || h.includes('dl exp')
+    )
+    const colShopName = headers.findIndex((h) =>
+      h.includes('shop name') || h.includes('tên shop')
+    )
+    const colNotes = headers.findIndex((h) =>
+      h.includes('ghi chú') || h.startsWith('notes') || h === 'note'
+    )
+    const colNewMail = headers.findIndex((h) =>
+      h.includes('mail mới') || h.includes('new mail')
+    )
+    const colNewPhone = headers.findIndex((h) =>
+      h.includes('sđt mới') || h.includes('new phone')
+    )
+    const colNew2FA = headers.findIndex((h) =>
+      h.includes('2fa mới') || h.includes('new 2fa')
+    )
 
     const records: any[] = []
     for (let i = 1; i < rows.length; i++) {

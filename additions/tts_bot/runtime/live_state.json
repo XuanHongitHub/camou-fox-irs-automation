@@ -14,5 +14,251 @@
     "updated_at": "2026-10-07 10:48:22",
     "assigned_port": 50007,
     "adspower_id": "k1hp9cy4"
+  },
+  "BAM-48": {
+    "id": "BAM-48",
+    "status": "SETUP_READY",
+    "sub_status": "Port 50002 | Ads k1i0oo16",
+    "created_at": "2026-10-16 00:18:07",
+    "uploads": [
+      {
+        "name": "photo_2026-10-16_00-37-10.jpg",
+        "size": 900788,
+        "type": "image/jpeg",
+        "round": 1,
+        "path": "G:\\RTTS\\19-08-2026\\fox-auto\\additions\\tts_bot\\runtime\\archive\\BAM-48\\round_1\\photo_2026-10-16_00-37-10.jpg",
+        "uploaded_at": "2026-10-16 01:09:55"
+      },
+      {
+        "name": "IMG_0972.JPG",
+        "size": 3233537,
+        "type": "image/jpeg",
+        "round": 1,
+        "path": "G:\\RTTS\\19-08-2026\\fox-auto\\additions\\tts_bot\\runtime\\archive\\BAM-48\\round_1\\IMG_0972.JPG",
+        "uploaded_at": "2026-10-16 01:52:50"
+      },
+      {
+        "name": "IMG_0986.JPG",
+        "size": 3393325,
+        "type": "image/jpeg",
+        "round": 1,
+        "path": "G:\\RTTS\\19-08-2026\\fox-auto\\additions\\tts_bot\\runtime\\archive\\BAM-48\\round_1\\IMG_0986.JPG",
+        "uploaded_at": "2026-10-16 02:07:52"
+      },
+      {
+        "name": "IMG_0993.JPG",
+        "size": 3519892,
+        "type": "image/jpeg",
+        "round": 1,
+        "path": "G:\\RTTS\\19-08-2026\\fox-auto\\additions\\tts_bot\\runtime\\archive\\BAM-48\\round_1\\IMG_0993.JPG",
+        "uploaded_at": "2026-10-16 02:29:55"
+      },
+      {
+        "name": "IMG_0996.JPG",
+        "size": 3393027,
+        "type": "image/jpeg",
+        "round": 1,
+        "path": "G:\\RTTS\\19-08-2026\\fox-auto\\additions\\tts_bot\\runtime\\archive\\BAM-48\\round_1\\IMG_0996.JPG",
+        "uploaded_at": "2026-10-16 02:46:07"
+      },
+      {
+        "name": "IMG_0996.JPG",
+        "size": 2058034,
+        "type": "image/jpeg",
+        "round": 1,
+        "path": "G:\\RTTS\\19-08-2026\\fox-auto\\additions\\tts_bot\\runtime\\archive\\BAM-48\\round_1\\IMG_0996.JPG",
+        "uploaded_at": "2026-10-16 03:10:05"
+      },
+      {
+        "name": "IMG_1011.JPG",
+        "size": 4110679,
+        "type": "image/jpeg",
+        "round": 1,
+        "path": "G:\\RTTS\\19-08-2026\\fox-auto\\additions\\tts_bot\\runtime\\archive\\BAM-48\\round_1\\IMG_1011.JPG",
+        "uploaded_at": "2026-10-16 03:39:04"
+      },
+      {
+        "name": "IMG_1011.JPG",
+        "size": 3009233,
+        "type": "image/jpeg",
+        "round": 1,
+        "path": "G:\\RTTS\\19-08-2026\\fox-auto\\additions\\tts_bot\\runtime\\archive\\BAM-48\\round_1\\IMG_1011.JPG",
+        "uploaded_at": "2026-10-16 03:52:42"
+      },
+      {
+        "name": "IMG_1011.JPG",
+        "size": 3009233,
+        "type": "image/jpeg",
+        "round": 1,
+        "path": "G:\\RTTS\\19-08-2026\\fox-auto\\additions\\tts_bot\\runtime\\archive\\BAM-48\\round_1\\IMG_1011.JPG",
+        "uploaded_at": "2026-10-16 04:02:52"
+      },
+      {
+        "name": "IMG_1025.JPG",
+        "size": 3527171,
+        "type": "image/jpeg",
+        "round": 1,
+        "path": "G:\\RTTS\\19-08-2026\\fox-auto\\additions\\tts_bot\\runtime\\archive\\BAM-48\\round_1\\IMG_1025.JPG",
+        "uploaded_at": "2026-10-16 04:03:18"
+      }
+    ],
+    "attempts": 1,
+    "watchdog": {
+      "active": false,
+      "countdown": 360
+    },
+    "source": "DESKTOP_APP",
+    "updated_at": "2026-10-16 00:19:46",
+    "assignedPort": 50002,
+    "proxyMeta": {
+      "port": 50002,
+      "public_ip": "76.118.64.242",
+      "country": "United States (US)",
+      "city": "Peabody",
+      "state": "Massachusetts",
+      "zipCode": "01960",
+      "isp": "AS7922 Comcast Cable Communications, LLC",
+      "online": true
+    },
+    "adspowerId": "k1i0oo16",
+    "readinessScore": 59
+  },
+  "BAM-49": {
+    "id": "BAM-49",
+    "status": "SETUP_READY",
+    "sub_status": "Port 50002 | Ads k1i0oo54",
+    "created_at": "2026-10-16 00:19:47",
+    "uploads": [
+      {
+        "name": "photo_2026-10-16_00-40-02.jpg",
+        "size": 158180,
+        "type": "image/jpeg",
+        "round": 1,
+        "path": "G:\\RTTS\\19-08-2026\\fox-auto\\additions\\tts_bot\\runtime\\archive\\BAM-49\\round_1\\photo_2026-10-16_00-40-02.jpg",
+        "uploaded_at": "2026-10-16 00:44:30"
+      },
+      {
+        "name": "photo_2026-10-16_00-37-08.jpg",
+        "size": 746155,
+        "type": "image/jpeg",
+        "round": 1,
+        "path": "G:\\RTTS\\19-08-2026\\fox-auto\\additions\\tts_bot\\runtime\\archive\\BAM-49\\round_1\\photo_2026-10-16_00-37-08.jpg",
+        "uploaded_at": "2026-10-16 01:09:51"
+      },
+      {
+        "name": "IMG_0971.JPG",
+        "size": 3579690,
+        "type": "image/jpeg",
+        "round": 1,
+        "path": "G:\\RTTS\\19-08-2026\\fox-auto\\additions\\tts_bot\\runtime\\archive\\BAM-49\\round_1\\IMG_0971.JPG",
+        "uploaded_at": "2026-10-16 01:52:53"
+      },
+      {
+        "name": "IMG_0987.JPG",
+        "size": 3507259,
+        "type": "image/jpeg",
+        "round": 1,
+        "path": "G:\\RTTS\\19-08-2026\\fox-auto\\additions\\tts_bot\\runtime\\archive\\BAM-49\\round_1\\IMG_0987.JPG",
+        "uploaded_at": "2026-10-16 02:07:55"
+      },
+      {
+        "name": "IMG_0992.JPG",
+        "size": 3383686,
+        "type": "image/jpeg",
+        "round": 1,
+        "path": "G:\\RTTS\\19-08-2026\\fox-auto\\additions\\tts_bot\\runtime\\archive\\BAM-49\\round_1\\IMG_0992.JPG",
+        "uploaded_at": "2026-10-16 02:29:59"
+      },
+      {
+        "name": "IMG_0997.JPG",
+        "size": 3562641,
+        "type": "image/jpeg",
+        "round": 1,
+        "path": "G:\\RTTS\\19-08-2026\\fox-auto\\additions\\tts_bot\\runtime\\archive\\BAM-49\\round_1\\IMG_0997.JPG",
+        "uploaded_at": "2026-10-16 02:45:01"
+      },
+      {
+        "name": "Trae Walker - 42-1951213 - Verizon.pdf",
+        "size": 3576921,
+        "type": "application/pdf",
+        "round": 1,
+        "path": "G:\\RTTS\\19-08-2026\\fox-auto\\additions\\tts_bot\\runtime\\archive\\BAM-49\\round_1\\Trae Walker - 42-1951213 - Verizon.pdf",
+        "uploaded_at": "2026-10-16 03:09:22"
+      },
+      {
+        "name": "IMG_1012.JPG",
+        "size": 4131472,
+        "type": "image/jpeg",
+        "round": 1,
+        "path": "G:\\RTTS\\19-08-2026\\fox-auto\\additions\\tts_bot\\runtime\\archive\\BAM-49\\round_1\\IMG_1012.JPG",
+        "uploaded_at": "2026-10-16 03:39:11"
+      },
+      {
+        "name": "IMG_1012.JPG",
+        "size": 3201884,
+        "type": "image/jpeg",
+        "round": 1,
+        "path": "G:\\RTTS\\19-08-2026\\fox-auto\\additions\\tts_bot\\runtime\\archive\\BAM-49\\round_1\\IMG_1012.JPG",
+        "uploaded_at": "2026-10-16 03:52:38"
+      },
+      {
+        "name": "IMG_1031.JPG",
+        "size": 3277632,
+        "type": "image/jpeg",
+        "round": 1,
+        "path": "G:\\RTTS\\19-08-2026\\fox-auto\\additions\\tts_bot\\runtime\\archive\\BAM-49\\round_1\\IMG_1031.JPG",
+        "uploaded_at": "2026-10-16 04:03:00"
+      },
+      {
+        "name": "Trae Walker - 42-1951213 - Verizon.pdf",
+        "size": 3576921,
+        "type": "application/pdf",
+        "round": 1,
+        "path": "G:\\RTTS\\19-08-2026\\fox-auto\\additions\\tts_bot\\runtime\\archive\\BAM-49\\round_1\\Trae Walker - 42-1951213 - Verizon.pdf",
+        "uploaded_at": "2026-10-16 04:24:16"
+      },
+      {
+        "name": "Trae Walker - 42-1951213 - Verizon.png",
+        "size": 630544,
+        "type": "image/png",
+        "round": 1,
+        "path": "G:\\RTTS\\19-08-2026\\fox-auto\\additions\\tts_bot\\runtime\\archive\\BAM-49\\round_1\\Trae Walker - 42-1951213 - Verizon.png",
+        "uploaded_at": "2026-10-16 04:27:41"
+      },
+      {
+        "name": "IMG_1034.JPG",
+        "size": 3371233,
+        "type": "image/jpeg",
+        "round": 1,
+        "path": "G:\\RTTS\\19-08-2026\\fox-auto\\additions\\tts_bot\\runtime\\archive\\BAM-49\\round_1\\IMG_1034.JPG",
+        "uploaded_at": "2026-10-16 04:27:53"
+      },
+      {
+        "name": "IMG_1034.JPG",
+        "size": 2716521,
+        "type": "image/jpeg",
+        "round": 1,
+        "path": "G:\\RTTS\\19-08-2026\\fox-auto\\additions\\tts_bot\\runtime\\archive\\BAM-49\\round_1\\IMG_1034.JPG",
+        "uploaded_at": "2026-10-16 04:41:40"
+      }
+    ],
+    "attempts": 1,
+    "watchdog": {
+      "active": false,
+      "countdown": 360
+    },
+    "source": "DESKTOP_APP",
+    "updated_at": "2026-10-16 00:19:47",
+    "assignedPort": 50002,
+    "proxyMeta": {
+      "port": 50002,
+      "public_ip": "75.75.170.204",
+      "state": "Pennsylvania",
+      "city": "York",
+      "isp": "AS7922 Comcast Cable Communications, LLC Comcast Cable Communications, LLC",
+      "online": true
+    },
+    "adspowerId": "k1i0oo54",
+    "readinessScore": 59
   }
 }

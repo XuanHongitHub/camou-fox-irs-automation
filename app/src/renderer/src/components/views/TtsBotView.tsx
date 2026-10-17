@@ -4272,7 +4272,7 @@ export function TtsBotView() {
                                 <span>Điền Form</span>
                               </button>
 
-                              {/* 3 Nút Mở Link Drive: FOLDER_URL, BANK_STATEMENT (PDF), BANK_STATEMENT_PNG */}
+                              {/* 4 Nút Mở Link Drive: FOLDER_URL, EIN PDF, BANK_STATEMENT (PDF), BANK_STATEMENT_PNG */}
                               {/* 1. Mở Folder Drive */}
                               <button
                                 onClick={(e) => {
@@ -4287,21 +4287,35 @@ export function TtsBotView() {
                                 <span>Folder</span>
                               </button>
 
-                              {/* 2. Mở Bill PDF */}
+                              {/* 2. Mở EIN PDF */}
                               <button
                                 onClick={(e) => {
                                   e.stopPropagation()
-                                  handleOpenDriveDoc(r.bankStatement || r.pdfDoc, 'Bank Statement PDF')
+                                  handleOpenDriveDoc(r.pdfDoc, 'EIN PDF')
                                 }}
-                                disabled={openingDriveKey === `Bank Statement PDF:${r.bankStatement || r.pdfDoc}`}
-                                className="px-1.5 py-1 text-[11px] bg-sky-950/40 hover:bg-sky-900/60 text-sky-300 border border-sky-800/60 rounded-lg transition-all shadow-sm flex items-center space-x-1 cursor-pointer disabled:opacity-50"
-                                title={`Mở Link Drive Hóa Đơn PDF (${r.bankStatement || r.pdfDoc || 'Chưa có'})`}
+                                disabled={openingDriveKey === `EIN PDF:${r.pdfDoc}`}
+                                className="px-1.5 py-1 text-[11px] bg-purple-950/40 hover:bg-purple-900/60 text-purple-300 border border-purple-800/60 rounded-lg transition-all shadow-sm flex items-center space-x-1 cursor-pointer disabled:opacity-50"
+                                title={`Mở Link Drive EIN CP575 PDF (${r.pdfDoc || 'Chưa có'})`}
                               >
-                                <FileText className={`w-3 h-3 ${openingDriveKey === `Bank Statement PDF:${r.bankStatement || r.pdfDoc}` ? 'animate-spin' : ''}`} />
+                                <FileText className={`w-3 h-3 ${openingDriveKey === `EIN PDF:${r.pdfDoc}` ? 'animate-spin' : ''}`} />
+                                <span>EIN</span>
+                              </button>
+
+                              {/* 3. Mở Bill PDF */}
+                              <button
+                                onClick={(e) => {
+                                  e.stopPropagation()
+                                  handleOpenDriveDoc(r.bankStatement, 'Bank Statement PDF')
+                                }}
+                                disabled={openingDriveKey === `Bank Statement PDF:${r.bankStatement}`}
+                                className="px-1.5 py-1 text-[11px] bg-sky-950/40 hover:bg-sky-900/60 text-sky-300 border border-sky-800/60 rounded-lg transition-all shadow-sm flex items-center space-x-1 cursor-pointer disabled:opacity-50"
+                                title={`Mở Link Drive Hóa Đơn PDF (${r.bankStatement || 'Chưa có'})`}
+                              >
+                                <FileText className={`w-3 h-3 ${openingDriveKey === `Bank Statement PDF:${r.bankStatement}` ? 'animate-spin' : ''}`} />
                                 <span>PDF</span>
                               </button>
 
-                              {/* 3. Mở Bill PNG */}
+                              {/* 4. Mở Bill PNG */}
                               <button
                                 onClick={(e) => {
                                   e.stopPropagation()
@@ -5100,26 +5114,55 @@ export function TtsBotView() {
                     </div>
                   </div>
 
+                  {/* IRS CP575 / EIN PDF */}
+                  <div className="p-2.5 bg-slate-900 border border-slate-800 rounded-lg space-y-1.5">
+                    <div className="flex items-center justify-between">
+                      <span className="text-slate-300 font-medium text-xs">IRS CP575 / EIN PDF:</span>
+                      <span className="text-purple-400 text-[10px] font-mono font-semibold truncate max-w-[150px]">
+                        {currentRecord.pdfDoc || 'Chưa có'}
+                      </span>
+                    </div>
+                    <div className="flex items-center space-x-2">
+                      <button
+                        onClick={() => handleOpenDriveDoc(currentRecord.pdfDoc, 'EIN PDF')}
+                        disabled={openingDriveKey === `EIN PDF:${currentRecord.pdfDoc}`}
+                        className="flex-1 py-1.5 px-3 bg-purple-600/30 hover:bg-purple-600 text-purple-300 hover:text-white border border-purple-500/40 rounded-lg text-xs font-semibold shadow flex items-center justify-center space-x-1.5 transition-all cursor-pointer disabled:opacity-50"
+                      >
+                        <FileText className={`w-3.5 h-3.5 ${openingDriveKey === `EIN PDF:${currentRecord.pdfDoc}` ? 'animate-spin' : ''}`} />
+                        <span>Mở Link PDF EIN</span>
+                      </button>
+                      {currentRecord.pdfDoc && (
+                        <button
+                          onClick={() => navigator.clipboard.writeText(currentRecord.pdfDoc || '')}
+                          className="p-1.5 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-lg"
+                          title="Copy file/link PDF EIN"
+                        >
+                          <Copy className="w-3.5 h-3.5" />
+                        </button>
+                      )}
+                    </div>
+                  </div>
+
                   {/* Bank Statement PDF */}
                   <div className="p-2.5 bg-slate-900 border border-slate-800 rounded-lg space-y-1.5">
                     <div className="flex items-center justify-between">
                       <span className="text-slate-300 font-medium text-xs">Bank Statement PDF:</span>
                       <span className="text-sky-400 text-[10px] font-mono font-semibold truncate max-w-[150px]">
-                        {currentRecord.bankStatement || currentRecord.pdfDoc || 'Chưa có'}
+                        {currentRecord.bankStatement || 'Chưa có'}
                       </span>
                     </div>
                     <div className="flex items-center space-x-2">
                       <button
-                        onClick={() => handleOpenDriveDoc(currentRecord.bankStatement || currentRecord.pdfDoc, 'Bank Statement PDF')}
-                        disabled={openingDriveKey === `Bank Statement PDF:${currentRecord.bankStatement || currentRecord.pdfDoc}`}
+                        onClick={() => handleOpenDriveDoc(currentRecord.bankStatement, 'Bank Statement PDF')}
+                        disabled={openingDriveKey === `Bank Statement PDF:${currentRecord.bankStatement}`}
                         className="flex-1 py-1.5 px-3 bg-sky-600/30 hover:bg-sky-600 text-sky-300 hover:text-white border border-sky-500/40 rounded-lg text-xs font-semibold shadow flex items-center justify-center space-x-1.5 transition-all cursor-pointer disabled:opacity-50"
                       >
-                        <FileText className={`w-3.5 h-3.5 ${openingDriveKey === `Bank Statement PDF:${currentRecord.bankStatement || currentRecord.pdfDoc}` ? 'animate-spin' : ''}`} />
+                        <FileText className={`w-3.5 h-3.5 ${openingDriveKey === `Bank Statement PDF:${currentRecord.bankStatement}` ? 'animate-spin' : ''}`} />
                         <span>Mở Bank Statement PDF</span>
                       </button>
-                      {(currentRecord.bankStatement || currentRecord.pdfDoc) && (
+                      {currentRecord.bankStatement && (
                         <button
-                          onClick={() => navigator.clipboard.writeText(currentRecord.bankStatement || currentRecord.pdfDoc || '')}
+                          onClick={() => navigator.clipboard.writeText(currentRecord.bankStatement || '')}
                           className="p-1.5 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-lg"
                           title="Copy tên file PDF"
                         >
@@ -7493,7 +7536,7 @@ export function TtsBotView() {
                   </button>
                 )}
 
-                {/* 3 Nút Mở Link Drive: FOLDER_URL, BANK_STATEMENT (PDF), BANK_STATEMENT_PNG */}
+                {/* 4 Nút Mở Link Drive: FOLDER_URL, EIN PDF, BANK_STATEMENT (PDF), BANK_STATEMENT_PNG */}
                 <button
                   onClick={() => handleOpenDriveDoc(formModalRecord.folderUrl, 'Folder Drive', true)}
                   disabled={openingDriveKey === `Folder Drive:${formModalRecord.folderUrl}`}
@@ -7505,12 +7548,22 @@ export function TtsBotView() {
                 </button>
 
                 <button
-                  onClick={() => handleOpenDriveDoc(formModalRecord.bankStatement || formModalRecord.pdfDoc, 'Bank Statement PDF')}
-                  disabled={openingDriveKey === `Bank Statement PDF:${formModalRecord.bankStatement || formModalRecord.pdfDoc}`}
-                  className="px-3 py-1.5 bg-sky-600/30 hover:bg-sky-600 text-sky-300 hover:text-white border border-sky-500/40 rounded-lg text-xs font-semibold transition-all flex items-center space-x-1.5 cursor-pointer shadow-sm disabled:opacity-50"
-                  title={`Mở Link Drive Hóa Đơn PDF (${formModalRecord.bankStatement || formModalRecord.pdfDoc || 'Chưa có'})`}
+                  onClick={() => handleOpenDriveDoc(formModalRecord.pdfDoc, 'EIN PDF')}
+                  disabled={openingDriveKey === `EIN PDF:${formModalRecord.pdfDoc}`}
+                  className="px-3 py-1.5 bg-purple-600/30 hover:bg-purple-600 text-purple-300 hover:text-white border border-purple-500/40 rounded-lg text-xs font-semibold transition-all flex items-center space-x-1.5 cursor-pointer shadow-sm disabled:opacity-50"
+                  title={`Mở Link Drive EIN CP575 PDF (${formModalRecord.pdfDoc || 'Chưa có'})`}
                 >
-                  <FileText className={`w-3.5 h-3.5 ${openingDriveKey === `Bank Statement PDF:${formModalRecord.bankStatement || formModalRecord.pdfDoc}` ? 'animate-spin' : ''}`} />
+                  <FileText className={`w-3.5 h-3.5 ${openingDriveKey === `EIN PDF:${formModalRecord.pdfDoc}` ? 'animate-spin' : ''}`} />
+                  <span>EIN PDF</span>
+                </button>
+
+                <button
+                  onClick={() => handleOpenDriveDoc(formModalRecord.bankStatement, 'Bank Statement PDF')}
+                  disabled={openingDriveKey === `Bank Statement PDF:${formModalRecord.bankStatement}`}
+                  className="px-3 py-1.5 bg-sky-600/30 hover:bg-sky-600 text-sky-300 hover:text-white border border-sky-500/40 rounded-lg text-xs font-semibold transition-all flex items-center space-x-1.5 cursor-pointer shadow-sm disabled:opacity-50"
+                  title={`Mở Link Drive Hóa Đơn PDF (${formModalRecord.bankStatement || 'Chưa có'})`}
+                >
+                  <FileText className={`w-3.5 h-3.5 ${openingDriveKey === `Bank Statement PDF:${formModalRecord.bankStatement}` ? 'animate-spin' : ''}`} />
                   <span>Bill PDF</span>
                 </button>
 
@@ -8282,7 +8335,7 @@ export function TtsBotView() {
                   </div>
                 </div>
 
-                <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-3">
                   {/* 1. Google Drive Folder */}
                   <div className="p-3 bg-slate-900 border border-slate-800 rounded-xl space-y-2 flex flex-col justify-between">
                     <div>
@@ -8311,7 +8364,35 @@ export function TtsBotView() {
                     </div>
                   </div>
 
-                  {/* 2. Bank Statement PDF */}
+                  {/* 2. IRS CP575 / EIN PDF */}
+                  <div className="p-3 bg-slate-900 border border-slate-800 rounded-xl space-y-2 flex flex-col justify-between">
+                    <div>
+                      <div className="flex items-center justify-between">
+                        <span className="text-xs font-bold text-purple-300 flex items-center space-x-1.5">
+                          <FileText className="w-4 h-4 text-purple-400" />
+                          <span>IRS CP575 / EIN (PDF)</span>
+                        </span>
+                        <span className="text-[10px] px-1.5 py-0.5 bg-purple-950/80 text-purple-300 border border-purple-800 rounded font-mono font-semibold">
+                          EIN PDF
+                        </span>
+                      </div>
+                      <p className="text-[11px] text-slate-400 leading-relaxed mt-1.5 break-all font-mono">
+                        {formModalRecord.pdfDoc || 'Chưa có file PDF EIN'}
+                      </p>
+                    </div>
+                    <div className="pt-2">
+                      <button
+                        onClick={() => handleOpenDriveDoc(formModalRecord.pdfDoc, 'EIN PDF')}
+                        disabled={openingDriveKey === `EIN PDF:${formModalRecord.pdfDoc}`}
+                        className="w-full py-2 px-3 bg-purple-600/30 hover:bg-purple-600 text-purple-300 hover:text-white border border-purple-500/40 rounded-lg text-xs font-bold shadow flex items-center justify-center space-x-1.5 cursor-pointer disabled:opacity-50 transition-all"
+                      >
+                        <FileText className={`w-4 h-4 ${openingDriveKey === `EIN PDF:${formModalRecord.pdfDoc}` ? 'animate-spin' : ''}`} />
+                        <span>Mở Link PDF EIN</span>
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* 3. Bank Statement PDF */}
                   <div className="p-3 bg-slate-900 border border-slate-800 rounded-xl space-y-2 flex flex-col justify-between">
                     <div>
                       <div className="flex items-center justify-between">
@@ -8320,26 +8401,26 @@ export function TtsBotView() {
                           <span>Bank Statement (PDF)</span>
                         </span>
                         <span className="text-[10px] px-1.5 py-0.5 bg-sky-950/80 text-sky-300 border border-sky-800 rounded font-mono font-semibold">
-                          PDF
+                          BILL PDF
                         </span>
                       </div>
                       <p className="text-[11px] text-slate-400 leading-relaxed mt-1.5 break-all font-mono">
-                        {formModalRecord.bankStatement || formModalRecord.pdfDoc || 'Chưa có file PDF'}
+                        {formModalRecord.bankStatement || 'Chưa có file PDF Hóa đơn'}
                       </p>
                     </div>
                     <div className="pt-2">
                       <button
-                        onClick={() => handleOpenDriveDoc(formModalRecord.bankStatement || formModalRecord.pdfDoc, 'Bank Statement PDF')}
-                        disabled={openingDriveKey === `Bank Statement PDF:${formModalRecord.bankStatement || formModalRecord.pdfDoc}`}
+                        onClick={() => handleOpenDriveDoc(formModalRecord.bankStatement, 'Bank Statement PDF')}
+                        disabled={openingDriveKey === `Bank Statement PDF:${formModalRecord.bankStatement}`}
                         className="w-full py-2 px-3 bg-sky-600/30 hover:bg-sky-600 text-sky-300 hover:text-white border border-sky-500/40 rounded-lg text-xs font-bold shadow flex items-center justify-center space-x-1.5 cursor-pointer disabled:opacity-50 transition-all"
                       >
-                        <FileText className={`w-4 h-4 ${openingDriveKey === `Bank Statement PDF:${formModalRecord.bankStatement || formModalRecord.pdfDoc}` ? 'animate-spin' : ''}`} />
-                        <span>Mở Link PDF</span>
+                        <FileText className={`w-4 h-4 ${openingDriveKey === `Bank Statement PDF:${formModalRecord.bankStatement}` ? 'animate-spin' : ''}`} />
+                        <span>Mở Link Bill PDF</span>
                       </button>
                     </div>
                   </div>
 
-                  {/* 3. Bank Statement PNG */}
+                  {/* 4. Bank Statement PNG */}
                   <div className="p-3 bg-slate-900 border border-slate-800 rounded-xl space-y-2 flex flex-col justify-between">
                     <div>
                       <div className="flex items-center justify-between">
@@ -8348,7 +8429,7 @@ export function TtsBotView() {
                           <span>Bank Statement (PNG)</span>
                         </span>
                         <span className="text-[10px] px-1.5 py-0.5 bg-emerald-950/80 text-emerald-300 border border-emerald-800 rounded font-mono font-semibold">
-                          PNG
+                          BILL PNG
                         </span>
                       </div>
                       <p className="text-[11px] text-slate-400 leading-relaxed mt-1.5 break-all font-mono">
@@ -8362,7 +8443,7 @@ export function TtsBotView() {
                         className="w-full py-2 px-3 bg-emerald-600/30 hover:bg-emerald-600 text-emerald-300 hover:text-white border border-emerald-500/40 rounded-lg text-xs font-bold shadow flex items-center justify-center space-x-1.5 cursor-pointer disabled:opacity-50 transition-all"
                       >
                         <ExternalLink className={`w-4 h-4 ${openingDriveKey === `Bank Statement PNG:${formModalRecord.bankStatementPng}` ? 'animate-spin' : ''}`} />
-                        <span>Mở Link PNG</span>
+                        <span>Mở Link Bill PNG</span>
                       </button>
                     </div>
                   </div>
