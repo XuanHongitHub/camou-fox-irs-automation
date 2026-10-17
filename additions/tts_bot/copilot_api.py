@@ -879,7 +879,15 @@ def setup_profile_endpoint(payload: Dict[str, Any] = Body(...)):
     if not prof:
         raise HTTPException(status_code=404, detail="Profile not found in sheet")
         
-    assigned_port = target_port or 50007
+    if target_port:
+        assigned_port = target_port
+    else:
+        try:
+            hp_res = requests.get(f"{HIDEPROXY_BASE}/api/port/info?port=ALL", timeout=2).json()
+            occupied = [p["port"] for p in hp_res.get("data", []) if (p.get("online") or p.get("public_ip"))]
+            assigned_port = (max(occupied) + 1) if occupied else 50001
+        except Exception:
+            assigned_port = 50001
     adspower_id = None
     
     try:

@@ -1,6 +1,6 @@
 import { IpcMain, dialog, shell, app } from 'electron'
 import { join, basename, extname } from 'path'
-import { existsSync, mkdirSync, readFileSync, writeFileSync, readdirSync, statSync, unlinkSync } from 'fs'
+import { existsSync, mkdirSync, readFileSync, writeFileSync, readdirSync, statSync, unlinkSync, copyFileSync } from 'fs'
 import { spawn } from 'child_process'
 import tls from 'tls'
 import net from 'net'
@@ -401,11 +401,18 @@ export function registerTtsBotHandlers(
   pythonLaunchFn: (baseArgs: string[]) => { cmd: string; args: string[] }
 ) {
   const runtimeDir = join(foxAutoRoot, 'additions', 'tts_bot', 'runtime')
-  const stateDir = join(foxAutoRoot, 'state')
-  const stateFile = join(stateDir, 'tts_state.json')
+  const persistentStateDir = app ? app.getPath('userData') : join(foxAutoRoot, 'state')
+  const stateFile = join(persistentStateDir, 'tts_state.json')
+  const legacyStateFile = join(foxAutoRoot, 'state', 'tts_state.json')
 
   mkdirSync(runtimeDir, { recursive: true })
-  mkdirSync(stateDir, { recursive: true })
+  mkdirSync(persistentStateDir, { recursive: true })
+
+  if (!existsSync(stateFile) && existsSync(legacyStateFile)) {
+    try {
+      copyFileSync(legacyStateFile, stateFile)
+    } catch {}
+  }
 
   // Dynamic AdsPower Local API Configuration Helpers
   const getAdsApiKey = (): string => {
@@ -2086,172 +2093,140 @@ function generateValidDl(stateCode: string, lastName: string = ''): string {
 
     const stateNorm = normalizeStateCode(record.state || record.stateLlc || '')
 
-    // 1. Collect all ports already assigned to OTHER profiles to strictly prevent port sharing
+    // 1. Comprehensive Port Collection across all sources to guarantee STRICT non-collision
     const usedPorts = new Set<number>()
+
+    // A. Ports assigned in persistent state for OTHER profiles
     Object.entries(stateData.profileSetups || {}).forEach(([recId, setup]: [string, any]) => {
       if (recId !== record.id && setup?.assignedPort) {
         usedPorts.add(Number(setup.assignedPort))
       }
     })
 
+    // B. Ports already forwarded or active in HideProxy (marked as occupied)
+    let activePorts: any[] = []
+    try {
+      const portInfoRes = await fetch(`${HIDEPROXY_BASE}/api/port/info?port=ALL`)
+        .then((r) => r.json())
+        .catch(() => null)
+      activePorts = (portInfoRes && portInfoRes.data) || []
+      for (const p of activePorts) {
+        if (p.online || p.public_ip) {
+          const pNum = Number(p.port)
+          if (pNum > 0) usedPorts.add(pNum)
+        }
+      }
+    } catch {}
+
+    // C. Ports already assigned to other profiles in AdsPower
+    try {
+      const adsBase = getAdsBaseUrl()
+      const adsHeaders = getAdsHeaders()
+      const adsListRes = await fetch(`${adsBase}/api/v1/user/list?page=1&page_size=100`, { headers: adsHeaders })
+        .then((r) => r.json())
+        .catch(() => null)
+      if (adsListRes && adsListRes.code === 0 && Array.isArray(adsListRes.data?.list)) {
+        for (const prof of adsListRes.data.list) {
+          const pStr = prof.user_proxy_config?.proxy_port
+          const pNum = Number(pStr)
+          if (pNum && pNum >= 1000) {
+            if (!prof.name?.includes(record.id) && prof.user_id !== record.adspowerId) {
+              usedPorts.add(pNum)
+            }
+          }
+        }
+      }
+    } catch {}
+
+    // Find the highest port currently present across HideProxy, AdsPower, and state
+    let maxPort = 50000
+    for (const p of usedPorts) {
+      if (p > maxPort) maxPort = p
+    }
+
     const userExplicitPort = record.assignedPort ? Number(record.assignedPort) : undefined
     let assignedPort = userExplicitPort
+
+    // If no explicit port: check if THIS profile already has its OWN saved port
     if (!assignedPort && stateData.profileSetups[record.id]?.assignedPort) {
       const existing = Number(stateData.profileSetups[record.id].assignedPort)
       if (!usedPorts.has(existing)) {
         assignedPort = existing
       }
     }
-    // If auto-loaded port was occupied by another profile, discard it to allocate a unique port
-    if (assignedPort && !userExplicitPort && usedPorts.has(Number(assignedPort))) {
-      assignedPort = undefined
+
+    // RULE (+1 KHÔNG TRÙNG): If no dedicated port, strictly take maxPort + 1
+    if (!assignedPort) {
+      let candidate = maxPort + 1
+      while (usedPorts.has(candidate)) {
+        candidate++
+      }
+      assignedPort = candidate
+      usedPorts.add(assignedPort)
     }
+
     let assignedProxyMeta = stateData.profileSetups[record.id]?.proxyMeta || null
 
-    // --- Step 1: HideProxy Smart Port Matching (Strict Unique Port Per Profile) ---
+    // --- Step 1: HideProxy Forwarding to the allocated unique assignedPort ---
     try {
-      const portInfoRes = await fetch(`${HIDEPROXY_BASE}/api/port/info?port=ALL`)
-        .then((r) => r.json())
-        .catch(() => null)
-      const activePorts: any[] = (portInfoRes && portInfoRes.data) || []
+      const matchExisting = activePorts.find((p) => p.port === assignedPort && p.online)
+      if (matchExisting) {
+        assignedProxyMeta = matchExisting
+      } else {
+        const histRes = await fetch(`${HIDEPROXY_BASE}/api/history/list?limit=50&page=1`)
+          .then((r) => r.json())
+          .catch(() => null)
+        const histItems: any[] = (histRes && histRes.data) || []
+        const matchedHist = histItems.find((h) => {
+          const hState = normalizeStateCode(h.state || '')
+          return hState === stateNorm
+        }) || histItems[0]
 
-      let currentPortAlive = false
-      if (assignedPort && !usedPorts.has(Number(assignedPort))) {
-        const matchExisting = activePorts.find((p) => p.port === Number(assignedPort) && p.online)
-        if (matchExisting) {
-          currentPortAlive = true
-          assignedProxyMeta = matchExisting
-          usedPorts.add(Number(assignedPort))
-        }
-      }
+        if (matchedHist) {
+          await fetch(
+            `${HIDEPROXY_BASE}/api/history/last-12-hours/forward?id=${matchedHist.id}&port=${assignedPort}`
+          )
+          await new Promise((resolve) => setTimeout(resolve, 1500))
+          assignedProxyMeta = {
+            port: assignedPort,
+            public_ip: matchedHist.ip,
+            state: matchedHist.state,
+            city: matchedHist.city,
+            isp: matchedHist.isp,
+            online: true
+          }
+        } else if (autoBuyProxy) {
+          const buyRes = await fetch(`${HIDEPROXY_BASE}/api/proxy/buy`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              quantity: 1,
+              country: 'us',
+              state: stateNorm,
+              port: assignedPort
+            })
+          })
+            .then((r) => r.json())
+            .catch(() => null)
 
-      if (userExplicitPort) {
-        // User explicitly specified this port -> HONOR IT! Do not override!
-        assignedPort = userExplicitPort
-        usedPorts.add(userExplicitPort)
-        if (!assignedProxyMeta) {
-          const match = activePorts.find((p) => p.port === userExplicitPort)
-          assignedProxyMeta = match || {
-            port: userExplicitPort,
-            public_ip: '127.0.0.1',
+          if (buyRes && buyRes.code === 200) {
+            await new Promise((resolve) => setTimeout(resolve, 2000))
+            assignedProxyMeta = {
+              port: assignedPort,
+              state: stateNorm,
+              online: true
+            }
+          }
+        } else {
+          assignedProxyMeta = {
+            port: assignedPort,
             state: stateNorm,
             online: false
           }
         }
-        // Best effort: forward history proxy to this port if not alive
-        if (!currentPortAlive) {
-          try {
-            const histRes = await fetch(`${HIDEPROXY_BASE}/api/history/list?limit=50&page=1`)
-              .then((r) => r.json())
-              .catch(() => null)
-            const histItems: any[] = (histRes && histRes.data) || []
-            const matchedHist = histItems.find((h) => normalizeStateCode(h.state || '') === stateNorm) || histItems[0]
-            if (matchedHist) {
-              await fetch(
-                `${HIDEPROXY_BASE}/api/history/last-12-hours/forward?id=${matchedHist.id}&port=${userExplicitPort}`
-              ).catch(() => null)
-            }
-          } catch {}
-        }
-      } else if (!currentPortAlive) {
-        // 1.1 Find an active port whose state matches AND NOT USED by any other profile!
-        const matchedPort = activePorts.find((p) => {
-          if (!p.online) return false
-          if (usedPorts.has(p.port)) return false // KHÔNG DÙNG CỔNG ĐÃ CÓ PROFILE KHÁC CHIẾM
-          const pState = normalizeStateCode(p.state || '')
-          return pState === stateNorm
-        })
-
-        if (matchedPort) {
-          assignedPort = matchedPort.port
-          assignedProxyMeta = matchedPort
-          usedPorts.add(matchedPort.port)
-        } else {
-          // 1.2 Find ANY active port NOT USED by any profile
-          const anyFreeOnlinePort = activePorts.find((p) => p.online && !usedPorts.has(p.port))
-          if (anyFreeOnlinePort) {
-            assignedPort = anyFreeOnlinePort.port
-            assignedProxyMeta = anyFreeOnlinePort
-            usedPorts.add(anyFreeOnlinePort.port)
-          } else {
-            // 1.3 Find a free port between 50001 and 50100 not used
-            let targetPort = assignedPort && !usedPorts.has(Number(assignedPort)) ? Number(assignedPort) : 0
-            if (!targetPort) {
-              for (let p = 50001; p <= 50100; p++) {
-                const inUse = activePorts.some((ap) => ap.port === p && ap.online)
-                if (!inUse && !usedPorts.has(p)) {
-                  targetPort = p
-                  break
-                }
-              }
-            }
-            if (!targetPort) targetPort = 50001
-
-            // Check HideProxy history list to forward to targetPort
-            const histRes = await fetch(`${HIDEPROXY_BASE}/api/history/list?limit=50&page=1`)
-              .then((r) => r.json())
-              .catch(() => null)
-            const histItems: any[] = (histRes && histRes.data) || []
-            const matchedHist = histItems.find((h) => {
-              const hState = normalizeStateCode(h.state || '')
-              return hState === stateNorm
-            })
-
-            if (matchedHist) {
-              await fetch(
-                `${HIDEPROXY_BASE}/api/history/last-12-hours/forward?id=${matchedHist.id}&port=${targetPort}`
-              )
-              await new Promise((resolve) => setTimeout(resolve, 1500))
-              assignedPort = targetPort
-              usedPorts.add(targetPort)
-              assignedProxyMeta = {
-                port: targetPort,
-                public_ip: matchedHist.ip,
-                state: matchedHist.state,
-                city: matchedHist.city,
-                isp: matchedHist.isp,
-                online: true
-              }
-            } else if (autoBuyProxy) {
-              // Buy single proxy for this state
-              const buyRes = await fetch(`${HIDEPROXY_BASE}/api/proxy/buy`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                  quantity: 1,
-                  country: 'us',
-                  state: stateNorm,
-                  port: targetPort
-                })
-              })
-                .then((r) => r.json())
-                .catch(() => null)
-
-              if (buyRes && buyRes.code === 200) {
-                await new Promise((resolve) => setTimeout(resolve, 2000))
-                assignedPort = targetPort
-                usedPorts.add(targetPort)
-                assignedProxyMeta = {
-                  port: targetPort,
-                  state: stateNorm,
-                  online: true
-                }
-              }
-            } else {
-              // Allocate unique targetPort
-              assignedPort = targetPort
-              usedPorts.add(targetPort)
-              assignedProxyMeta = {
-                port: targetPort,
-                state: stateNorm,
-                online: false
-              }
-            }
-          }
-        }
       }
     } catch (err) {
-      console.error('HideProxy auto-match error:', err)
+      console.error('HideProxy forward error:', err)
     }
 
     // --- Step 2: AdsPower Smart Matching & Creation ---

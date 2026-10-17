@@ -1775,7 +1775,31 @@ export function TtsBotView() {
       }
     })
 
-    // 2. For records in this batch that already have an assigned port, preserve it IF not duplicated
+    // 2. Mark ports already forwarded or active in HideProxy as strictly OCCUPIED
+    availablePorts.forEach((p) => {
+      if (p.online || p.public_ip) {
+        const pNum = Number(p.port)
+        if (pNum > 0) usedPorts.add(pNum)
+      }
+    })
+
+    // 3. Mark ports configured in AdsPower profiles as OCCUPIED
+    adspowerProfiles.forEach((prof) => {
+      const pNum = Number(prof.user_proxy_config?.proxy_port)
+      if (pNum && pNum >= 1000) {
+        if (!targetIdSet.has(prof.name?.split(' - ')[0]?.trim() || '')) {
+          usedPorts.add(pNum)
+        }
+      }
+    })
+
+    // Compute highest port across all sources
+    let maxPort = 50000
+    usedPorts.forEach((p) => {
+      if (p > maxPort) maxPort = p
+    })
+
+    // 4. For records in this batch that already have an assigned port, preserve it IF not duplicated
     targets.forEach((r) => {
       const existing = r.assignedPort || savedSetups[r.id]?.assignedPort
       if (existing && !usedPorts.has(Number(existing))) {
@@ -1784,50 +1808,17 @@ export function TtsBotView() {
       }
     })
 
-    // 3. For records that still need a port:
+    // 5. RULE (+1 KHÔNG TRÙNG): For records that still need a port, allocate strictly maxPort + 1
     targets.forEach((r) => {
       if (allocated[r.id]) return
 
-      const rStateNorm = normalizeState(r.state || '')
-
-      // 3.1: Try matching an active online port with SAME STATE not yet used
-      const matchedStatePort = availablePorts.find((p) => {
-        if (!p.online || usedPorts.has(p.port)) return false
-        return normalizeState(p.state || '') === rStateNorm
-      })
-
-      if (matchedStatePort) {
-        allocated[r.id] = matchedStatePort.port
-        usedPorts.add(matchedStatePort.port)
-        return
+      let candidate = maxPort + 1
+      while (usedPorts.has(candidate)) {
+        candidate++
       }
-
-      // 3.2: Try ANY active online port not yet used
-      const anyFreeOnline = availablePorts.find((p) => p.online && !usedPorts.has(p.port))
-      if (anyFreeOnline) {
-        allocated[r.id] = anyFreeOnline.port
-        usedPorts.add(anyFreeOnline.port)
-        return
-      }
-
-      // 3.3: Allocate unique free port in range 50001 - 50100
-      for (let p = 50001; p <= 50100; p++) {
-        if (!usedPorts.has(p)) {
-          allocated[r.id] = p
-          usedPorts.add(p)
-          break
-        }
-      }
-
-      // Absolute safety fallback
-      if (!allocated[r.id]) {
-        let p = 50001
-        while (usedPorts.has(p)) {
-          p++
-        }
-        allocated[r.id] = p
-        usedPorts.add(p)
-      }
+      allocated[r.id] = candidate
+      usedPorts.add(candidate)
+      maxPort = candidate
     })
 
     return allocated
@@ -1835,12 +1826,27 @@ export function TtsBotView() {
 
   // Open Single Setup Modal (Strict Port Collision Prevention)
   const openSingleSetupModal = (record: RecordItem) => {
-    const stateNorm = normalizeState(record.state || '')
     const usedPorts = new Set<number>()
     records.forEach((r) => {
       if (r.id !== record.id) {
         const p = r.assignedPort || profileSetups[r.id]?.assignedPort
         if (p) usedPorts.add(Number(p))
+      }
+    })
+
+    hpPorts.forEach((p) => {
+      if (p.online || p.public_ip) {
+        const pNum = Number(p.port)
+        if (pNum > 0) usedPorts.add(pNum)
+      }
+    })
+
+    adspowerProfiles.forEach((prof) => {
+      const pNum = Number(prof.user_proxy_config?.proxy_port)
+      if (pNum && pNum >= 1000) {
+        if (!prof.name?.includes(record.id) && prof.user_id !== record.adspowerId) {
+          usedPorts.add(pNum)
+        }
       }
     })
 
@@ -1850,26 +1856,16 @@ export function TtsBotView() {
     }
 
     if (!port) {
-      const matched = hpPorts.find(
-        (p) => p.online && !usedPorts.has(p.port) && normalizeState(p.state || '') === stateNorm
-      )
-      if (matched) {
-        port = matched.port
-      } else {
-        const anyOnline = hpPorts.find((p) => p.online && !usedPorts.has(p.port))
-        if (anyOnline) {
-          port = anyOnline.port
-        } else {
-          for (let p = 50001; p <= 50100; p++) {
-            if (!usedPorts.has(p)) {
-              port = p
-              break
-            }
-          }
-        }
+      let maxPort = 50000
+      usedPorts.forEach((p) => {
+        if (p > maxPort) maxPort = p
+      })
+      let candidate = maxPort + 1
+      while (usedPorts.has(candidate)) {
+        candidate++
       }
+      port = candidate
     }
-    if (!port) port = 50007
 
     setSetupModalConfig({
       isOpen: true,
@@ -6926,9 +6922,34 @@ export function TtsBotView() {
                     <div className="flex items-center space-x-2">
                       <button
                         onClick={() => {
+                          const usedPorts = new Set<number>()
+                          hpPorts.forEach((p) => {
+                            if (p.online || p.public_ip) {
+                              const pNum = Number(p.port)
+                              if (pNum > 0) usedPorts.add(pNum)
+                            }
+                          })
+                          adspowerProfiles.forEach((prof) => {
+                            const pNum = Number(prof.user_proxy_config?.proxy_port)
+                            if (pNum && pNum >= 1000) usedPorts.add(pNum)
+                          })
+                          records.forEach((r) => {
+                            const p = r.assignedPort || profileSetups[r.id]?.assignedPort
+                            if (p) usedPorts.add(Number(p))
+                          })
+                          let maxPort = 50000
+                          usedPorts.forEach((p) => {
+                            if (p > maxPort) maxPort = p
+                          })
                           const newMap: Record<string, number> = {}
-                          setupModalConfig.records.forEach((r, idx) => {
-                            newMap[r.id] = 50001 + idx
+                          setupModalConfig.records.forEach((r) => {
+                            let candidate = maxPort + 1
+                            while (usedPorts.has(candidate)) {
+                              candidate++
+                            }
+                            newMap[r.id] = candidate
+                            usedPorts.add(candidate)
+                            maxPort = candidate
                           })
                           setSetupModalConfig((prev) => ({
                             ...prev,
@@ -6936,10 +6957,10 @@ export function TtsBotView() {
                           }))
                         }}
                         className="px-2.5 py-1 bg-amber-500/15 hover:bg-amber-500/25 text-amber-300 border border-amber-500/40 rounded-lg font-mono text-xs flex items-center space-x-1 transition-all font-semibold"
-                        title="Tự động gán dải port liên tiếp 50001, 50002, 50003... không bị stuck"
+                        title="Tự động gán dải port liên tiếp từ port lớn nhất hiện tại + 1 (không trùng lặp)"
                       >
                         <Zap className="w-3.5 h-3.5 text-amber-400" />
-                        <span>⚡ Gán Tuần Tự (50001+)</span>
+                        <span>⚡ Gán Tuần Tự (+1 Không Trùng)</span>
                       </button>
                       <button
                         onClick={() => {
