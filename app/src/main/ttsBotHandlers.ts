@@ -78,6 +78,7 @@ export interface EmailMessageItem {
   subject: string
   date?: string
   snippet: string
+  body?: string
   otp?: string | null
 }
 
@@ -183,7 +184,7 @@ function executeImapSession(
         const startSeq = Math.max(1, uids.length - 7)
         const endSeq = uids.length
         state = 'FETCH'
-        socket.write(`A04 FETCH ${startSeq}:${endSeq} (BODY.PEEK[HEADER.FIELDS (SUBJECT FROM DATE)] BODY.PEEK[TEXT]<0.1200>)\r\n`)
+        socket.write(`A04 FETCH ${startSeq}:${endSeq} (BODY.PEEK[HEADER.FIELDS (SUBJECT FROM DATE)] BODY.PEEK[TEXT]<0.15000>)\r\n`)
       } else if (state === 'FETCH' && buffer.includes('A04 OK')) {
         clearTimeout(timeout)
         const raw = buffer
@@ -206,10 +207,25 @@ function executeImapSession(
           const dateMatch = chunk.match(/Date:\s*(.*?)\r?\n/i)
           const date = dateMatch ? dateMatch[1].trim() : ''
 
-          // Clean text snippet
+          // Clean text snippet & full body
           const textMatch = chunk.match(/BODY\[TEXT\](?:<\d+>)?\s*\{?\d*\}?\r?\n([\s\S]*?)(?:\)\r?\n|\n\*\s+|\nA04)/i)
-          const bodyText = textMatch ? textMatch[1].trim() : chunk
-          const snippet = bodyText.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 300)
+          const rawBody = textMatch ? textMatch[1].trim() : chunk
+          const cleanText = rawBody
+            .replace(/<style[^>]*>[\s\S]*?<\/style>/gi, '')
+            .replace(/<script[^>]*>[\s\S]*?<\/script>/gi, '')
+            .replace(/<[^>]+>/g, ' ')
+            .replace(/&nbsp;/gi, ' ')
+            .replace(/&amp;/gi, '&')
+            .replace(/&lt;/gi, '<')
+            .replace(/&gt;/gi, '>')
+            .replace(/&#39;/gi, "'")
+            .replace(/&quot;/gi, '"')
+            .replace(/\r\n/g, '\n')
+            .replace(/[ \t]+/g, ' ')
+            .trim()
+
+          const snippet = cleanText.slice(0, 300)
+          const body = cleanText || rawBody
 
           // Extract OTP
           let chunkOtp: string | null = null
@@ -237,6 +253,7 @@ function executeImapSession(
             subject,
             date,
             snippet,
+            body,
             otp: chunkOtp
           })
         }
@@ -295,33 +312,82 @@ function executeImapSession(
 export async function checkMailInbox(email: string, pass?: string, twoFactor?: string): Promise<MailCheckResult> {
   const DEFAULT_MS_CLIENT_ID = '9e5f94bc-e8a4-4e73-b8be-63364c29d753'
 
-  // Extract all parts across parameters
-  const allParts = [
-    ...(email || '').split(/[:|]/),
-    ...(pass || '').split(/[:|]/),
-    ...(twoFactor || '').split(/[:|]/)
-  ].map((p) => p.trim())
+  // Extract all parts across parameters with broad delimiters: |, :, ----, multiple spaces, tabs
+  const combinedRaw = `${email || ''} ${pass || ''} ${twoFactor || ''}`
+  const allParts = combinedRaw
+    .split(/[:|]|\s{2,}|----|\t/)
+    .map((p) => p.trim())
+    .filter(Boolean)
 
-  let refreshTok = allParts.find((p) => p.startsWith('M.') || p.startsWith('M_')) || ''
-  let customCid = allParts.find((p) => /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(p)) || ''
-
-  const cleanEmail = email.includes('|')
-    ? email.split('|')[0].trim()
-    : email.includes(':')
-    ? email.split(':')[0].trim()
-    : email.trim()
-
-  let plainPass = pass?.trim() || ''
-  if (!plainPass && email.includes('|')) {
-    plainPass = email.split('|')[1]?.trim() || ''
+  // 1. Identify email
+  let cleanEmail = ''
+  const emailPart = allParts.find((p) => p.includes('@') && !p.includes(' ') && p.includes('.'))
+  if (emailPart) {
+    cleanEmail = emailPart
+  } else {
+    cleanEmail = (email || '').split(/[:|]/)[0].trim()
   }
 
-  // Determine IMAP host
+  // 2. Identify refresh token (starts with M. or M_ or long base64/url token > 45 chars)
+  let refreshTok = allParts.find((p) => p.startsWith('M.') || p.startsWith('M_') || (p.length > 50 && !p.includes('@'))) || ''
+
+  // 3. Identify custom Client ID (UUID format)
+  let customCid = allParts.find((p) => /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(p)) || ''
+
+  // 4. Identify plain password
+  let plainPass = (pass || '').trim()
+  if (!plainPass || plainPass === refreshTok || plainPass === customCid) {
+    // Find part immediately adjacent to email or distinct part
+    const emailIdx = allParts.indexOf(cleanEmail)
+    if (emailIdx !== -1 && allParts[emailIdx + 1]) {
+      const candidate = allParts[emailIdx + 1]
+      if (candidate !== refreshTok && candidate !== customCid && !candidate.includes('@')) {
+        plainPass = candidate
+      }
+    }
+  }
+
+  // 5. Determine IMAP host based on domain
+  const emailLower = cleanEmail.toLowerCase()
+  const domain = emailLower.includes('@') ? emailLower.split('@')[1] : ''
+
   let imapHost = 'outlook.office365.com'
-  if (cleanEmail.toLowerCase().endsWith('@gmail.com')) {
+  let fallbackHosts: string[] = ['imap-mail.outlook.com']
+
+  if (domain.includes('gmail.com')) {
     imapHost = 'imap.gmail.com'
-  } else if (cleanEmail.toLowerCase().includes('yahoo')) {
+    fallbackHosts = []
+  } else if (domain.includes('yahoo') || domain.includes('ymail')) {
     imapHost = 'imap.mail.yahoo.com'
+    fallbackHosts = ['export.imap.mail.yahoo.com']
+  } else if (domain.includes('zoho')) {
+    imapHost = 'imap.zoho.com'
+    fallbackHosts = ['imappro.zoho.com']
+  } else if (domain.includes('icloud') || domain.includes('me.com') || domain.includes('mac.com')) {
+    imapHost = 'imap.mail.me.com'
+    fallbackHosts = []
+  } else if (domain.includes('yandex') || domain.includes('ya.ru')) {
+    imapHost = 'imap.yandex.com'
+    fallbackHosts = []
+  } else if (domain.includes('rambler') || domain.includes('lenta.ru') || domain.includes('autorambler')) {
+    imapHost = 'imap.rambler.ru'
+    fallbackHosts = []
+  } else if (domain.includes('mail.ru') || domain.includes('inbox.ru') || domain.includes('bk.ru') || domain.includes('list.ru')) {
+    imapHost = 'imap.mail.ru'
+    fallbackHosts = []
+  } else if (domain.includes('fastmail')) {
+    imapHost = 'imap.fastmail.com'
+    fallbackHosts = []
+  } else if (domain.includes('gmx')) {
+    imapHost = 'imap.gmx.com'
+    fallbackHosts = ['imap.gmx.net']
+  } else if (domain.includes('mail.com')) {
+    imapHost = 'imap.mail.com'
+    fallbackHosts = []
+  } else if (domain && !domain.includes('outlook') && !domain.includes('hotmail') && !domain.includes('live') && !domain.includes('msn')) {
+    // Custom domain: first try imap.<domain>, then mail.<domain>, then office365
+    imapHost = `imap.${domain}`
+    fallbackHosts = [`mail.${domain}`, 'outlook.office365.com']
   }
 
   // Path 1: OAuth2 flow
@@ -344,9 +410,8 @@ export async function checkMailInbox(email: string, pass?: string, twoFactor?: s
         const firstTry = await executeImapSession(imapHost, cleanEmail, `A01 AUTHENTICATE XOAUTH2 ${authString}\r\n`)
         if (firstTry.ok) return firstTry
 
-        // Fallback between outlook.office365.com and imap-mail.outlook.com for consumer accounts
-        if (cleanEmail.toLowerCase().includes('outlook') || cleanEmail.toLowerCase().includes('hotmail') || cleanEmail.toLowerCase().includes('live')) {
-          const altHost = imapHost === 'outlook.office365.com' ? 'imap-mail.outlook.com' : 'outlook.office365.com'
+        // Fallback hosts
+        for (const altHost of fallbackHosts) {
           const secondTry = await executeImapSession(altHost, cleanEmail, `A01 AUTHENTICATE XOAUTH2 ${authString}\r\n`)
           if (secondTry.ok) return secondTry
         }
@@ -382,7 +447,14 @@ export async function checkMailInbox(email: string, pass?: string, twoFactor?: s
 
   // Path 2: Plain Password IMAP Login flow
   if (plainPass) {
-    return await executeImapSession(imapHost, cleanEmail, `A01 LOGIN "${cleanEmail}" "${plainPass}"\r\n`)
+    const firstTry = await executeImapSession(imapHost, cleanEmail, `A01 LOGIN "${cleanEmail}" "${plainPass}"\r\n`)
+    if (firstTry.ok) return firstTry
+
+    for (const altHost of fallbackHosts) {
+      const secondTry = await executeImapSession(altHost, cleanEmail, `A01 LOGIN "${cleanEmail}" "${plainPass}"\r\n`)
+      if (secondTry.ok) return secondTry
+    }
+    return firstTry
   }
 
   return {
@@ -2217,6 +2289,89 @@ function generateValidDl(stateCode: string, lastName: string = ''): string {
       const res = await fetch(url, { headers: getAdsHeaders() })
       const data = await res.json()
       return { ok: data.code === 0, error: data.msg }
+    } catch (err: any) {
+      return { ok: false, error: String(err?.message || err) }
+    }
+  })
+
+  // 4.05 Toggle Device (Desktop <-> Mobile iOS) and Restart AdsPower Browser
+  ipcMain.handle('tts:adspower:switch-device-and-restart', async (_event, payload: {
+    recordId: string
+    adspowerId?: string
+    targetMode?: 'desktop' | 'mobile'
+  }) => {
+    try {
+      const recordId = payload.recordId
+      let stateData: any = {}
+      if (existsSync(stateFile)) {
+        try { stateData = JSON.parse(readFileSync(stateFile, 'utf-8')) } catch {}
+      }
+      if (!stateData.profileSetups) stateData.profileSetups = {}
+      const curSetup = stateData.profileSetups[recordId] || {}
+
+      const currentMode = curSetup.deviceMode || 'desktop'
+      const newMode = payload.targetMode || (currentMode === 'desktop' ? 'mobile' : 'desktop')
+
+      let effectiveUserId = payload.adspowerId || curSetup.adspowerId || recordId
+      const resolved = await resolveAdsPowerUserId(effectiveUserId)
+      if (resolved) effectiveUserId = resolved
+
+      const adsBase = getAdsBaseUrl()
+      const adsHeaders = getAdsHeaders()
+
+      // 1. Dừng browser cũ
+      try {
+        await fetch(`${adsBase}/api/v1/browser/stop?user_id=${effectiveUserId}`, {
+          headers: adsHeaders,
+          signal: AbortSignal.timeout(3000)
+        }).catch(() => null)
+        await new Promise((r) => setTimeout(r, 1200))
+      } catch {}
+
+      // 2. Chuẩn bị Fingerprint Config
+      const fingerprintConfig: any = {
+        language: ['en-US', 'en'],
+        flash: 'block',
+        screen_resolution: 'none'
+      }
+      if (newMode === 'mobile') {
+        fingerprintConfig.random_ua = {
+          ua_system_version: ['iOS 17', 'iOS 18']
+        }
+      } else {
+        fingerprintConfig.random_ua = {
+          ua_system_version: ['Windows 10', 'Windows 11']
+        }
+      }
+
+      // 3. Cập nhật cấu hình profile AdsPower
+      const updateRes = await fetch(`${adsBase}/api/v1/user/update`, {
+        method: 'POST',
+        headers: adsHeaders,
+        body: JSON.stringify({
+          user_id: effectiveUserId,
+          profile_id: effectiveUserId,
+          fingerprint_config: fingerprintConfig,
+          launch_args: ['--start-maximized']
+        }),
+        signal: AbortSignal.timeout(4000)
+      }).then((r) => r.json()).catch(() => null)
+
+      // 4. Lưu lại deviceMode vào setup state
+      curSetup.deviceMode = newMode
+      stateData.profileSetups[recordId] = curSetup
+      try { writeFileSync(stateFile, JSON.stringify(stateData, null, 2), 'utf-8') } catch {}
+
+      // 5. Khởi động lại AdsPower browser
+      const startRes = await startAdsPowerBrowser(effectiveUserId, recordId)
+
+      return {
+        ok: startRes.ok,
+        newMode,
+        adspowerId: effectiveUserId,
+        data: startRes.data,
+        error: startRes.error || updateRes?.msg
+      }
     } catch (err: any) {
       return { ok: false, error: String(err?.message || err) }
     }

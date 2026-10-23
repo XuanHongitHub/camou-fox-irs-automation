@@ -210,6 +210,7 @@ export interface IApi {
       create: (payload: any) => Promise<{ ok: boolean; data?: any; error?: string }>
       start: (userId: string) => Promise<{ ok: boolean; data?: any; error?: string }>
       stop: (userId: string) => Promise<{ ok: boolean; error?: string }>
+      switchDeviceAndRestart: (payload: { recordId: string; adspowerId?: string; targetMode?: 'desktop' | 'mobile' }) => Promise<{ ok: boolean; newMode?: string; adspowerId?: string; data?: any; error?: string }>
       getConfig: () => Promise<{ ok: boolean; apiKey?: string; baseUrl?: string; defaultApiKey?: string }>
       setConfig: (payload: { apiKey?: string; baseUrl?: string }) => Promise<{ ok: boolean; apiKey?: string; baseUrl?: string; error?: string }>
       groups: () => Promise<{ ok: boolean; data?: any[]; error?: string }>

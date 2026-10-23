@@ -125,6 +125,8 @@ const api = {
       create: (payload: any) => ipcRenderer.invoke('tts:adspower:create', payload),
       start: (userId: string) => ipcRenderer.invoke('tts:adspower:start', userId),
       stop: (userId: string) => ipcRenderer.invoke('tts:adspower:stop', userId),
+      switchDeviceAndRestart: (payload: { recordId: string; adspowerId?: string; targetMode?: 'desktop' | 'mobile' }) =>
+        ipcRenderer.invoke('tts:adspower:switch-device-and-restart', payload),
       getConfig: () => ipcRenderer.invoke('tts:adspower:get-config'),
       setConfig: (payload: { apiKey?: string; baseUrl?: string }) =>
         ipcRenderer.invoke('tts:adspower:set-config', payload),
