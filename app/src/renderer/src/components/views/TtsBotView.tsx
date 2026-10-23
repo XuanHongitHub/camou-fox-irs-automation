@@ -199,6 +199,11 @@ const ttsIpc = {
     if (window.electron?.ipcRenderer) return await window.electron.ipcRenderer.invoke('tts:status')
     return { ok: false, error: 'IPC unavailable' }
   },
+  launchService: async (service: 'adspower' | 'hideproxy') => {
+    if (window.api?.tts?.launchService) return await window.api.tts.launchService(service)
+    if (window.electron?.ipcRenderer) return await window.electron.ipcRenderer.invoke('tts:service:launch', service)
+    return { ok: false, error: 'IPC unavailable' }
+  },
   fetchSheet: async (params?: any) => {
     if (window.api?.tts?.fetchSheet) return await window.api.tts.fetchSheet(params)
     if (window.electron?.ipcRenderer) return await window.electron.ipcRenderer.invoke('tts:sheet:fetch', params)
@@ -1108,6 +1113,18 @@ export function TtsBotView() {
           setFormModalRecord((prev) => (prev ? { ...prev, proxy: proxyString } : null))
         }
 
+        setSetupModalConfig((prev) => {
+          if (!prev.isOpen || !prev.records[0] || prev.records[0].id !== proxyModalRecord.id) return prev
+          const newPort = proxyConfig.proxy_port ? Number(proxyConfig.proxy_port) : prev.selectedPort
+          return {
+            ...prev,
+            selectedPort: newPort,
+            records: prev.records.map((r) =>
+              r.id === proxyModalRecord.id ? { ...r, proxy: proxyString, assignedPort: newPort } : r
+            )
+          }
+        })
+
         setProxyUpdateNotice({
           ok: true,
           msg: `✓ Đã cập nhật proxy thành công cho [${proxyModalRecord.id}]! ${res.adsUpdated ? '(Đã sync AdsPower)' : ''} ${res.restarted ? '(Đã restart browser)' : ''}`
@@ -1184,6 +1201,19 @@ export function TtsBotView() {
             prev ? { ...prev, proxy: proxyString, assignedPort: proxyHideproxyPort } : null
           )
         }
+
+        setSetupModalConfig((prev) => {
+          if (!prev.isOpen || !prev.records[0] || prev.records[0].id !== proxyModalRecord.id) return prev
+          return {
+            ...prev,
+            selectedPort: proxyHideproxyPort,
+            records: prev.records.map((r) =>
+              r.id === proxyModalRecord.id
+                ? { ...r, proxy: proxyString, assignedPort: proxyHideproxyPort }
+                : r
+            )
+          }
+        })
 
         const adsStatus = updateRes?.adsUpdated
           ? '(Đã sync AdsPower)'
@@ -2227,6 +2257,8 @@ export function TtsBotView() {
           `⚡ Setup thành công cho ${res.record.id}! Port: ${res.record.assignedPort}, AdsPower: ${res.record.adspowerId}`
         )
       } else {
+        const errMsg = res?.error || 'Thất bại khi cấu hình AdsPower hoặc Proxy'
+        setSetupFeedback(`❌ Setup thất bại cho [${target.id}]: ${errMsg}`)
         setSetupModalConfig((prev) => ({
           ...prev,
           isExecuting: false,
@@ -2234,11 +2266,13 @@ export function TtsBotView() {
             current: 1,
             total: 1,
             currentRecordId: target.id,
-            currentStatus: `Lỗi: ${res?.error || 'Thất bại'}`
+            currentStatus: `Lỗi: ${errMsg}`
           }
         }))
       }
     } catch (err: any) {
+      const errMsg = err?.message || err
+      setSetupFeedback(`❌ Lỗi setup: ${errMsg}`)
       setSetupModalConfig((prev) => ({
         ...prev,
         isExecuting: false,
@@ -2246,7 +2280,7 @@ export function TtsBotView() {
           current: 1,
           total: 1,
           currentRecordId: target.id,
-          currentStatus: `Lỗi: ${err?.message || err}`
+          currentStatus: `Lỗi: ${errMsg}`
         }
       }))
     } finally {
@@ -6589,6 +6623,61 @@ export function TtsBotView() {
 
             {/* Body */}
             <div className="flex-1 overflow-y-auto p-6 space-y-6">
+              {/* Infrastructure Readiness Warning Banner */}
+              {(!status?.adspower?.online || !status?.hideproxy?.online) && (
+                <div className="p-3.5 bg-rose-950/80 border border-rose-700/80 rounded-xl flex flex-wrap items-center justify-between gap-3 text-xs shadow-md">
+                  <div className="flex items-center space-x-2.5 text-rose-200">
+                    <AlertTriangle className="w-5 h-5 text-rose-400 shrink-0 animate-pulse" />
+                    <div>
+                      <div className="font-bold text-rose-300">
+                        Hạ tầng chưa sẵn sàng:{' '}
+                        {!status?.adspower?.online && !status?.hideproxy?.online
+                          ? 'Cả AdsPower và HideProxy chưa được mở!'
+                          : !status?.adspower?.online
+                          ? 'AdsPower chưa được mở (cần port 50325 để tạo/mở profile)'
+                          : 'HideProxy chưa được mở (cần port 10101 để quản lý/mua IP)'}
+                      </div>
+                      <div className="text-[11px] text-rose-300/80">
+                        Vui lòng bấm nút bên cạnh để khởi chạy ứng dụng tương ứng trước khi tiến hành thiết lập.
+                      </div>
+                    </div>
+                  </div>
+                  <div className="flex items-center space-x-2 shrink-0">
+                    {!status?.adspower?.online && (
+                      <button
+                        type="button"
+                        onClick={async () => {
+                          await ttsIpc.launchService('adspower')
+                          setTimeout(() => {
+                            refreshStatus()
+                            refreshAdsPowerProfiles()
+                          }, 3000)
+                        }}
+                        className="px-3 py-1.5 bg-sky-600 hover:bg-sky-500 text-white rounded-lg font-bold text-xs flex items-center space-x-1.5 shadow-sm transition-all"
+                      >
+                        <Play className="w-3.5 h-3.5" />
+                        <span>Mở AdsPower Ngay</span>
+                      </button>
+                    )}
+                    {!status?.hideproxy?.online && (
+                      <button
+                        type="button"
+                        onClick={async () => {
+                          await ttsIpc.launchService('hideproxy')
+                          setTimeout(() => {
+                            refreshStatus()
+                            refreshHideProxyPorts()
+                          }, 3000)
+                        }}
+                        className="px-3 py-1.5 bg-amber-600 hover:bg-amber-500 text-white rounded-lg font-bold text-xs flex items-center space-x-1.5 shadow-sm transition-all"
+                      >
+                        <Play className="w-3.5 h-3.5" />
+                        <span>Mở HideProxy Ngay</span>
+                      </button>
+                    )}
+                  </div>
+                </div>
+              )}
               {setupModalConfig.mode === 'single' ? (
                 /* SINGLE MODE UI */
                 (() => {
@@ -6674,15 +6763,26 @@ export function TtsBotView() {
                               <Globe className="w-4 h-4" />
                               <span>2. Thông Số Proxy & Hạ Tầng Mạng</span>
                             </div>
-                            <span
-                              className={`text-[10px] px-2 py-0.5 rounded font-mono ${
-                                portInfo?.online
-                                  ? 'bg-emerald-950 text-emerald-300 border border-emerald-800'
-                                  : 'bg-rose-950 text-rose-300 border border-rose-800'
-                              }`}
-                            >
-                              {portInfo?.online ? '🟢 Online' : '🔴 Offline'}
-                            </span>
+                            <div className="flex items-center space-x-2">
+                              <button
+                                type="button"
+                                onClick={() => openProxyModal(curRec)}
+                                className="px-2.5 py-1 bg-cyan-600/20 hover:bg-cyan-600/35 text-cyan-300 border border-cyan-500/50 rounded-lg text-xs font-semibold flex items-center space-x-1.5 transition-all shadow-sm"
+                                title="Mở bảng đổi Proxy đa chế độ (Custom HTTP/Socks5, Pool, Mua HideProxy mới, No Proxy)"
+                              >
+                                <Globe className="w-3.5 h-3.5 text-cyan-400" />
+                                <span>🌐 Đổi Proxy Đa Chế Độ</span>
+                              </button>
+                              <span
+                                className={`text-[10px] px-2 py-0.5 rounded font-mono ${
+                                  portInfo?.online
+                                    ? 'bg-emerald-950 text-emerald-300 border border-emerald-800'
+                                    : 'bg-rose-950 text-rose-300 border border-rose-800'
+                                }`}
+                              >
+                                {portInfo?.online ? '🟢 Online' : '🔴 Offline'}
+                              </span>
+                            </div>
                           </div>
 
                           <div className="space-y-2.5 text-xs">
@@ -6760,6 +6860,18 @@ export function TtsBotView() {
                                   <span>{isTestingProxy ? 'Đang test...' : '⚡ Test Port'}</span>
                                 </button>
                               </div>
+                            </div>
+
+                            {/* Quick Proxy Switch Shortcut */}
+                            <div className="flex items-center justify-between text-[11px] pt-0.5 pb-1 border-b border-slate-800/60">
+                              <span className="text-slate-400">Đổi nguồn proxy:</span>
+                              <button
+                                type="button"
+                                onClick={() => openProxyModal(curRec)}
+                                className="text-cyan-400 hover:text-cyan-300 hover:underline font-semibold flex items-center space-x-1"
+                              >
+                                <span>Nhập Proxy riêng (Socks5/HTTP) / Pool / No Proxy &rarr;</span>
+                              </button>
                             </div>
 
                             {/* Direct Port Test Result Banner */}
@@ -6876,11 +6988,23 @@ export function TtsBotView() {
 
                       {/* Execution Progress Banner */}
                       {setupModalConfig.progress && (
-                        <div className="p-3.5 bg-slate-950 border border-cyan-800/80 rounded-xl space-y-1.5 animate-in fade-in">
-                          <div className="flex justify-between text-xs">
-                            <span className="text-cyan-400 font-semibold flex items-center space-x-2">
-                              {setupModalConfig.isExecuting && (
-                                <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                        <div
+                          className={`p-3.5 rounded-xl space-y-1.5 animate-in fade-in border ${
+                            setupModalConfig.progress.currentStatus?.startsWith('Lỗi')
+                              ? 'bg-rose-950/80 border-rose-600/80 text-rose-200'
+                              : setupModalConfig.isExecuting
+                              ? 'bg-slate-950 border-cyan-800/80 text-cyan-300'
+                              : 'bg-emerald-950/80 border-emerald-600/80 text-emerald-300'
+                          }`}
+                        >
+                          <div className="flex justify-between items-center text-xs">
+                            <span className="font-semibold flex items-center space-x-2">
+                              {setupModalConfig.isExecuting ? (
+                                <RefreshCw className="w-3.5 h-3.5 animate-spin text-cyan-400" />
+                              ) : setupModalConfig.progress.currentStatus?.startsWith('Lỗi') ? (
+                                <AlertCircle className="w-4 h-4 text-rose-400 shrink-0" />
+                              ) : (
+                                <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
                               )}
                               <span>{setupModalConfig.progress.currentStatus}</span>
                             </span>

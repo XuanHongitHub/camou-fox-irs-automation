@@ -99,6 +99,7 @@ const api = {
   },
   tts: {
     status: () => ipcRenderer.invoke('tts:status'),
+    launchService: (service: 'adspower' | 'hideproxy') => ipcRenderer.invoke('tts:service:launch', service),
     fetchSheet: (params?: { sheetId?: string; tabName?: string }) =>
       ipcRenderer.invoke('tts:sheet:fetch', params),
     importSheetFile: () => ipcRenderer.invoke('tts:sheet:import-file'),

@@ -493,6 +493,35 @@ export function registerTtsBotHandlers(
     return { ok: online }
   })
 
+  ipcMain.handle('tts:service:launch', async (_event, service: 'adspower' | 'hideproxy') => {
+    try {
+      if (service === 'hideproxy') {
+        const candidates = [
+          join(process.env.LOCALAPPDATA || '', 'Programs', 'HideProxy', 'Hideproxy.exe'),
+          'C:\\Users\\Acer\\AppData\\Local\\Programs\\HideProxy\\Hideproxy.exe'
+        ]
+        const target = candidates.find((p) => existsSync(p))
+        if (!target) return { ok: false, error: 'Không tìm thấy file Hideproxy.exe trên hệ thống' }
+        spawn(target, [], { detached: true, stdio: 'ignore' }).unref()
+        return { ok: true, path: target }
+      } else if (service === 'adspower') {
+        const candidates = [
+          'C:\\Program Files\\AdsPower Global\\AdsPower Global.exe',
+          'C:\\Program Files (x86)\\AdsPower Global\\AdsPower Global.exe',
+          join(process.env['ProgramFiles'] || 'C:\\Program Files', 'AdsPower Global', 'AdsPower Global.exe'),
+          join(process.env.LOCALAPPDATA || '', 'Programs', 'AdsPower Global', 'AdsPower Global.exe')
+        ]
+        const target = candidates.find((p) => existsSync(p))
+        if (!target) return { ok: false, error: 'Không tìm thấy file AdsPower Global.exe trên hệ thống' }
+        spawn(target, [], { detached: true, stdio: 'ignore' }).unref()
+        return { ok: true, path: target }
+      }
+      return { ok: false, error: 'Service không hợp lệ' }
+    } catch (err: any) {
+      return { ok: false, error: String(err?.message || err) }
+    }
+  })
+
   // 1. Status & Health
   ipcMain.handle('tts:status', async () => {
     let adspowerOnline = false
@@ -1612,16 +1641,155 @@ function generateValidDl(stateCode: string, lastName: string = ''): string {
     user?: string
     password?: string
   }) => {
+    const host = (params.host || '').trim()
+    const port = Number(params.port)
+    const user = (params.user || '').trim()
+    const password = (params.password || '').trim()
+    const proxyType = (params.proxyType || 'http').toLowerCase()
+
+    if (!host || isNaN(port) || port <= 0 || port > 65535) {
+      return { ok: false, error: 'Host hoặc Port không hợp lệ' }
+    }
+
+    // 1. Direct fast-path for Local HideProxy ports (127.0.0.1)
+    if (host === '127.0.0.1' || host === 'localhost') {
+      try {
+        const hpRes = await fetch(`${HIDEPROXY_BASE}/api/port/info?port=${port}`, {
+          signal: AbortSignal.timeout(1800)
+        })
+          .then((r) => r.json())
+          .catch(() => null)
+
+        if (hpRes && hpRes.code === 200 && Array.isArray(hpRes.data) && hpRes.data.length > 0) {
+          const item = hpRes.data[0]
+          if (item && (item.online || item.public_ip)) {
+            return {
+              ok: true,
+              latencyMs: 30,
+              ip: item.public_ip || '127.0.0.1',
+              country: 'US',
+              region: item.state || '',
+              city: item.city || '',
+              isp: item.isp || 'HideProxy Residential'
+            }
+          } else {
+            return {
+              ok: false,
+              error: `Cổng ${port} chưa gán IP hoặc đang Offline trong HideProxy`
+            }
+          }
+        }
+      } catch {}
+    }
+
+    // 2. SOCKS5 Protocol Handshake (RFC 1928 & RFC 1929)
+    if (proxyType.includes('socks')) {
+      return new Promise((resolve) => {
+        const started = Date.now()
+        let resolved = false
+        const socket = net.createConnection({ host, port })
+        socket.setTimeout(6000)
+
+        const finish = (result: any) => {
+          if (!resolved) {
+            resolved = true
+            try { socket.destroy() } catch {}
+            resolve(result)
+          }
+        }
+
+        let stage: 'GREETING' | 'AUTH' | 'CONNECT' | 'DATA' = 'GREETING'
+
+        socket.on('connect', () => {
+          // Version 5, support No Auth (0x00) and Username/Password (0x02)
+          if (user && password) {
+            socket.write(Buffer.from([0x05, 0x02, 0x00, 0x02]))
+          } else {
+            socket.write(Buffer.from([0x05, 0x01, 0x00]))
+          }
+        })
+
+        const sendConnect = () => {
+          stage = 'CONNECT'
+          // CONNECT domain api.ipify.org:80
+          const targetHost = Buffer.from('api.ipify.org', 'utf8')
+          const req = Buffer.concat([
+            Buffer.from([0x05, 0x01, 0x00, 0x03, targetHost.length]),
+            targetHost,
+            Buffer.from([0x00, 0x50]) // Port 80
+          ])
+          socket.write(req)
+        }
+
+        let buffer = ''
+        socket.on('data', (chunk) => {
+          if (stage === 'GREETING') {
+            if (chunk[0] !== 0x05) {
+              return finish({ ok: false, error: 'Máy chủ không hỗ trợ giao thức SOCKS5' })
+            }
+            const method = chunk[1]
+            if (method === 0x00) {
+              sendConnect()
+            } else if (method === 0x02) {
+              stage = 'AUTH'
+              const uBuf = Buffer.from(user, 'utf8')
+              const pBuf = Buffer.from(password, 'utf8')
+              const authBuf = Buffer.concat([
+                Buffer.from([0x01, uBuf.length]),
+                uBuf,
+                Buffer.from([pBuf.length]),
+                pBuf
+              ])
+              socket.write(authBuf)
+            } else {
+              return finish({ ok: false, error: 'Proxy yêu cầu phương thức xác thực không hỗ trợ' })
+            }
+          } else if (stage === 'AUTH') {
+            if (chunk[1] === 0x00) {
+              sendConnect()
+            } else {
+              return finish({ ok: false, error: 'Lỗi xác thực SOCKS5: Sai User hoặc Password' })
+            }
+          } else if (stage === 'CONNECT') {
+            if (chunk[1] === 0x00) {
+              stage = 'DATA'
+              socket.write(
+                'GET /?format=json HTTP/1.1\r\n' +
+                'Host: api.ipify.org\r\n' +
+                'User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64)\r\n' +
+                'Connection: close\r\n\r\n'
+              )
+            } else {
+              return finish({ ok: false, error: `SOCKS5 Connect thất bại (mã phản hồi: ${chunk[1]})` })
+            }
+          } else if (stage === 'DATA') {
+            buffer += chunk.toString('utf8')
+            const sIdx = buffer.indexOf('{')
+            const eIdx = buffer.lastIndexOf('}')
+            if (sIdx !== -1 && eIdx > sIdx) {
+              try {
+                const data = JSON.parse(buffer.slice(sIdx, eIdx + 1))
+                return finish({
+                  ok: true,
+                  latencyMs: Date.now() - started,
+                  ip: data.ip || host,
+                  country: 'US',
+                  region: '',
+                  city: '',
+                  isp: 'SOCKS5 Residential'
+                })
+              } catch {}
+            }
+          }
+        })
+
+        socket.on('timeout', () => finish({ ok: false, error: 'Hết thời gian kết nối SOCKS5 (Timeout > 6s)' }))
+        socket.on('error', (err: any) => finish({ ok: false, error: `Lỗi kết nối SOCKS5: ${err.message}` }))
+      })
+    }
+
+    // 3. HTTP / HTTPS Proxy Handshake with Dual Fallback
     return new Promise((resolve) => {
-      const host = (params.host || '').trim()
-      const port = Number(params.port)
-      const user = (params.user || '').trim()
-      const password = (params.password || '').trim()
-
-      if (!host || isNaN(port) || port <= 0 || port > 65535) {
-        return resolve({ ok: false, error: 'Host hoặc Port không hợp lệ' })
-      }
-
       const started = Date.now()
       let resolved = false
       const socket = net.createConnection({ host, port })
@@ -1630,9 +1798,7 @@ function generateValidDl(stateCode: string, lastName: string = ''): string {
       const finish = (result: any) => {
         if (!resolved) {
           resolved = true
-          try {
-            socket.destroy()
-          } catch {}
+          try { socket.destroy() } catch {}
           resolve(result)
         }
       }
@@ -1644,9 +1810,10 @@ function generateValidDl(stateCode: string, lastName: string = ''): string {
 
       socket.on('connect', () => {
         socket.write(
-          'GET http://ip-api.com/json HTTP/1.1\r\n' +
-          'Host: ip-api.com\r\n' +
+          'GET http://api.ipify.org?format=json HTTP/1.1\r\n' +
+          'Host: api.ipify.org\r\n' +
           authHeader +
+          'User-Agent: Mozilla/5.0\r\n' +
           'Connection: close\r\n\r\n'
         )
       })
@@ -1675,11 +1842,11 @@ function generateValidDl(stateCode: string, lastName: string = ''): string {
             return finish({
               ok: true,
               latencyMs: Date.now() - started,
-              ip: data.query || host,
+              ip: data.ip || data.query || host,
               country: data.country || 'US',
               region: data.regionName || '',
               city: data.city || '',
-              isp: data.isp || ''
+              isp: data.isp || 'HTTP Proxy'
             })
           } catch {}
         }
@@ -2111,7 +2278,9 @@ function generateValidDl(stateCode: string, lastName: string = ''): string {
     // B. Ports already forwarded or active in HideProxy (marked as occupied)
     let activePorts: any[] = []
     try {
-      const portInfoRes = await fetch(`${HIDEPROXY_BASE}/api/port/info?port=ALL`)
+      const portInfoRes = await fetch(`${HIDEPROXY_BASE}/api/port/info?port=ALL`, {
+        signal: AbortSignal.timeout(2500)
+      })
         .then((r) => r.json())
         .catch(() => null)
       activePorts = (portInfoRes && portInfoRes.data) || []
@@ -2127,7 +2296,10 @@ function generateValidDl(stateCode: string, lastName: string = ''): string {
     try {
       const adsBase = getAdsBaseUrl()
       const adsHeaders = getAdsHeaders()
-      const adsListRes = await fetch(`${adsBase}/api/v1/user/list?page=1&page_size=100`, { headers: adsHeaders })
+      const adsListRes = await fetch(`${adsBase}/api/v1/user/list?page=1&page_size=100`, {
+        headers: adsHeaders,
+        signal: AbortSignal.timeout(3000)
+      })
         .then((r) => r.json())
         .catch(() => null)
       if (adsListRes && adsListRes.code === 0 && Array.isArray(adsListRes.data?.list)) {
@@ -2180,7 +2352,9 @@ function generateValidDl(stateCode: string, lastName: string = ''): string {
       if (matchExisting && existingStateMatches) {
         assignedProxyMeta = matchExisting
       } else {
-        const histRes = await fetch(`${HIDEPROXY_BASE}/api/history/list?limit=50&page=1`)
+        const histRes = await fetch(`${HIDEPROXY_BASE}/api/history/list?limit=50&page=1`, {
+          signal: AbortSignal.timeout(2500)
+        })
           .then((r) => r.json())
           .catch(() => null)
         const histItems: any[] = (histRes && histRes.data) || []
@@ -2191,8 +2365,9 @@ function generateValidDl(stateCode: string, lastName: string = ''): string {
 
         if (matchedHist) {
           await fetch(
-            `${HIDEPROXY_BASE}/api/history/last-12-hours/forward?id=${matchedHist.id}&port=${assignedPort}`
-          )
+            `${HIDEPROXY_BASE}/api/history/last-12-hours/forward?id=${matchedHist.id}&port=${assignedPort}`,
+            { signal: AbortSignal.timeout(3000) }
+          ).catch(() => null)
           await new Promise((resolve) => setTimeout(resolve, 1500))
           assignedProxyMeta = {
             port: assignedPort,
@@ -2214,13 +2389,15 @@ function generateValidDl(stateCode: string, lastName: string = ''): string {
           buyUrl.searchParams.set('quantity', '1')
           buyUrl.searchParams.set('startPort', String(assignedPort))
 
-          const buyRes = await fetch(buyUrl.toString())
+          const buyRes = await fetch(buyUrl.toString(), { signal: AbortSignal.timeout(6000) })
             .then((r) => r.json())
-            .catch(() => null)
+            .catch((e) => ({ error: e.message }))
 
           if (buyRes && (buyRes.code === 200 || !buyRes.error)) {
-            await new Promise((resolve) => setTimeout(resolve, 2000))
-            const portInfoRes = await fetch(`${HIDEPROXY_BASE}/api/port/info?port=${assignedPort}`)
+            await new Promise((resolve) => setTimeout(resolve, 2500))
+            const portInfoRes = await fetch(`${HIDEPROXY_BASE}/api/port/info?port=${assignedPort}`, {
+              signal: AbortSignal.timeout(2500)
+            })
               .then((r) => r.json())
               .catch(() => null)
             const pData = (portInfoRes && portInfoRes.data && portInfoRes.data[0]) || null
@@ -2259,7 +2436,8 @@ function generateValidDl(stateCode: string, lastName: string = ''): string {
       const adsBase = getAdsBaseUrl()
       const adsHeaders = getAdsHeaders()
       const adsListRes = await fetch(`${adsBase}/api/v1/user/list?group_id=0&page_size=100`, {
-        headers: adsHeaders
+        headers: adsHeaders,
+        signal: AbortSignal.timeout(3500)
       })
         .then((r) => r.json())
         .catch(() => null)
@@ -2317,7 +2495,8 @@ function generateValidDl(stateCode: string, lastName: string = ''): string {
               '--start-maximized',
               registerUrl
             ]
-          })
+          }),
+          signal: AbortSignal.timeout(4000)
         }).catch(() => null)
       } else {
         const createRes = await fetch(`${adsBase}/api/v1/user/create`, {
@@ -2333,10 +2512,11 @@ function generateValidDl(stateCode: string, lastName: string = ''): string {
               '--start-maximized',
               registerUrl
             ]
-          })
+          }),
+          signal: AbortSignal.timeout(4500)
         })
           .then((r) => r.json())
-          .catch(() => null)
+          .catch((err) => ({ code: -1, msg: err?.message || 'Không kết nối được AdsPower' }))
 
         if (createRes && createRes.code === 0 && (createRes.data?.id || createRes.data?.user_id)) {
           adspowerId = createRes.data.id || createRes.data.user_id
@@ -2344,6 +2524,14 @@ function generateValidDl(stateCode: string, lastName: string = ''): string {
       }
     } catch (err) {
       console.error('AdsPower auto-setup error:', err)
+    }
+
+    // Fail-safe: Profile AdsPower MUST be created or exist
+    if (!adspowerId) {
+      return {
+        ok: false,
+        error: 'Không thể kết nối hoặc tạo profile trên AdsPower! Vui lòng đảm bảo ứng dụng AdsPower Global đã được mở (Port 50325).'
+      }
     }
 
     // --- Step 3: Readiness Scorecard ---

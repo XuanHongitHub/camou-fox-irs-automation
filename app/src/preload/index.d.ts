@@ -179,6 +179,7 @@ export interface IApi {
       adspower: { online: boolean; base: string }
       hideproxy: { online: boolean; base: string }
     }>
+    launchService: (service: 'adspower' | 'hideproxy') => Promise<{ ok: boolean; path?: string; error?: string }>
     fetchSheet: (params?: {
       sheetId?: string
       tabName?: string
