@@ -589,6 +589,12 @@ export function TtsBotView() {
       currentRecordId?: string
       currentStatus?: string
     }
+    lastResult?: {
+      ok: boolean
+      adspowerId?: string
+      assignedPort?: number
+      error?: string
+    }
   }>({
     isOpen: false,
     mode: 'single',
@@ -609,6 +615,7 @@ export function TtsBotView() {
   const [isSavingAdsConfig, setIsSavingAdsConfig] = useState(false)
   const [adsConfigSavedFeedback, setAdsConfigSavedFeedback] = useState(false)
   const [copiedDefaultKeyFeedback, setCopiedDefaultKeyFeedback] = useState(false)
+  const [copiedSetupId, setCopiedSetupId] = useState(false)
 
   // Row Range Filtering & Anti-Lag Pagination State
   const [startRowInput, setStartRowInput] = useState<string>('1')
@@ -1137,12 +1144,12 @@ export function TtsBotView() {
 
         setProxyUpdateNotice({
           ok: true,
-          msg: `✓ Đã cập nhật proxy thành công cho [${proxyModalRecord.id}]! ${res.adsUpdated ? '(Đã sync AdsPower)' : ''} ${res.restarted ? '(Đã restart browser)' : ''}`
+          msg: `✓ Đã cập nhật proxy thành công cho [${proxyModalRecord.id}]! ${res.adsUpdated ? '(Đã sync AdsPower)' : ''} ${res.restarted ? '(Đã restart browser)' : ''} • Cửa sổ sẽ đóng sau 2.5s`
         })
         setSetupFeedback(`✓ Đã đổi proxy cho ${proxyModalRecord.id}: ${proxyString}`)
         setTimeout(() => {
           setProxyModalRecord(null)
-        }, 1500)
+        }, 2500)
       } else {
         setProxyUpdateNotice({ ok: false, msg: res?.error || 'Lỗi khi cập nhật proxy' })
       }
@@ -1232,9 +1239,12 @@ export function TtsBotView() {
           : '(Đã lưu hồ sơ)'
         setProxyUpdateNotice({
           ok: true,
-          msg: `✓ Đã mua và tự động gán IP HideProxy Port ${proxyHideproxyPort} (${proxyHideproxyState})! ${adsStatus}`
+          msg: `✓ Đã mua và tự động gán IP HideProxy Port ${proxyHideproxyPort} (${proxyHideproxyState})! ${adsStatus} • Cửa sổ sẽ đóng sau 2.5s`
         })
         setSetupFeedback(`✓ Đã mua & gán IP Port ${proxyHideproxyPort} cho [${proxyModalRecord.id}]`)
+        setTimeout(() => {
+          setProxyModalRecord(null)
+        }, 2500)
       } else {
         setProxyUpdateNotice({ ok: false, msg: res?.error || 'Không thể mua IP từ HideProxy' })
       }
@@ -1948,7 +1958,8 @@ export function TtsBotView() {
       allocatedPorts: { [record.id]: port },
       autoBuyProxy: true,
       isExecuting: false,
-      progress: undefined
+      progress: undefined,
+      lastResult: undefined
     })
   }
 
@@ -2240,7 +2251,8 @@ export function TtsBotView() {
       allocatedPorts,
       autoBuyProxy: true,
       isExecuting: false,
-      progress: undefined
+      progress: undefined,
+      lastResult: undefined
     })
   }
 
@@ -2287,15 +2299,20 @@ export function TtsBotView() {
           ...prev,
           records: [res.record],
           isExecuting: false,
+          lastResult: {
+            ok: true,
+            adspowerId: res.record.adspowerId,
+            assignedPort: res.record.assignedPort
+          },
           progress: {
             current: 1,
             total: 1,
             currentRecordId: target.id,
-            currentStatus: 'Hoàn tất thiết lập!'
+            currentStatus: `✓ Đã tạo thành công Profile AdsPower [${res.record.adspowerId}]!`
           }
         }))
         setSetupFeedback(
-          `⚡ Setup thành công cho ${res.record.id}! Port: ${res.record.assignedPort}, AdsPower: ${res.record.adspowerId}`
+          `🎉 Setup thành công cho [${res.record.id}]! Port: ${res.record.assignedPort}, AdsPower Profile: ${res.record.adspowerId}`
         )
       } else {
         const errMsg = res?.error || 'Thất bại khi cấu hình AdsPower hoặc Proxy'
@@ -2303,6 +2320,10 @@ export function TtsBotView() {
         setSetupModalConfig((prev) => ({
           ...prev,
           isExecuting: false,
+          lastResult: {
+            ok: false,
+            error: errMsg
+          },
           progress: {
             current: 1,
             total: 1,
@@ -2317,6 +2338,10 @@ export function TtsBotView() {
       setSetupModalConfig((prev) => ({
         ...prev,
         isExecuting: false,
+        lastResult: {
+          ok: false,
+          error: errMsg
+        },
         progress: {
           current: 1,
           total: 1,
@@ -7027,27 +7052,174 @@ export function TtsBotView() {
                         </div>
                       </div>
 
-                      {/* Execution Progress Banner */}
-                      {setupModalConfig.progress && (
-                        <div
-                          className={`p-3.5 rounded-xl space-y-1.5 animate-in fade-in border ${
-                            setupModalConfig.progress.currentStatus?.startsWith('Lỗi')
-                              ? 'bg-rose-950/80 border-rose-600/80 text-rose-200'
-                              : setupModalConfig.isExecuting
-                              ? 'bg-slate-950 border-cyan-800/80 text-cyan-300'
-                              : 'bg-emerald-950/80 border-emerald-600/80 text-emerald-300'
-                          }`}
-                        >
+                      {/* 1. SUCCESS SHOWCASE CARD */}
+                      {setupModalConfig.lastResult?.ok && (
+                        <div className="p-5 rounded-2xl bg-gradient-to-br from-emerald-950/90 via-slate-900 to-emerald-950/80 border-2 border-emerald-500/80 shadow-2xl space-y-4 animate-in zoom-in-95 duration-200">
+                          <div className="flex flex-wrap items-center justify-between gap-3">
+                            <div className="flex items-center space-x-3.5">
+                              <div className="w-12 h-12 rounded-xl bg-emerald-500/20 border border-emerald-500/40 flex items-center justify-center text-emerald-400 shrink-0">
+                                <CheckCircle2 className="w-7 h-7" />
+                              </div>
+                              <div>
+                                <div className="flex items-center space-x-2">
+                                  <h4 className="text-base font-bold text-white tracking-wide">
+                                    THIẾT LẬP PROFILE ADSPOWER THÀNH CÔNG!
+                                  </h4>
+                                  <span className="px-2 py-0.5 rounded text-xs bg-emerald-500/20 text-emerald-300 border border-emerald-500/40 font-bold uppercase tracking-wider">
+                                    99% Ready
+                                  </span>
+                                </div>
+                                <p className="text-xs text-emerald-300/80 mt-0.5">
+                                  Đã đồng bộ profile lên AdsPower, gắn Tab Đăng Ký TTS, cấu hình sạch và gán Proxy Port tương ứng.
+                                </p>
+                              </div>
+                            </div>
+                          </div>
+
+                          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 bg-slate-950/90 p-4 rounded-xl border border-emerald-500/30">
+                            <div className="space-y-1">
+                              <div className="text-[11px] text-slate-400 uppercase font-semibold">AdsPower Profile ID</div>
+                              <div className="flex items-center space-x-2">
+                                <span className="text-2xl font-mono font-black text-amber-400 tracking-wider">
+                                  {setupModalConfig.lastResult.adspowerId}
+                                </span>
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    if (setupModalConfig.lastResult?.adspowerId) {
+                                      navigator.clipboard.writeText(setupModalConfig.lastResult.adspowerId)
+                                      setCopiedSetupId(true)
+                                      setTimeout(() => setCopiedSetupId(false), 2000)
+                                    }
+                                  }}
+                                  className="px-2.5 py-1 bg-slate-800 hover:bg-slate-700 text-slate-200 hover:text-white rounded-lg text-xs font-semibold flex items-center space-x-1 border border-slate-700 transition-all cursor-pointer"
+                                  title="Copy AdsPower Profile ID"
+                                >
+                                  {copiedSetupId ? (
+                                    <>
+                                      <Check className="w-3.5 h-3.5 text-emerald-400" />
+                                      <span className="text-emerald-300 font-bold">Đã Copy!</span>
+                                    </>
+                                  ) : (
+                                    <>
+                                      <Copy className="w-3.5 h-3.5 text-cyan-400" />
+                                      <span>Copy ID</span>
+                                    </>
+                                  )}
+                                </button>
+                              </div>
+                            </div>
+
+                            <div className="space-y-1">
+                              <div className="text-[11px] text-slate-400 uppercase font-semibold">Cổng Proxy Đã Gán (HideProxy)</div>
+                              <div className="text-xl font-mono font-bold text-cyan-300">
+                                Port {setupModalConfig.lastResult.assignedPort || activePort}
+                              </div>
+                              <div className="text-[11px] text-slate-400">
+                                Bang: <strong className="text-white">{curRec.state}</strong> • 127.0.0.1:{setupModalConfig.lastResult.assignedPort || activePort}
+                              </div>
+                            </div>
+                          </div>
+
+                          <div className="flex flex-wrap items-center justify-between gap-3 pt-1">
+                            <div className="text-xs text-emerald-400 font-medium flex items-center space-x-1.5">
+                              <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
+                              <span>Hồ sơ đã sẵn sàng 99%! Bạn có thể mở trình duyệt để thực hiện đăng ký ngay.</span>
+                            </div>
+                            <button
+                              type="button"
+                              onClick={async () => {
+                                if (setupModalConfig.lastResult?.adspowerId) {
+                                  try {
+                                    await ttsIpc.adspowerStart(setupModalConfig.lastResult.adspowerId)
+                                  } catch (e) {
+                                    console.error(e)
+                                  }
+                                }
+                              }}
+                              className="px-4 py-2 bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-white font-bold rounded-xl text-xs shadow-lg flex items-center space-x-2 transition-all cursor-pointer"
+                            >
+                              <Play className="w-4 h-4 fill-white" />
+                              <span>▶ MỞ TRÌNH DUYỆT ADS NGAY</span>
+                            </button>
+                          </div>
+                        </div>
+                      )}
+
+                      {/* 2. ERROR SHOWCASE CARD */}
+                      {setupModalConfig.lastResult?.ok === false && (
+                        <div className="p-5 rounded-2xl bg-gradient-to-br from-rose-950/90 via-slate-900 to-rose-950/80 border-2 border-rose-500/80 shadow-2xl space-y-4 animate-in zoom-in-95 duration-200">
+                          <div className="flex items-start space-x-3.5">
+                            <div className="w-12 h-12 rounded-xl bg-rose-500/20 border border-rose-500/40 flex items-center justify-center text-rose-400 shrink-0 mt-0.5">
+                              <AlertCircle className="w-7 h-7" />
+                            </div>
+                            <div className="flex-1 space-y-1">
+                              <div className="flex items-center space-x-2">
+                                <h4 className="text-base font-bold text-white tracking-wide">
+                                  THIẾT LẬP PROFILE THẤT BẠI
+                                </h4>
+                                <span className="px-2 py-0.5 rounded text-xs bg-rose-500/20 text-rose-300 border border-rose-500/40 font-bold uppercase">
+                                  Cần Xử Lý
+                                </span>
+                              </div>
+                              <div className="p-3 bg-slate-950/90 rounded-xl border border-rose-800/60 font-mono text-xs text-rose-300 leading-relaxed break-words whitespace-pre-wrap">
+                                {setupModalConfig.lastResult.error}
+                              </div>
+                            </div>
+                          </div>
+
+                          <div className="flex flex-wrap items-center justify-between gap-3 pt-1 border-t border-rose-800/40">
+                            <div className="text-xs text-rose-300">
+                              Gợi ý: Kiểm tra xem AdsPower và HideProxy đã được mở và đăng nhập chưa.
+                            </div>
+                            <div className="flex items-center space-x-2">
+                              {!status?.adspower?.online && (
+                                <button
+                                  type="button"
+                                  onClick={async () => {
+                                    await ttsIpc.launchService('adspower')
+                                    setTimeout(refreshAdsPowerProfiles, 3000)
+                                  }}
+                                  className="px-3 py-1.5 bg-sky-600/30 hover:bg-sky-600/50 text-sky-300 border border-sky-500/40 rounded-lg text-xs font-semibold flex items-center space-x-1"
+                                >
+                                  <Play className="w-3.5 h-3.5" />
+                                  <span>Mở AdsPower</span>
+                                </button>
+                              )}
+                              {!status?.hideproxy?.online && (
+                                <button
+                                  type="button"
+                                  onClick={async () => {
+                                    await ttsIpc.launchService('hideproxy')
+                                    setTimeout(refreshHideProxyPorts, 3000)
+                                  }}
+                                  className="px-3 py-1.5 bg-amber-600/30 hover:bg-amber-600/50 text-amber-300 border border-amber-500/40 rounded-lg text-xs font-semibold flex items-center space-x-1"
+                                >
+                                  <Play className="w-3.5 h-3.5" />
+                                  <span>Mở HideProxy</span>
+                                </button>
+                              )}
+                              <button
+                                type="button"
+                                onClick={handleExecuteModalSingleSetup}
+                                disabled={setupModalConfig.isExecuting}
+                                className="px-3 py-1.5 bg-rose-600 hover:bg-rose-500 text-white rounded-lg text-xs font-bold flex items-center space-x-1 shadow cursor-pointer"
+                              >
+                                <RefreshCw className="w-3.5 h-3.5" />
+                                <span>Thử Lại</span>
+                              </button>
+                            </div>
+                          </div>
+                        </div>
+                      )}
+
+                      {/* 3. Execution Progress Banner (When running without completed lastResult) */}
+                      {setupModalConfig.isExecuting && setupModalConfig.progress && (
+                        <div className="p-3.5 rounded-xl space-y-1.5 animate-in fade-in border bg-slate-950 border-cyan-800/80 text-cyan-300">
                           <div className="flex justify-between items-center text-xs">
                             <span className="font-semibold flex items-center space-x-2">
-                              {setupModalConfig.isExecuting ? (
-                                <RefreshCw className="w-3.5 h-3.5 animate-spin text-cyan-400" />
-                              ) : setupModalConfig.progress.currentStatus?.startsWith('Lỗi') ? (
-                                <AlertCircle className="w-4 h-4 text-rose-400 shrink-0" />
-                              ) : (
-                                <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
-                              )}
-                              <span>{setupModalConfig.progress.currentStatus}</span>
+                              <RefreshCw className="w-3.5 h-3.5 animate-spin text-cyan-400" />
+                              <span>{setupModalConfig.progress.currentStatus || 'Đang thiết lập Profile và Proxy...'}</span>
                             </span>
                             <span className="font-mono text-slate-400">
                               {setupModalConfig.progress.current} / {setupModalConfig.progress.total}
@@ -7394,41 +7566,103 @@ export function TtsBotView() {
                       Quét Lại Ports
                     </Button>
 
-                    {setupModalConfig.records[0]?.adspowerId && (
-                      <Button
-                        variant="primary"
-                        size="sm"
-                        onClick={async () => {
-                          try {
-                            await ttsIpc.adspowerStart(setupModalConfig.records[0].adspowerId!)
-                          } catch (e) {
-                            console.error(e)
-                          }
-                        }}
-                        className="bg-emerald-600 hover:bg-emerald-500 text-white font-semibold shadow"
-                      >
-                        ▶ Mở Trình Duyệt Ngay
-                      </Button>
-                    )}
+                    {setupModalConfig.lastResult?.ok ? (
+                      <>
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          onClick={() => {
+                            if (setupModalConfig.lastResult?.adspowerId) {
+                              navigator.clipboard.writeText(setupModalConfig.lastResult.adspowerId)
+                              setCopiedSetupId(true)
+                              setTimeout(() => setCopiedSetupId(false), 2000)
+                            }
+                          }}
+                          className="text-slate-300 border border-slate-700 hover:bg-slate-800"
+                        >
+                          {copiedSetupId ? (
+                            <>
+                              <Check className="w-3.5 h-3.5 mr-1 text-emerald-400" />
+                              <span>Đã Copy ID</span>
+                            </>
+                          ) : (
+                            <>
+                              <Copy className="w-3.5 h-3.5 mr-1 text-cyan-400" />
+                              <span>Copy ID</span>
+                            </>
+                          )}
+                        </Button>
 
-                    <Button
-                      variant="primary"
-                      size="sm"
-                      onClick={handleExecuteModalSingleSetup}
-                      disabled={setupModalConfig.isExecuting}
-                      className="bg-gradient-to-r from-amber-500 to-cyan-500 hover:from-amber-400 hover:to-cyan-400 text-slate-950 font-bold shadow"
-                    >
-                      {setupModalConfig.isExecuting ? (
-                        <RefreshCw className="w-3.5 h-3.5 mr-1.5 animate-spin" />
-                      ) : (
-                        <Zap className="w-3.5 h-3.5 mr-1.5" />
-                      )}
-                      <span>
-                        {setupModalConfig.records[0]?.adspowerId
-                          ? 'Cập Nhật Profile & Gán Proxy'
-                          : 'Xác Nhận & Thiết Lập 99%'}
-                      </span>
-                    </Button>
+                        <Button
+                          variant="primary"
+                          size="sm"
+                          onClick={async () => {
+                            if (setupModalConfig.lastResult?.adspowerId) {
+                              try {
+                                await ttsIpc.adspowerStart(setupModalConfig.lastResult.adspowerId)
+                              } catch (e) {
+                                console.error(e)
+                              }
+                            }
+                          }}
+                          className="bg-emerald-600 hover:bg-emerald-500 text-white font-bold shadow px-4"
+                        >
+                          <Play className="w-3.5 h-3.5 mr-1.5 fill-white" />
+                          ▶ Mở Trình Duyệt Ngay
+                        </Button>
+
+                        <Button
+                          variant="primary"
+                          size="sm"
+                          onClick={() => setSetupModalConfig((prev) => ({ ...prev, isOpen: false }))}
+                          className="bg-slate-800 hover:bg-slate-700 text-white font-semibold border border-slate-700 shadow px-4"
+                        >
+                          <Check className="w-3.5 h-3.5 mr-1 text-emerald-400" />
+                          ✓ Đã Xong - Đóng
+                        </Button>
+                      </>
+                    ) : (
+                      <>
+                        {setupModalConfig.records[0]?.adspowerId && (
+                          <Button
+                            variant="primary"
+                            size="sm"
+                            onClick={async () => {
+                              try {
+                                await ttsIpc.adspowerStart(setupModalConfig.records[0].adspowerId!)
+                              } catch (e) {
+                                console.error(e)
+                              }
+                            }}
+                            className="bg-emerald-600 hover:bg-emerald-500 text-white font-semibold shadow"
+                          >
+                            <Play className="w-3.5 h-3.5 mr-1.5" />
+                            Mở Trình Duyệt Ngay
+                          </Button>
+                        )}
+
+                        <Button
+                          variant="primary"
+                          size="sm"
+                          onClick={handleExecuteModalSingleSetup}
+                          disabled={setupModalConfig.isExecuting}
+                          className="bg-gradient-to-r from-amber-500 to-cyan-500 hover:from-amber-400 hover:to-cyan-400 text-slate-950 font-bold shadow"
+                        >
+                          {setupModalConfig.isExecuting ? (
+                            <RefreshCw className="w-3.5 h-3.5 mr-1.5 animate-spin" />
+                          ) : (
+                            <Zap className="w-3.5 h-3.5 mr-1.5" />
+                          )}
+                          <span>
+                            {setupModalConfig.isExecuting
+                              ? 'Đang cấu hình Profile & Proxy...'
+                              : setupModalConfig.records[0]?.adspowerId
+                              ? 'Cập Nhật Profile & Gán Proxy'
+                              : 'Xác Nhận & Thiết Lập 99%'}
+                          </span>
+                        </Button>
+                      </>
+                    )}
                   </>
                 ) : !setupModalConfig.isExecuting && setupModalConfig.progress && setupModalConfig.progress.current === setupModalConfig.records.length ? (
                   <Button
@@ -9252,6 +9486,33 @@ export function TtsBotView() {
               </div>
             </div>
 
+            {/* Sticky Real-Time Notice Right Above Footer Buttons */}
+            {proxyUpdateNotice && (
+              <div
+                className={`mx-6 my-2.5 p-3 rounded-xl border text-xs flex items-center justify-between shrink-0 shadow-lg animate-in slide-in-from-bottom-2 duration-150 ${
+                  proxyUpdateNotice.ok
+                    ? 'bg-emerald-950/95 border-emerald-500/80 text-emerald-200'
+                    : 'bg-rose-950/95 border-rose-500/80 text-rose-200'
+                }`}
+              >
+                <div className="flex items-center space-x-2.5">
+                  {proxyUpdateNotice.ok ? (
+                    <CheckCircle2 className="w-5 h-5 text-emerald-400 shrink-0" />
+                  ) : (
+                    <AlertCircle className="w-5 h-5 text-rose-400 shrink-0" />
+                  )}
+                  <div className="font-semibold leading-relaxed">{proxyUpdateNotice.msg}</div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setProxyUpdateNotice(null)}
+                  className="text-slate-400 hover:text-white p-1 rounded hover:bg-slate-800 transition-colors cursor-pointer shrink-0 ml-2"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+            )}
+
             {/* Modal Footer */}
             <div className="px-6 py-3.5 bg-slate-950 border-t border-slate-800 flex items-center justify-between shrink-0">
               <Button
@@ -9266,10 +9527,26 @@ export function TtsBotView() {
               <button
                 onClick={handleApplyProxy}
                 disabled={isUpdatingProxy}
-                className="px-5 py-2 bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold rounded-xl text-xs shadow flex items-center space-x-2 transition-all cursor-pointer disabled:opacity-50"
+                className={`px-5 py-2 font-bold rounded-xl text-xs shadow flex items-center space-x-2 transition-all cursor-pointer disabled:opacity-50 ${
+                  proxyUpdateNotice?.ok
+                    ? 'bg-emerald-600 hover:bg-emerald-500 text-white ring-2 ring-emerald-400/50'
+                    : 'bg-amber-500 hover:bg-amber-400 text-slate-950'
+                }`}
               >
-                <Check className={`w-4 h-4 ${isUpdatingProxy ? 'animate-spin' : ''}`} />
-                <span>{isUpdatingProxy ? 'Đang cập nhật...' : '⚡ Áp Dụng & Đồng Bộ AdsPower'}</span>
+                {isUpdatingProxy ? (
+                  <RefreshCw className="w-4 h-4 animate-spin text-slate-950" />
+                ) : proxyUpdateNotice?.ok ? (
+                  <CheckCircle2 className="w-4 h-4 text-white" />
+                ) : (
+                  <Zap className="w-4 h-4 text-slate-950" />
+                )}
+                <span>
+                  {isUpdatingProxy
+                    ? 'Đang áp dụng...'
+                    : proxyUpdateNotice?.ok
+                    ? '✓ ĐÃ ÁP DỤNG THÀNH CÔNG!'
+                    : '⚡ Áp Dụng & Đồng Bộ AdsPower'}
+                </span>
               </button>
             </div>
           </div>
